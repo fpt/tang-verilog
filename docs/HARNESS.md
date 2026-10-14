@@ -43,7 +43,7 @@ Zero 系 2 種の共通の注意:
 
 - GP16 はオンボードの WS2812 につながっているので使わない (下のピン割り当てで LED5 を GP26 にしているのはこのため)
 - 端のピンヘッダに出ている GPIO は GP0〜GP15, GP26〜GP29 だけ (GP17〜GP25 は裏面のはんだパッド)。このドキュメントの割り当ては全部ピンヘッダに収まる
-- ピンヘッダの GND は 1 本だけ。GND 線 2 本は同じピンから分岐するか、裏面の GND パッドから取る
+- ピンヘッダの GND は 1 本だけ。Tang Nano への GND 線 2 本と OLED の GND は、同じピンからブレッドボードの GND レールに出して分ける
 - USB は USB-C
 
 ## 役割分担
@@ -142,7 +142,25 @@ Tang Nano 側のピン選定:
 - 69, 70: BL616 の UART。ヘッダには出ていないので配線不要 (Linux ホストが USB 経由で受ける)
 
 Pico 2 側は GP2〜GP15 と GP26 を使います。Pico 2 本体で使われている GP23〜GP25, GP29 と、Zero 系の WS2812 につながっている GP16 は避けています。
-GP0 / GP1 (UART0) は Pico 2 自身のデバッグ出力用に空けておきます。
+GP0 / GP1 は状態表示用の OLED (下記) に使います。
+
+### 状態表示 OLED (SSD1306)
+
+Pico 2 に SSD1306 の I2C OLED (128x64 または 128x32) をつなぎ、ハーネスの状態をその場で見られるようにします。
+エージェントがループを回している横で、人間が「今どの段階で、何が起きているか」を確認するためのものです。
+
+| OLED | Pico 2 GPIO | Pico 2 物理ピン | 備考 |
+| --- | --- | --- | --- |
+| SDA | GP0 (I2C0 SDA) | 1 | |
+| SCL | GP1 (I2C0 SCL) | 2 | |
+| VCC | 3V3 (OUT) | 36 | Zero 系は 3V3 ピン |
+| GND | GND | 38 | Zero 系は GND レールから |
+
+- I2C アドレスは `0x3C` (モジュールによっては `0x3D`)。クロックは 400kHz
+- 多くのモジュールは SDA / SCL のプルアップ抵抗を載せているので、外付けは不要。載っていない場合は 4.7kΩ で 3V3 へプルアップする
+- I2C 線には直列抵抗を入れない (Tang Nano とはつながらないので衝突の心配がない)
+- OLED は Pico 2 の 3V3 から給電する。Tang Nano 20K の 3V3 とはつながない
+- OLED は任意の部品として扱う。起動時に I2C で応答がなければ表示を無効にして、ハーネスの動作は続ける
 
 ### 配線図
 
@@ -168,32 +186,85 @@ GP0 / GP1 (UART0) は Pico 2 自身のデバッグ出力用に空けておきま
    3  GND             ───────────────────────  GND (左列いちばん下)
   18  GND             ───────────────────────  GND (右列上から 2 本目)
 
+   1  GP0  SDA        ───────────────────────  SSD1306 SDA
+   2  GP1  SCL        ───────────────────────  SSD1306 SCL
+  36  3V3             ───────────────────────  SSD1306 VCC
+  38  GND             ───────────────────────  SSD1306 GND
+
   Linux ホスト USB ──USB-C──► Tang Nano 20K (給電 + JTAG + UART)
   Linux ホスト USB ──micro-B─► Pico 2 (給電 + USB CDC。Zero 系は USB-C)
 ```
 
-物理ピン番号は Pico 2 のものです。Pico 2 では LED5 (GP26) 以外が左列 (物理ピン 1〜20) に収まります。Zero 系はシルクの GPIO 番号に合わせて配線してください。
+物理ピン番号は Pico 2 のものです。Pico 2 では Tang Nano への線は LED5 (GP26) 以外が左列 (物理ピン 1〜20) に収まります。Zero 系はシルクの GPIO 番号に合わせて配線してください。
 
 ### 直列抵抗
 
-信号線は直結せず、直列抵抗を挟みます。目的は 2 つです。
+信号線は直結せず、直列抵抗を挟みます。目的は 3 つです。
 
-1. **衝突保護 (主目的)**: エージェントに cst や RTL、Pico のファームウェアを触らせる以上、「Pico が出力しているピンを FPGA も出力にしてしまった」は必ず起きます。書き込み中の不定状態やリセット中も含めて、両側が逆の値を押し合ったときに電流を定格内に抑えます
-2. **リンギング抑制**: ジャンパ線の反射を減らしてエッジをきれいにします
+1. **衝突保護 (主目的)**: エージェントに cst や RTL、Pico のファームウェアを触らせる以上、「Pico が出力しているピンを FPGA も出力にしてしまった」は起こり得ます。
+   書き込み中の不定状態やリセット中も含めて、両側が逆の値を押し合ったときの電流を小さく抑えます。
+   ただし本命の対策は、書き込む前にピンの向きを検査すること ([ピン方向の検査](#ピン方向の検査)) で、抵抗は検査が効かない瞬間のための保険です
+2. **片側だけ電源が入っているときの保護**: 電源の入っていない側の入力保護ダイオード経由で、もう片側が電源を供給してしまう (バックパワー) 電流を抑えます
+3. **リンギング抑制**: ジャンパ線の反射を減らしてエッジをきれいにします
 
-| 線 | 抵抗 | 理由 |
-| --- | --- | --- |
-| SCK / COPI / CIPO / CS_N | 100Ω | 速度を出したい線。6MHz までなら 220Ω でも成立する |
-| VSYNC / HEARTBEAT / ERROR / IRQ_N / RESET_N / LED0〜5 | 330Ω | 低速なので RC 遅延は気にならない。衝突時 10mA |
-| GND | なし | — |
+| 線 | 抵抗 | 衝突時の電流 | 理由 |
+| --- | --- | --- | --- |
+| SCK / COPI / CIPO / CS_N | 220Ω | 15mA | 速度が要る線。6MHz まではこれで成立する |
+| VSYNC / HEARTBEAT / ERROR / IRQ_N / RESET_N / LED0〜5 | 1kΩ | 3.3mA | 変化は数 ms に 1 回なので、遅いエッジでも困らない |
+| GND | なし | — | — |
 
 - 抵抗は **ドライバ側 (信号の出口)** に置きます。Pico → FPGA の線は Pico 側、FPGA → Pico の線は Tang Nano 側
-- 衝突時の電流は 3.3V ÷ 抵抗値。100Ω で 33mA、220Ω で 15mA、330Ω で 10mA
-- RP2350 の GPIO は駆動能力の設定が最大 12mA で、全 GPIO 合計の電流にも上限があります。低速線は 330Ω にしておくと、複数本が同時に衝突しても余裕があります
-- 220Ω × 線路容量 50pF (15cm ジャンパ + 入力容量) で時定数 11ns、立ち上がり 25ns 程度。SCK を 10MHz 以上に上げるときに SPI 線を 100Ω へ落とす
+- 衝突時の電流は 3.3V ÷ 抵抗値。1kΩ なら複数本が同時に衝突しても、RP2040 / RP2350 の GPIO 合計電流の上限に対して十分小さい
+- 1kΩ × 線路容量 50pF (15cm ジャンパ + 入力容量) で時定数 50ns、立ち上がり 110ns 程度。低速線には影響がない。Pico の内蔵プルアップ / プルダウン (約 50kΩ) との分圧も無視できる
+- 220Ω × 50pF なら立ち上がり 25ns 程度。SCK を 10MHz 以上に上げるときは SPI 線を 100Ω へ落とす (衝突時 33mA になるので、ピン方向の検査を通っていることが前提)
 - 実装はブレッドボード上で Pico 2 と Tang Nano の間に抵抗を並べる。理想は各ボードのヘッダのすぐ横だが、片端にまとめても実用上は困らない
 - 集合抵抗を使うなら **独立型 (アイソレーテッド型)** に限る。よくある SIP の 1 ピン共通型 (バスド型) は片側が全部つながっているので直列には使えない。DIP 16 ピン 8 素子独立型 (Bourns 4116R-2 など) ならブレッドボードに挿して向かい合う 2 ピンが 1 本の抵抗になる。本数は増えるが普通のリード抵抗 15 本でも構わない
 - 本番の配線 (WIRING.md) でも同じ考え方で SPI 線に抵抗を入れておくとよい
+
+使わないもの:
+
+- **ロジックバッファ (74LVC125 / 244 / 245)**: FPGA 側の向きを間違えると、今度はバッファの出力と衝突するだけで、問題が移動するだけ。しかもバッファは 24mA 級で強く駆動するので FPGA にはかえって厳しい
+- **バススイッチ・自動方向判定のレベル変換 (74CBT, TXS0108)**: 双方向に素通しするので電流を制限しない。TXS0108 は直列抵抗と組み合わせると誤動作しやすい
+- **ポリスイッチ (リセッタブルヒューズ)**: 動作電流が数百 mA で、GPIO を守るには大きすぎる
+
+### ピン方向の検査
+
+衝突の現実的な原因は偶然の故障ではなく、エージェントが cst・RTL・Pico のピン設定を書き換えて、入力のはずのピンを出力にしてしまうことです。
+これは書き込む前にソフトウェアで検出できるので、ハーネスで電気的に衝突させる前に止めます。
+
+**ピン表を 1 か所に置く**: 上のピン割り当て表を機械可読な形 (`harness/pins.yaml`、案) で持ち、FPGA 側の検査と Pico 側のファームウェアの両方がこれを使います。
+
+```yaml
+# harness/pins.yaml (案)。向きは FPGA から見たもの
+- {signal: SCK,       fpga_pin: 73, fpga_dir: input,  pico_gpio: 2}
+- {signal: COPI,      fpga_pin: 74, fpga_dir: input,  pico_gpio: 3}
+- {signal: CIPO,      fpga_pin: 75, fpga_dir: output, pico_gpio: 4}
+- {signal: CS_N,      fpga_pin: 72, fpga_dir: input,  pico_gpio: 5}
+- {signal: IRQ_N,     fpga_pin: 71, fpga_dir: output, pico_gpio: 6}
+- {signal: VSYNC,     fpga_pin: 42, fpga_dir: output, pico_gpio: 7}
+- {signal: HEARTBEAT, fpga_pin: 41, fpga_dir: output, pico_gpio: 8}
+- {signal: ERROR,     fpga_pin: 48, fpga_dir: output, pico_gpio: 9}
+- {signal: RESET_N,   fpga_pin: 86, fpga_dir: input,  pico_gpio: 10}
+- {signal: LED0,      fpga_pin: 15, fpga_dir: output, pico_gpio: 11}
+# ... LED1〜LED5 も同様
+```
+
+**FPGA 側 (`harness pincheck`)**: 書き込みの前に必ず実行し、失敗したら書き込まない。
+
+- `constraints/tangnano20k.cst` の `IO_LOC` から「ポート名 → ピン番号」を、合成結果の `build/top.json` (Yosys の JSON) から「ポート名 → 向き (`input` / `output` / `inout`)」を取り出して突き合わせる
+- ピン表で `input` のピンに `output` か `inout` のポートが割り当てられていたら失敗
+- ピン表で `output` のピンに `input` が割り当てられているのは衝突しないが、観測できなくなるので警告
+- ピン表にあるピンを cst が使っていない (ポートがない) 場合は、FPGA 側は弱プルアップの入力になるだけなので許可する
+- ビットストリームが検査済みの `top.json` から作られたことを確かめるため、`top.json` と `top.fs` の更新時刻 (またはハッシュ) も見る
+
+**Pico 側**:
+
+- ピンの向きと機能の設定 (`gpio_set_dir` / `gpio_set_function` / プル設定) は、ピン表から生成したヘッダ (`firmware/pins.h`、案) を使う 1 つのモジュールで、起動時に 1 回だけ行う
+- それ以外の場所でこれらの関数を呼んでいたら `make fw` を失敗させる (grep で十分)
+- ホストからのコマンドは観測ピンを読めるが、ピンの向きは変えられない。出力として動かせるのは CS_N・RESET_N と SPI だけ
+
+この 2 つがあれば、ピンの向きの間違いは「電気的な衝突」ではなく「selftest の失敗」として表に出ます。
+直列抵抗が受け持つのは、電源投入直後や FPGA の書き込み中など、検査が及ばない瞬間だけになります。
 
 ### 制約ファイルに足す内容
 
@@ -281,6 +352,25 @@ USB CDC 上で 1 行 1 JSON のやりとりをします。
 | `measure` | 指定ピンのエッジ時刻を指定時間記録し、周期を返す (GPIO 割り込み + µs タイマ) |
 | `reset` | RESET_N を指定時間 Low にする |
 | `run` | シナリオ (後述) を受け取って Pico 2 上で実行し、結果をまとめて返す |
+| `status` | OLED に任意の 1 行を表示する (ホスト側から段階名などを出す) |
+
+### OLED の表示
+
+USB の接続が切れていても読めるように、Pico 2 が自分で観測できる情報を中心に出します。
+
+```text
+┌────────────────────────┐
+│ HARNESS 0.1   USB:ok   │  ファームウェアのバージョン、ホストとの接続
+│ FPGA:ready  ID:5A v01  │  ready 判定の結果、ID / VERSION レジスタ
+│ HB 30.0Hz  VS 60.0Hz   │  HEARTBEAT / VSYNC の実測周波数
+│ ERR:0  SPI:1234/0      │  ERROR ピン、SPI トランザクション数 / エラー数
+│ LED ●○○●○○  F:7A       │  LED0〜5、FRAME_COUNT
+│ > run tile_hello 3/6   │  ホストから送られた現在の段階 (status コマンド)
+└────────────────────────┘
+```
+
+- 表示の更新は数 Hz に抑え、SPI やエッジ測定の邪魔をしない (I2C の転送はメインループの空き時間か DMA で行う)
+- `selftest` の失敗時は、失敗した項目番号と理由を大きく表示したまま止める
 
 ## Linux ホスト側のセットアップ
 
@@ -321,13 +411,14 @@ USB CDC 上で 1 行 1 JSON のやりとりをします。
 | --- | --- | --- | --- |
 | 1 | `openFPGALoader --detect` で GW2AR-18 が見える | ホスト | USB / udev / ケーブル / コンテナへのデバイス受け渡し |
 | 2 | Pico 2 が `ping` に応答する | ホスト → Pico | USB / ファームウェア未書き込み |
-| 3 | `top.fs` を SRAM に書き込み、終了コード 0 | ホスト | ビットストリーム破損、BL616 |
-| 4 | HEARTBEAT を 200ms 測定し 30Hz ±5% | Pico | PLL ロック失敗、タイミング生成が動いていない、配線 |
-| 5 | VSYNC のエッジ間隔が 16.67ms ±1% | Pico | `video_timing` の異常 |
-| 6 | `ID` = `0x5A`、`SCRATCH` に乱数を書いて読み返し、1MHz で 100 往復してエラー 0 | Pico | 配線か SPI スレーブ |
-| 7 | UART に起動バナーが出ている | ホスト | UART TX、リセット系 |
-| 8 | LED0〜5 の現在値を報告 | Pico | (情報のみ) |
-| 9 | RESET_N を落とすと HEARTBEAT が止まり、戻すと再開する | Pico | リセット配線 |
+| 3 | `harness pincheck` が通る (ピン方向の検査) | ホスト | cst か RTL でピンの向きを間違えている。**ここで止めて書き込まない** |
+| 4 | `top.fs` を SRAM に書き込み、終了コード 0 | ホスト | ビットストリーム破損、BL616 |
+| 5 | HEARTBEAT を 200ms 測定し 30Hz ±5% | Pico | PLL ロック失敗、タイミング生成が動いていない、配線 |
+| 6 | VSYNC のエッジ間隔が 16.67ms ±1% | Pico | `video_timing` の異常 |
+| 7 | `ID` = `0x5A`、`SCRATCH` に乱数を書いて読み返し、1MHz で 100 往復してエラー 0 | Pico | 配線か SPI スレーブ |
+| 8 | UART に起動バナーが出ている | ホスト | UART TX、リセット系 |
+| 9 | LED0〜5 の現在値を報告 | Pico | (情報のみ) |
+| 10 | RESET_N を落とすと HEARTBEAT が止まり、戻すと再開する | Pico | リセット配線 |
 
 項目 2 が失敗し、項目 1 が通る場合は Pico 2 側の問題、と切り分けられます。
 
@@ -365,9 +456,9 @@ make hw-test
   ├─ make render SCENARIO=...    (Docker, 参照画像と期待 CRC)
   ├─ make fw                     (Docker, Pico 2 のファームウェアを変えたときだけ)
   └─ harness run                 (Docker, USB デバイスを渡したコンテナ)
-       ├─ selftest (短縮版: 1, 2, 4, 6 のみ)
+       ├─ selftest (短縮版: 1, 2, 3, 5, 7 のみ)
        ├─ picotool load          (ファームウェアを変えたときだけ)
-       ├─ openFPGALoader で SRAM に書き込み
+       ├─ openFPGALoader で SRAM に書き込み (pincheck を通ったときだけ)
        ├─ Pico 2 でシナリオ実行
        ├─ FRAME_CRC 読み出し / キャプチャ
        ├─ compare → 差分 PNG
@@ -377,7 +468,7 @@ make hw-test
 - 失敗時にエージェントが読むのは JSON と差分画像だけにする
 - タイムアウトと復旧: FPGA が固まったら RESET_N → 効かなければ USB 経由で再書き込み (SRAM 書き込みなので再起動相当) → それでもだめなら `uhubctl` で USB 給電を落とす (ポート個別の電源制御に対応したハブが必要)
 - Pico 2 が応答しなくなったら `picotool reboot` → 効かなければ `uhubctl` で Pico 2 のポートの給電を落とす
-- `harness` は小さな Python CLI として実装し、`prog` / `spi` / `gpio` / `uart` / `capture` / `compare` / `selftest` / `run` のサブコマンドを持たせる
+- `harness` は小さな Python CLI として実装し、`pincheck` / `prog` / `spi` / `gpio` / `uart` / `capture` / `compare` / `selftest` / `run` のサブコマンドを持たせる。`prog` は内部で必ず `pincheck` を先に実行し、`--force` のような回避手段は用意しない
 
 ## その後の改善案
 
@@ -394,7 +485,8 @@ make hw-test
 機材を買う前に閉ループが回り始める順番:
 
 1. `ID` / `SCRATCH` / `FRAME_CRC` レジスタと `heartbeat` 出力を RTL に追加
-2. Pico 2 のファームウェアに `ping` / `spi` / `measure` を実装
-3. Linux ホストで USB デバイスを渡したコンテナから `openFPGALoader` と Pico 2 の両方が見えることを確認
-4. ホスト側に Python の `harness selftest` を実装
-5. `make render` の PNG から CRC を計算し、実機の `FRAME_CRC` と比較する `make hw-test` を作る
+2. `harness/pins.yaml` を書き、`harness pincheck` を実装する (実機がなくても `make bitstream` の成果物だけで試せる)
+3. Pico 2 のファームウェアに `ping` / `spi` / `measure` を実装し、ピン設定を `pins.yaml` から生成したヘッダに寄せる
+4. Linux ホストで USB デバイスを渡したコンテナから `openFPGALoader` と Pico 2 の両方が見えることを確認
+5. ホスト側に Python の `harness selftest` を実装
+6. `make render` の PNG から CRC を計算し、実機の `FRAME_CRC` と比較する `make hw-test` を作る
