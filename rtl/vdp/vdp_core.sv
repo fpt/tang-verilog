@@ -1,7 +1,10 @@
 // VDP コア (雛形)
 // 今はカラーバー + 市松模様の背景に、フレームごとに跳ね回る 32x32 の「スプライト」を描くだけ。
 // ここにタイルマップ / パターンテーブル / スプライト処理を積み上げていく想定。
-module vdp_core (
+module vdp_core #(
+    parameter int SCREEN_W = 640,
+    parameter int SCREEN_H = 480
+) (
     input  logic        clk,
     input  logic        rst,
     input  logic [10:0] x,
@@ -18,9 +21,8 @@ module vdp_core (
     output logic        hsync_o,
     output logic        vsync_o
 );
-    localparam int SCREEN_W = 640;
-    localparam int SCREEN_H = 480;
     localparam int SPR_SIZE = 32;
+    localparam int BAR_W    = SCREEN_W / 8;   // カラーバー 1 本の幅
 
     // --- スプライト位置の更新 (フレーム先頭で 1 回) ---
     logic [10:0] spr_x;
@@ -55,9 +57,9 @@ module vdp_core (
     // --- 背景 ---
     logic [23:0] bg;
     always_comb begin
-        if (y < 10'd240) begin
-            // 8 色カラーバー (80 ピクセル幅)
-            unique case (3'(x / 11'd80))
+        if (y < 10'(SCREEN_H / 2)) begin
+            // 8 色カラーバー (画面幅の 1/8 ずつ)
+            unique case (3'(x / 11'(BAR_W)))
                 3'd0:    bg = 24'hFFFFFF;
                 3'd1:    bg = 24'hFFFF00;
                 3'd2:    bg = 24'h00FFFF;
