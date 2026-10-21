@@ -62,6 +62,8 @@ make help
 | `make sim-tb_tmds_encoder` | テストベンチを 1 つだけ実行 |
 | `make render` | Verilator で映像出力を回し、各フレームを `build/render/frame_*.png` に保存 |
 | `make bitstream` | 合成 → 配置配線 → `build/top.fs` |
+| `make bitstream TARGET=lcd` | 40 ピン RGB LCD (800x480) に HDMI と同じテストパターンを出す → `build/top_lcd.fs` (`make prog TARGET=lcd` で書き込み) |
+| `make render TARGET=lcd` | LCD 版の映像を `build/render_lcd/frame_*.png` に保存 |
 | `make prog` / `make flash` | Tang Nano 20K の SRAM / Flash に書き込み |
 | `make fw` | RP2350 ファームウェアをビルド (`firmware/build/vdp_host.uf2`) |
 | `make shell` / `make shell-pico` | 各コンテナのシェルに入る |
@@ -96,13 +98,15 @@ rtl/
     video_timing.sv      640x480@60Hz のタイミング生成
     vdp_core.sv          VDP コアの雛形 (カラーバー + 市松模様 + 跳ね回る四角)
     tmds_encoder.sv      DVI の TMDS エンコーダ
-    vdp_video.sv         タイミング + コアをまとめたもの
+    vdp_video.sv         タイミング + コアをまとめたもの (MODE 0: 640x480 HDMI / 1: 800x480 LCD)
   gowin/                 Gowin のプリミティブを使う部分
     dvi_tx.sv            OSER10 + TLVDS_OBUF による DVI 送信
     top.sv               トップ (rPLL 126MHz → CLKDIV /5 → 25.2MHz)
+    top_lcd.sv           RGB LCD 版トップ (rPLL 33MHz、800x480)
     blackbox/            Gowin プリミティブのブラックボックス定義 (合成専用)
 constraints/
-  tangnano20k.cst        ピン配置
+  tangnano20k.cst        ピン配置 (HDMI)
+  tangnano20k_lcd.cst    ピン配置 (40 ピン RGB LCD)
 sim/
   tb_*.sv                テストベンチ (Icarus Verilog / Verilator)
   verilator/render_main.cpp  フレームを画像に書き出すシミュレータ
@@ -121,4 +125,5 @@ scripts/
 | HDMI CLK / D0 / D1 / D2 (P,N) | 33,34 / 35,36 / 37,38 / 39,40 |
 
 - デバイス: `GW2AR-LV18QN88C8/I7` (nextpnr の family は `GW2A-18C`)
+- 40 ピン RGB LCD の R/G 信号の一部 (33〜40) は HDMI と同じピンなので、HDMI と LCD は同時には使えません (別の `TARGET`)
 - ピクセルクロックは 25.2MHz で、規格値の 25.175MHz からわずかにずれています (たいていのモニタは問題なく表示します)

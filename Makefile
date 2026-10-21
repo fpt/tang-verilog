@@ -9,11 +9,26 @@ FPGA       := $(DOCKER_RUN) $(FPGA_IMAGE)
 PICO       := $(DOCKER_RUN) $(PICO_IMAGE)
 
 # --- FPGA ---
-TOP      := top
+# TARGET でビルドするトップを選ぶ (HDMI と 40 ピン LCD はピンを共用しているので別のビットストリームにする)
+# VIDEO_MODE は make render で使う vdp_video の MODE (0: 640x480, 1: 800x480)
+TARGET   ?= hdmi                # hdmi | lcd
+ifeq ($(strip $(TARGET)),hdmi)
+TOP        := top
+CST        := constraints/tangnano20k.cst
+VIDEO_MODE := 0
+RENDER_DIR := build/render
+else ifeq ($(strip $(TARGET)),lcd)
+TOP        := top_lcd
+CST        := constraints/tangnano20k_lcd.cst
+VIDEO_MODE := 1
+RENDER_DIR := build/render_lcd
+else
+$(error TARGET=$(strip $(TARGET)) は未対応です (hdmi | lcd))
+endif
+
 DEVICE   := GW2AR-LV18QN88C8/I7
 FAMILY   := GW2A-18C
 BOARD    := tangnano20k
-CST      := constraints/tangnano20k.cst
 
 VDP_SRC   := $(wildcard rtl/vdp/*.sv)
 GOWIN_SRC := $(wildcard rtl/gowin/*.sv)
@@ -37,8 +52,8 @@ help:
 	@echo "make lint        Verilator で RTL を lint"
 	@echo "make sim         テストベンチを全部実行 (SIM=iverilog|verilator, VCD は build/sim/)"
 	@echo "make sim-<tb>    個別テストベンチ実行 (例: make sim-tb_tmds_encoder)"
-	@echo "make render      Verilator で映像出力を PNG 化 (build/render/, FRAMES=$(FRAMES))"
-	@echo "make bitstream   合成 -> 配置配線 -> $(BUILD)/$(TOP).fs"
+	@echo "make render      Verilator で映像出力を PNG 化 ($(RENDER_DIR)/, FRAMES=$(FRAMES), TARGET=lcd で 800x480)"
+	@echo "make bitstream   合成 -> 配置配線 -> $(BUILD)/$(TOP).fs (TARGET=hdmi|lcd)"
 	@echo "make prog        SRAM に書き込み (ホストの openFPGALoader が必要)"
 	@echo "make flash       Flash に書き込み (同上)"
 	@echo "make fw          RP2350 ファームウェアをビルド (firmware/build/*.uf2)"
@@ -69,12 +84,13 @@ image-fpga: certs.pem
 image-pico: certs.pem
 	docker build --secret id=ca_cert,src=certs.pem -t $(PICO_IMAGE) docker/pico
 
-$(BUILD)/sim $(BUILD)/render:
+$(BUILD)/sim $(RENDER_DIR):
 	@mkdir -p $@
 
 # ---------------------------------------------------------------- 検証
 lint:
-	$(FPGA) verilator --lint-only -Wall --top-module vdp_video $(VDP_SRC)
+	$(FPGA) verilator --lint-only -Wall --top-module vdp_video -GMODE=0 $(VDP_SRC)
+	$(FPGA) verilator --lint-only -Wall --top-module vdp_video -GMODE=1 $(VDP_SRC)
 
 sim: $(addprefix sim-,$(TBS))
 
@@ -88,13 +104,13 @@ else
 	$(FPGA) vvp -n $(BUILD)/sim/$*.vvp
 endif
 
-render: | $(BUILD)/render
+render: | $(RENDER_DIR)
 	$(FPGA) verilator --cc --exe --build -j 0 -O2 -Wno-fatal \
-		--top-module vdp_video -Mdir $(BUILD)/render/obj -o render \
+		--top-module vdp_video -GMODE=$(VIDEO_MODE) -Mdir $(RENDER_DIR)/obj -o render \
 		$(VDP_SRC) sim/verilator/render_main.cpp
-	$(FPGA) $(BUILD)/render/obj/render $(BUILD)/render $(FRAMES)
-	$(FPGA) python3 scripts/ppm2png.py $(BUILD)/render/*.ppm
-	@rm -f $(BUILD)/render/*.ppm
+	$(FPGA) $(RENDER_DIR)/obj/render $(RENDER_DIR) $(FRAMES)
+	$(FPGA) python3 scripts/ppm2png.py $(RENDER_DIR)/*.ppm
+	@rm -f $(RENDER_DIR)/*.ppm
 
 # ---------------------------------------------------------------- 実装
 synth: $(BUILD)/$(TOP).json
@@ -104,18 +120,18 @@ bitstream: $(BUILD)/$(TOP).fs
 # SystemVerilog は yosys-slang プラグイン (read_slang) で読む
 $(BUILD)/$(TOP).json: $(SYN_SRC) $(GOWIN_BB)
 	@mkdir -p $(BUILD)
-	$(FPGA) yosys -m slang -q -l $(BUILD)/yosys.log \
+	$(FPGA) yosys -m slang -q -l $(BUILD)/$(TOP)_yosys.log \
 		-p "read_slang --top $(TOP) $(SYN_SRC) $(GOWIN_BB); synth_gowin -family gw2a -top $(TOP) -json $@"
 
 $(BUILD)/$(TOP)_pnr.json: $(BUILD)/$(TOP).json $(CST)
-	$(FPGA) nextpnr-himbaechel -q -l $(BUILD)/nextpnr.log \
+	$(FPGA) nextpnr-himbaechel -q -l $(BUILD)/$(TOP)_nextpnr.log \
 		--json $< --write $@ --device $(DEVICE) \
 		--vopt family=$(FAMILY) --vopt cst=$(CST)
 
 $(BUILD)/$(TOP).fs: $(BUILD)/$(TOP)_pnr.json
 	$(FPGA) gowin_pack -d $(FAMILY) -o $@ $<
-	@grep -A30 'Device utilisation' $(BUILD)/nextpnr.log | grep -E 'LUT|DFF|BSRAM|PLL|OSER|IOB' || true
-	@grep -E 'Max frequency' $(BUILD)/nextpnr.log | tail -n 4 || true
+	@grep -A30 'Device utilisation' $(BUILD)/$(TOP)_nextpnr.log | grep -E 'LUT|DFF|BSRAM|PLL|OSER|IOB' || true
+	@grep -E 'Max frequency' $(BUILD)/$(TOP)_nextpnr.log | tail -n 4 || true
 
 # Docker Desktop (macOS) のコンテナからは USB が見えないので書き込みだけはホストで行う
 prog: $(BUILD)/$(TOP).fs
