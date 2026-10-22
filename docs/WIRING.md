@@ -91,21 +91,22 @@ Tang Nano 20K のヘッダ (USB-C を上にして、部品面から見た並び)
 | モード | Mode 0 (CPOL=0, CPHA=0) |
 | ビット順 | MSB first |
 | ワード長 | 8 bit |
-| クロック | 最初は 1 MHz。動作確認後に上げる |
+| クロック | 1〜8 MHz (ハーネスで 1 / 4 / 8MHz を確認済み) |
 
-FPGA 側は SCK をシステムクロック (ピクセルクロック 25.2 MHz) でサンプリングしてエッジを検出する想定なので、
-SCK の上限はシステムクロックの 1/4 程度 (約 6 MHz) です。`firmware/main.c` は今 10 MHz に設定しているので、
-SPI スレーブを実装するときに下げてください。
+FPGA 側は SCK をシステムクロック (63MHz) でサンプリングしてエッジを検出するので、SCK の上限は 10MHz 程度です。
+`firmware/main.c` は今 10 MHz に設定しているので、使うときは 8MHz 以下に下げてください。
 
-トランザクションの形式 (案):
+トランザクションの形式 ([`rtl/vdp/spi_slave.sv`](../rtl/vdp/spi_slave.sv) で実装済み):
 
 ```text
-書き込み: CS↑  [0x00 | addr(7bit)] [data] ... CS↓
-読み出し: CS↑  [0x80 | addr(7bit)] [dummy → data] CS↓
+書き込み: CS↑  [0x00 | addr(7bit)] [data] [data] ... CS↓        CIPO: [0xA5] [00] ...
+読み出し: CS↑  [0x80 | addr(7bit)] [xx]   [xx]   ... CS↓        CIPO: [0xA5] [reg[addr]] [reg[addr+1]] ...
 ```
 
-先頭バイトの最上位ビットで読み書きを区別し、残り 7 bit がレジスタアドレスです ([ARCHITECTURE.md](ARCHITECTURE.md) のレジスタマップ)。
-`VRAM_DATA` への連続書き込みは、CS を上げたままデータバイトを続けて送るとアドレスが自動インクリメントされる想定です。
+- 先頭バイトの最上位ビットで読み書きを区別し、残り 7 bit がレジスタアドレス ([`rtl/vdp/vdp_regs.sv`](../rtl/vdp/vdp_regs.sv) のレジスタマップ)
+- 2 バイト目以降は、CS を上げたまま続けるとアドレスが 1 ずつ進む
+- 1 バイト目の間、CIPO には同期確認用の `0xA5` が出る。ホストはこれで配線と同期を確かめる
+- CS がバイトの途中で下がると `STATUS` のエラービットが立ち、ERROR ピンが High になる (`STATUS` を読むとクリア)
 
 ## 制約ファイルに足す内容
 

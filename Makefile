@@ -107,6 +107,8 @@ $(BUILD)/sim $(RENDER_DIR):
 lint:
 	$(FPGA) verilator --lint-only -Wall --top-module vdp_video -GMODE=0 $(VDP_SRC)
 	$(FPGA) verilator --lint-only -Wall --top-module vdp_video -GMODE=1 $(VDP_SRC)
+	$(FPGA) verilator --lint-only -Wall --top-module spi_slave $(VDP_SRC)
+	$(FPGA) verilator --lint-only -Wall --top-module vdp_regs $(VDP_SRC)
 
 sim: $(addprefix sim-,$(TBS))
 

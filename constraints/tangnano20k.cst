@@ -37,3 +37,23 @@ IO_LOC  "tmds_d_p[2]" 39;
 IO_PORT "tmds_d_p[2]" IO_TYPE=LVDS25 PULL_MODE=NONE;
 IO_LOC  "tmds_d_n[2]" 40;
 IO_PORT "tmds_d_n[2]" IO_TYPE=LVDS25 PULL_MODE=NONE;
+
+// ハーネス (docs/HARNESS.md, harness/pins.json)。RP2 -> FPGA の線は入力専用で、正論理なのでプルダウン
+IO_LOC  "spi_sck"   73;
+IO_PORT "spi_sck"   IO_TYPE=LVCMOS33 PULL_MODE=DOWN;
+IO_LOC  "spi_copi"  74;
+IO_PORT "spi_copi"  IO_TYPE=LVCMOS33 PULL_MODE=DOWN;
+IO_LOC  "spi_cs"    72;
+IO_PORT "spi_cs"    IO_TYPE=LVCMOS33 PULL_MODE=DOWN;
+IO_LOC  "rst_in"    86;
+IO_PORT "rst_in"    IO_TYPE=LVCMOS33 PULL_MODE=DOWN;
+IO_LOC  "spi_cipo"  75;
+IO_PORT "spi_cipo"  IO_TYPE=LVCMOS33 PULL_MODE=NONE DRIVE=8;
+IO_LOC  "vdp_irq"   71;
+IO_PORT "vdp_irq"   IO_TYPE=LVCMOS33 PULL_MODE=NONE DRIVE=8;
+IO_LOC  "vsync_out" 42;
+IO_PORT "vsync_out" IO_TYPE=LVCMOS33 PULL_MODE=NONE DRIVE=8;
+IO_LOC  "heartbeat" 41;
+IO_PORT "heartbeat" IO_TYPE=LVCMOS33 PULL_MODE=NONE DRIVE=8;
+IO_LOC  "error_out" 48;
+IO_PORT "error_out" IO_TYPE=LVCMOS33 PULL_MODE=NONE DRIVE=8;

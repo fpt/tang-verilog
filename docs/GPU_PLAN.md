@@ -129,6 +129,8 @@ MS2109 は YUV (4:2:2、リミテッドレンジ) を通るので、色が少し
 - M2 で既知のパターンを取り込み、チャンネルごとの補正 (オフセットと倍率) を求めておく
 - 比較は 2 倍拡大を戻した 320x240 で行い、「補正後の差が閾値以内のピクセルが 99% 以上」を合格にする。差分 PNG も出す
 - 取り込みサイズは 640x480 を指定してみて、だめなら 1920x1080 から縮小する
+- キャプチャデバイスは番号ではなく名前 (`-i "USB3. 0 capture:none"`) で選ぶ。番号は一覧と実際に開くときで変わることがあり、別のカメラを開いてしまった
+- 1920x1080 (uyvy422) で取り込み、`-vf scale=640:480 -f rawvideo -pix_fmt rgb24` で生データにすると PNG の読み書きなしで比べられる (M1 で確認)
 
 ## マイルストーン
 
@@ -137,7 +139,7 @@ MS2109 は YUV (4:2:2、リミテッドレンジ) を通るので、色が少し
 | # | 内容 | 完了条件 |
 | --- | --- | --- |
 | M0 ✅ | ブリッジファームウェアとホストツール。ハーネスの線の極性変更 | `harness status` が読める。`harness_probe` を入れて `wiretest` が通る。ready でないとき `spi` が何も駆動しない |
-| M1 | SPI スレーブ + レジスタ (`ID` `VERSION` `SCRATCH` `STATUS` `CONTROL` `FRAME_COUNT`)、HEARTBEAT・VSYNC・IRQ の出力。今の HDMI テストパターンに載せる | `harness selftest` が通る。SCRATCH の往復 10,000 回が 1 / 4 / 8MHz でエラー 0 |
+| M1 ✅ | SPI スレーブ + レジスタ (`ID` `VERSION` `SCRATCH` `STATUS` `CONTROL` `FRAME_COUNT`)、HEARTBEAT・VSYNC・IRQ の出力。今の HDMI テストパターンに載せる | `harness selftest` が通る。SCRATCH の往復 10,000 回が 1 / 4 / 8MHz でエラー 0 |
 | M2 | `FRAME_CRC`、`CONTROL` のアニメーション停止、キャプチャ比較の仕組み | テストパターンで Verilator の CRC と実機の `FRAME_CRC` が一致。キャプチャが補正後に 99% 一致 |
 | M3 | **SDRAM**: 制約 (内部 I/O 位置)、コントローラ (初期化・リフレッシュ・バースト)、FPGA 内のメモリテスト (BIST) とレジスタ経由の読み書き | 8MiB 全域の BIST (walking-ones・アドレス書き込み・乱数) が 10 回連続で通る。SPI 経由の読み書きも一致 |
 | M4 | フレームバッファ表示: SDRAM → ライン バッファ → DVI (320x240 を 2 倍)。`UPLOAD` で画像を書き込む | ホストから送った画像が `FRAME_CRC` 一致・キャプチャ一致。`UNDERFLOW_COUNT` が 0 |
