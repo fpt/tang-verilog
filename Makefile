@@ -51,7 +51,7 @@ HARNESS_PINS     := harness/pins.json
 HARNESS_BOARD    ?= waveshare_rp2040_zero
 HARNESS_PLATFORM ?= rp2040
 HARNESS_FW_BUILD := harness/firmware/build
-HARNESS_UF2      := $(HARNESS_FW_BUILD)/harness_probe.uf2
+HARNESS_UF2      := $(HARNESS_FW_BUILD)/harness_bridge.uf2
 RP2_MOUNT         = $(firstword $(wildcard /Volumes/RPI-RP2 /Volumes/RP2350 /media/*/RPI-RP2 /media/*/RP2350))
 
 # --- RP2350 ---
@@ -70,7 +70,7 @@ help:
 	@echo "make pincheck    ハーネスが駆動するピンを FPGA が駆動しないか検査 (prog / flash の前に自動で実行)"
 	@echo "make prog        SRAM に書き込み (ホストの openFPGALoader が必要)"
 	@echo "make flash       Flash に書き込み (同上)"
-	@echo "make harness-fw  ハーネスの配線テスト用 RP2 ファームウェア (HARNESS_BOARD=$(HARNESS_BOARD))"
+	@echo "make harness-fw  ハーネスの RP2 ブリッジファームウェア (HARNESS_BOARD=$(HARNESS_BOARD))"
 	@echo "make harness-deploy  BOOTSEL の RP2 に書き込む (ホストで実行)"
 	@echo "make fw          RP2350 ファームウェアをビルド (firmware/build/*.uf2)"
 	@echo "make shell       FPGA ツールコンテナのシェル"
