@@ -415,6 +415,15 @@ python3 tools/harness/harness.py prog hdmi       # make prog TARGET=hdmi (pinche
 | `wiretest` | 配線テスト (下記) |
 | `bootsel` | BOOTSEL モードで再起動する |
 
+ホストツールだけのコマンド (ブリッジの `spi` を使う):
+
+| コマンド | 内容 |
+| --- | --- |
+| `reg read <reg> [n]` | レジスタを読む (`<reg>` は `ID` のような名前か `0x7e` のような番地) |
+| `reg write <reg> <hex>` | レジスタに書く |
+| `selftest [--iterations N]` | 下記 |
+| `prog <target>` | `make prog TARGET=<target>` |
+
 - 出力は 1 つの JSON。`"ok"` が true でなければ終了コード 1
 - **ready**: HEARTBEAT が直近 100ms 以内に立ち上がっていること。FPGA の書き込み中や、HEARTBEAT を出さない設計 (今の HDMI など) では `spi` を拒否する
 - ハーネスのピンは、駆動するとき以外は常に入力 + プルダウン。SPI 線もトランザクションの間だけ SPI 機能にする
@@ -442,6 +451,11 @@ python3 tools/harness/harness.py wiretest
 ### `harness selftest`
 
 エージェントが最初に呼ぶ 1 コマンドです。各項目を pass/fail の JSON で返し、失敗した段階で止めます。
+
+**実装済み (M1)**: `python3 tools/harness/harness.py selftest [--iterations N]`。FPGA に設計 (今は `hdmi`) が入っている前提で、
+ブリッジの ping → ready → HEARTBEAT 30Hz・VSYNC 60Hz (ブリッジの時計で測る) → `ID` → `FRAME_COUNT` →
+`SCRATCH` の往復 (1 / 4 / 8MHz、各 N 回) → IRQ → RESET の順に確かめます。`--iterations 10000` で 26 秒ほど。
+書き込み (`prog`) と UART のバナーはまだ含みません。下の表は最終的な形です。
 
 | # | 項目 | 担当 | 失敗したときの意味 |
 | --- | --- | --- | --- |
