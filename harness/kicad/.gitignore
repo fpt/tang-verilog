@@ -1,0 +1,35 @@
+
+## User/Local
+*.kicad_prl
+*.lck
+
+## Backup
+*-bak
+*.bak
+
+## Autosave/temp
+*.tmp
+*.cache
+*.autosave
+*.dsn
+*.ses
+/.history/
+
+## Netlists/Exports
+*.net
+*.xml
+*.csv
+
+## Plot outputs
+/plot/
+/garber/
+*.gbr
+*.drl
+*.zip
+
+## Simulation
+*.raw
+
+## OS
+.DS_Store
+Thumbs.db
