@@ -2,6 +2,7 @@
 //   27MHz -> rPLL 126MHz (シリアル) -> CLKDIV /5 -> 25.2MHz (ピクセル)
 //                                   -> rPLL CLKOUTD /2 -> 63MHz (システム: SPI スレーブとレジスタ)
 //   ハーネス (docs/HARNESS.md, harness/pins.json) の線もここで出す
+//   パッケージ内 SDRAM は 63MHz で動かし、SDRAM のクロックは逆相 (ODDR) で出す
 module top (
     input  logic       clk,          // 27MHz
     input  logic       btn_s1,       // リセット (押下で 1)
@@ -20,7 +21,18 @@ module top (
     output logic       vdp_irq,
     output logic       vsync_out,
     output logic       heartbeat,
-    output logic       error_out
+    output logic       error_out,
+    // パッケージ内 SDRAM
+    output logic        O_sdram_clk,
+    output logic        O_sdram_cke,
+    output logic        O_sdram_cs_n,
+    output logic        O_sdram_ras_n,
+    output logic        O_sdram_cas_n,
+    output logic        O_sdram_wen_n,
+    output logic [1:0]  O_sdram_ba,
+    output logic [10:0] O_sdram_addr,
+    output logic [3:0]  O_sdram_dqm,
+    inout  wire  [31:0] IO_sdram_dq
 );
     // --- クロック生成 ---
     logic clk_ser, clk_pix, clk_sys, pll_lock;
@@ -92,8 +104,13 @@ module top (
 
     // --- SPI スレーブとレジスタ (システムクロック) ---
     logic [6:0] reg_addr;
-    logic [7:0] reg_wdata, reg_rdata, control;
+    logic [7:0] reg_wdata, reg_rdata, vdp_rdata, mem_rdata, control;
     logic       reg_we, reg_re, spi_frame_error;
+
+    // 0x10..0x2F は SDRAM のテスト (mem_test)、それ以外は vdp_regs
+    logic sel_mem;
+    assign sel_mem   = reg_addr >= 7'h10 && reg_addr <= 7'h2F;
+    assign reg_rdata = sel_mem ? mem_rdata : vdp_rdata;
 
     spi_slave u_spi (
         .clk(clk_sys), .rst(rst_sys),
@@ -104,10 +121,39 @@ module top (
 
     vdp_regs u_regs (
         .clk(clk_sys), .rst(rst_sys),
-        .addr(reg_addr), .wdata(reg_wdata), .we(reg_we), .re(reg_re), .rdata(reg_rdata),
+        .addr(reg_addr), .wdata(reg_wdata), .we(reg_we && !sel_mem), .re(reg_re && !sel_mem), .rdata(vdp_rdata),
         .vblank_async(vblank), .frame_toggle_async(heartbeat),
         .error_event(spi_frame_error),
         .control, .irq(vdp_irq), .error(error_out)
+    );
+
+    // --- パッケージ内 SDRAM ---
+    logic        mem_req, mem_we, mem_ack, mem_init_done, sdram_dq_oe;
+    logic [20:0] mem_addr;
+    logic [31:0] mem_wdata, mem_rdata32, sdram_dq_out;
+    logic [2:0]  rd_sample;
+
+    mem_test u_mem_test (
+        .clk(clk_sys), .rst(rst_sys),
+        .addr(reg_addr), .wdata(reg_wdata), .we(reg_we && sel_mem), .rdata(mem_rdata),
+        .mem_req, .mem_we, .mem_addr, .mem_wdata, .mem_ack, .mem_rdata(mem_rdata32),
+        .mem_init_done, .rd_sample
+    );
+
+    sdram_ctrl #(.CLK_HZ(63_000_000)) u_sdram (
+        .clk(clk_sys), .rst(rst_sys),
+        .req(mem_req), .we(mem_we), .addr(mem_addr), .wdata(mem_wdata), .ack(mem_ack), .rdata(mem_rdata32),
+        .init_done(mem_init_done), .rd_sample,
+        .sdram_cke(O_sdram_cke), .sdram_cs_n(O_sdram_cs_n), .sdram_ras_n(O_sdram_ras_n),
+        .sdram_cas_n(O_sdram_cas_n), .sdram_we_n(O_sdram_wen_n), .sdram_ba(O_sdram_ba),
+        .sdram_addr(O_sdram_addr), .sdram_dqm(O_sdram_dqm),
+        .sdram_dq_out, .sdram_dq_oe, .sdram_dq_in(IO_sdram_dq)
+    );
+    assign IO_sdram_dq = sdram_dq_oe ? sdram_dq_out : 'z;
+
+    // SDRAM のクロック: 立ち上がりで 0、立ち下がりで 1 を出す = clk_sys の逆相
+    ODDR u_sdram_clk (
+        .D0(1'b0), .D1(1'b1), .TX(1'b0), .CLK(clk_sys), .Q0(O_sdram_clk), .Q1()
     );
 
     // --- 動作確認用 LED (約 1.5Hz で流れる) ---

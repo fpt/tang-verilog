@@ -41,6 +41,7 @@ GOWIN_BB  := $(wildcard rtl/gowin/blackbox/*.sv)   # 合成専用のプリミテ
 SYN_SRC   := $(VDP_SRC) $(GOWIN_SRC)
 
 TBS      := $(basename $(notdir $(wildcard sim/tb_*.sv)))
+SIM_LIB  := $(filter-out sim/tb_%.sv,$(wildcard sim/*.sv))   # テストベンチが使うモデル (sdram_model など)
 SIM      ?= iverilog            # iverilog | verilator
 FRAMES   ?= 3
 
@@ -109,16 +110,18 @@ lint:
 	$(FPGA) verilator --lint-only -Wall --top-module vdp_video -GMODE=1 $(VDP_SRC)
 	$(FPGA) verilator --lint-only -Wall --top-module spi_slave $(VDP_SRC)
 	$(FPGA) verilator --lint-only -Wall --top-module vdp_regs $(VDP_SRC)
+	$(FPGA) verilator --lint-only -Wall --top-module sdram_ctrl $(VDP_SRC)
+	$(FPGA) verilator --lint-only -Wall --top-module mem_test $(VDP_SRC)
 
 sim: $(addprefix sim-,$(TBS))
 
-$(addprefix sim-,$(TBS)): sim-%: sim/%.sv $(VDP_SRC) | $(BUILD)/sim
+$(addprefix sim-,$(TBS)): sim-%: sim/%.sv $(VDP_SRC) $(SIM_LIB) | $(BUILD)/sim
 ifeq ($(strip $(SIM)),verilator)
 	$(FPGA) verilator --binary --timing -Wno-fatal -Wno-lint -Wno-style \
-		--top-module $* -Mdir $(BUILD)/sim/obj_$* -o $* $< $(VDP_SRC)
+		--top-module $* -Mdir $(BUILD)/sim/obj_$* -o $* $< $(VDP_SRC) $(SIM_LIB)
 	$(FPGA) $(BUILD)/sim/obj_$*/$*
 else
-	$(FPGA) iverilog -g2012 -Wall -Wno-timescale -o $(BUILD)/sim/$*.vvp -s $* $< $(VDP_SRC)
+	$(FPGA) iverilog -g2012 -Wall -Wno-timescale -o $(BUILD)/sim/$*.vvp -s $* $< $(VDP_SRC) $(SIM_LIB)
 	$(FPGA) vvp -n $(BUILD)/sim/$*.vvp
 endif
 

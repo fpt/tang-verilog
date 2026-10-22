@@ -63,3 +63,14 @@ module TLVDS_OBUF (
     output O, OB
 );
 endmodule
+
+// DDR 出力レジスタ。D0 を CLK の立ち上がりで、D1 を立ち下がりで出す (SDRAM のクロック出力に使う)
+(* blackbox *)
+module ODDR #(
+    parameter TXCLK_POL = 0,
+    parameter INIT      = 0
+) (
+    input  D0, D1, TX, CLK,
+    output Q0, Q1
+);
+endmodule

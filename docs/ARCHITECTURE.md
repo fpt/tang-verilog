@@ -1,143 +1,81 @@
 # アーキテクチャ
 
-Tang Nano 20K を VDP 本体、RP2350 をホスト CPU とする構成の設計方針をまとめます。
-現状は FPGA 単体で 640x480@60Hz の DVI 出力 (テストパターン) が出るところまでで、RP2350 はまだつながっていません。
+Tang Nano 20K を VDP (小さな GPU) 本体、RP2 (RP2350 / RP2040) をホスト CPU とする構成の設計方針と、今の実装の姿をまとめます。
+開発の段階と今後の予定は [GPU_PLAN.md](GPU_PLAN.md)、ハーネス (検証用の RP2 + HDMI キャプチャ) は [HARNESS.md](HARNESS.md) を参照してください。
 
 ## 方針
 
 1. **通信方式より先に「CPU から VDP がどう見えるか」(レジスタインターフェース) を決める**
 2. **SPI 受信ロジックと VDP 本体を直接結びつけない。** SPI は「レジスタバスへの変換器」として扱う
-3. **フレームバッファを持たない。** タイルマップ・パターン・パレット・スプライトを FPGA 内部 RAM に置き、走査しながらピクセルを生成する
-4. **高速な処理は FPGA 内に閉じ込め、外部との境界は低速にする。** RP2350 は描画せず、コマンドを送るだけ
+3. **パッケージ内 SDRAM にフレームバッファを置き、コマンドで描く。** 図形・スプライト・背景を GPU が SDRAM に描き、表示回路が読み出して出す
+   (当初はフレームバッファを持たないタイル方式の予定だったが、M3 で SDRAM がオープンソースのツールで使えると確かめたので切り替えた)
+4. **高速な処理は FPGA 内に閉じ込め、外部との境界は低速にする。** RP2 は描画せず、コマンドを送るだけ
 
-## 全体像 (最終形)
+## 全体像
 
 ```text
-RP2350
-  │
-  │「文字 A を (10,5) に置け」
-  │「sprite #3 を x=120, y=80 へ」
-  ▼
- SPI
-  ▼
-┌─────────────────────────┐
-│ FPGA VDP                │
-│                         │
-│ register file           │
-│ tile map RAM            │
-│ pattern RAM             │
-│ sprite engine           │
-│ palette                 │
-│ scanline renderer       │
-│ HDMI timing / TMDS      │
-└─────────────────────────┘
-            │
-            ▼
-          HDMI
+RP2 ──SPI──► spi_slave ──► register bus ──┬─► vdp_regs   (ID, STATUS, CONTROL, FRAME_COUNT, SCRATCH)   ✅ M1
+                                          ├─► mem_test   (SDRAM の BIST と 1 ワード読み書き)          ✅ M3
+                                          └─► command FIFO → GPU core (clear / rect / line / blit / tilemap)  M5〜
+                                                                │
+                                         sdram_ctrl ◄── arbiter ┘◄── line buffer ◄── 表示 (320x240 → 640x480)  M4
+                                              │
+                                     パッケージ内 SDRAM 8MiB
 ```
+
+今の HDMI 用ビットストリーム (`make bitstream`) には、映像 (カラーバーのテストパターン)・SPI スレーブ・レジスタ・SDRAM のテストが入っています。
+
+## クロック
+
+| クロック | 周波数 | 作り方 | 中身 |
+| --- | --- | --- | --- |
+| `clk_ser` | 126MHz | rPLL | DVI のシリアライザ (OSER10) |
+| `clk_pix` | 25.2MHz | CLKDIV /5 | 表示タイミング、テストパターン、DVI |
+| `clk_sys` | 63MHz | rPLL の CLKOUTD /2 | SPI スレーブ、レジスタ、SDRAM コントローラ (GPU もここ) |
+| SDRAM クロック | 63MHz | `clk_sys` の逆相 (ODDR) | パッケージ内 SDRAM |
+
+`clk_pix` と `clk_sys` の間は非同期として扱い、同期化 (2 段の FF、トグル) だけでまたぎます。
 
 ## レジスタバス
 
 VDP 本体は「レジスタバス」だけを外部に見せます。バスを駆動する側 (マスタ) は差し替え可能にします。
+SPI を UART や別の MCU に変えても VDP 側は触らずに済み、`rtl/vdp/` はベンダ非依存なので他の FPGA にも持っていけます。
 
-```text
-                  ┌─ internal test master (FPGA 内のテストロジック)
-                  │
-                  ▼
-             register bus
-                  │
-SPI slave ────────┤
-                  │
-                  ▼
-                 VDP
-```
-
-こうしておくと、SPI を UART や別の MCU に変えても VDP 側は触らずに済み、
-将来 iCE40 や自作基板に移植するときも `rtl/vdp/` をそのまま持っていけます。
-
-バスはピクセルクロック側の 1 クロックドメインで動く単純な同期バスにする想定です (信号名は仮):
+バスは `clk_sys` の単純な同期バスです ([`rtl/vdp/spi_slave.sv`](../rtl/vdp/spi_slave.sv) が駆動する):
 
 | 信号 | 向き (VDP から見て) | 内容 |
 | --- | --- | --- |
-| `reg_addr[7:0]` | in | レジスタアドレス |
+| `reg_addr[6:0]` | in | レジスタアドレス |
 | `reg_wdata[7:0]` | in | 書き込みデータ |
 | `reg_we` | in | 1 クロックのパルスで書き込み |
-| `reg_re` | in | 1 クロックのパルスで読み出し (`VRAM_DATA` の自動インクリメント用) |
-| `reg_rdata[7:0]` | out | 読み出しデータ |
-| `irq` | out | VBLANK などの割り込み要求 |
+| `reg_re` | in | 読み出した値を取り込んだとき 1 クロック (読むとクリアされるレジスタ用) |
+| `reg_rdata[7:0]` | out | `reg_addr` の値 (組み合わせ回路) |
 
-SPI スレーブなど別クロック (SCK) で動くものは、マスタ側でクロックドメインをまたいでからこのバスを駆動します。
-VDP 本体に非同期な信号は入れません。
+SPI のトランザクションの形式 (同期バイト `0xA5`、アドレスの自動インクリメント) は [WIRING.md](WIRING.md) にあります。
 
-## レジスタマップ (初版の案)
+## レジスタマップ
 
-最初はこの程度で十分です。必要になったら足していきます。
+| アドレス | 名前 | 内容 | 実装 |
+| --- | --- | --- | --- |
+| `0x00` | `STATUS` | bit0: VBLANK 中, bit1: エラー (読むとクリア) | `vdp_regs` |
+| `0x01` | `CONTROL` | bit2: IRQ 許可 (IRQ = VBLANK 中)。bit0, 1 は予約 (表示 ON, アニメーション停止) | `vdp_regs` |
+| `0x04` | `FRAME_COUNT` | フレームカウンタの下位 8bit | `vdp_regs` |
+| `0x10`〜`0x2F` | `MEM_*` | SDRAM の BIST と 1 ワード読み書き ([`mem_test.sv`](../rtl/vdp/mem_test.sv) の先頭に一覧) | `mem_test` |
+| `0x7D` | `SCRATCH` | 書いた値がそのまま読める | `vdp_regs` |
+| `0x7E` | `ID` | `0x5A` | `vdp_regs` |
+| `0x7F` | `VERSION` | RTL の版 | `vdp_regs` |
 
-| アドレス | 名前 | 内容 |
-| --- | --- | --- |
-| `0x00` | `STATUS` | VBLANK 中フラグ、割り込み要因など (読み出し) |
-| `0x01` | `CONTROL` | 表示 ON/OFF、割り込み許可など |
-| `0x02` | `BORDER_COLOR` | ボーダー色 |
-| `0x03` | `BG_COLOR` | 背景色 |
-| `0x10` | `VRAM_ADDR_L` | VRAM アドレス下位 |
-| `0x11` | `VRAM_ADDR_H` | VRAM アドレス上位 |
-| `0x12` | `VRAM_DATA` | VRAM データ。読み書きのたびにアドレスを自動インクリメント |
-| `0x20` | `SPRITE_X` | スプライト X 座標 |
-| `0x21` | `SPRITE_Y` | スプライト Y 座標 |
-| `0x22` | `SPRITE_COLOR` | スプライト色 |
+`FRAME_CRC` (M2)、GPU のコマンド FIFO (M5) などは、空いているアドレスに足していきます。
 
-VRAM (タイルマップ・パターン・パレットなど) は `VRAM_ADDR` + `VRAM_DATA` 経由の間接アクセスにして、
-レジスタ空間を小さく保ちます。VRAM 内のメモリ配置はタイル描画を作るときに決めます。
+## SDRAM
 
-## 画面生成: タイル + スプライト
+GW2AR-18 のパッケージ内 SDRAM (64Mbit、2M ワード x 32bit、4 バンク x 2048 行 x 256 列) を使います。
 
-フレームバッファ方式とタイル方式のメモリ量の比較:
+- パッケージのピンではないので、cst の `IO_LOC` には apicula の [doc/sdram.md](https://github.com/YosysHQ/apicula/blob/master/doc/sdram.md) にある内部 I/O の名前 (`IOR11B` など) を書く。nextpnr-himbaechel と gowin_pack はこれでそのまま通る
+- コントローラ ([`sdram_ctrl.sv`](../rtl/vdp/sdram_ctrl.sv)) は今は 1 ワードずつ、CL2、オートプリチャージ付き。表示用のバースト読み出しは M4 で足す
+- 読み出しデータを取り込む位置は半周期単位で変えられる (`MEM_CFG`)。実機では 5〜7 で 8MiB 全域の BIST に合格し、既定は 6
+- ワードアドレスは `{行, バンク, 列}`。1 ライン (320 ピクセル x 16bit = 160 ワード) を 1 行 (256 ワード) に置くと、隣のラインは別のバンクになる
 
-| 方式 | 必要なメモリ |
-| --- | --- |
-| 640x480 RGB565 フレームバッファ | 約 600 KiB |
-| タイルマップ 40x30 (320x240 論理解像度、8x8 タイル) | 約 1〜2 KiB |
-| パターン 256 個 × 8x8 × 4bpp | 約 8 KiB |
-
-GW2AR-18 の BSRAM は 18 Kbit × 46 ブロック (約 100 KiB) なので、フレームバッファは内部 RAM に載りませんが、タイル方式なら余裕があります。
-外部 RAM も不要です。320x240 の論理画面を縦横 2 倍に拡大して 640x480 で出力します。
-
-```text
-tile map ─┐
-pattern ──┼─► scanline renderer ─► palette ─► TMDS ─► HDMI
-sprite ───┘         ▲
-                    │
-             video_timing (x, y)
-```
-
-## 進め方
-
-1. **レジスタインターフェースを定義する** (このドキュメントのレジスタマップを `rtl/vdp/` に実装)
-2. **FPGA 内のテストロジックをマスタにして動かす。** RP2350 の代わりに、テストロジックがレジスタを書いて画面が変わることを確認する
-
-   ```text
-   test logic
-       │
-       ▼
-   VDP register interface
-       │
-       ├── timing generator
-       ├── VRAM
-       ├── renderer
-       └── HDMI/DVI
-   ```
-
-3. **タイル描画・スプライトを足す。** `make render` で PNG を出して確認する
-4. **SPI スレーブに差し替える。** テストロジックを外し、同じレジスタバスを SPI スレーブから駆動する
-
-   ```text
-   RP2350
-      │ SPI
-      ▼
-   SPI slave
-      │
-      ▼
-   同じ VDP register interface
-   ```
+メモリ配置 (フレームバッファ 2 枚 + アセット) は [GPU_PLAN.md](GPU_PLAN.md) にあります。
 
 配線とピン割り当ては [WIRING.md](WIRING.md) を参照してください。

@@ -422,6 +422,8 @@ python3 tools/harness/harness.py prog hdmi       # make prog TARGET=hdmi (pinche
 | `reg read <reg> [n]` | レジスタを読む (`<reg>` は `ID` のような名前か `0x7e` のような番地) |
 | `reg write <reg> <hex>` | レジスタに書く |
 | `selftest [--iterations N]` | 下記 |
+| `memtest [--size N] [--samples 2,..,7] [--seed S]` | SDRAM の BIST を読み出しの取り込み位置ごとに実行 (`--size 21` で 8MiB 全域、1 回 1.2 秒) |
+| `mem read <addr> [n]` / `mem write <addr> <hex32>...` | SDRAM を 1 ワードずつ読み書き |
 | `prog <target>` | `make prog TARGET=<target>` |
 
 - 出力は 1 つの JSON。`"ok"` が true でなければ終了コード 1
