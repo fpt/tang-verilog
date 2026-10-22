@@ -15,6 +15,10 @@ usage: harness.py [--port PORT] <command> [args...]
   reg read <reg> [n]        レジスタを読む (<reg> は名前か 0x7e のような番地)
   reg write <reg> <hex>     レジスタに書く (複数バイトなら番地が 1 ずつ進む)
   selftest [--iterations N] HARNESS.md の selftest (FPGA に hdmi などの設計が入っている前提)
+  memtest [--size N] [--samples 2,3,..] [--seed S]
+                            SDRAM の BIST を読み出しの取り込み位置ごとに実行 (size はワード数の log2、既定 21 = 8MiB)
+  mem read <word_addr> [n]  SDRAM を 1 ワードずつ読む
+  mem write <word_addr> <hex32>...  SDRAM に書く
 
 出力は 1 つの JSON (標準出力)。"ok" が true でなければ終了コード 1。
 ポートは --port、環境変数 HARNESS_PORT、/dev/cu.usbmodem* / /dev/ttyACM* の順で探す。
@@ -41,6 +45,14 @@ REGS = {
     "ID": 0x7E,
     "VERSION": 0x7F,
 }
+# rtl/vdp/mem_test.sv (SDRAM のテスト)
+MEM = {
+    "CMD": 0x10, "CFG": 0x11, "STATUS": 0x12, "SIZE": 0x13, "SEED": 0x14,
+    "ERRORS": 0x18, "FAIL_ADDR": 0x1C, "FAIL_EXP": 0x20, "FAIL_GOT": 0x24, "ADDR": 0x28, "DATA": 0x2C,
+}
+MEM_CMD_BIST, MEM_CMD_READ, MEM_CMD_WRITE = 1, 2, 3
+MEM_ST_INIT, MEM_ST_BUSY, MEM_ST_DONE, MEM_ST_PASS = 0x01, 0x02, 0x04, 0x08
+REGS.update({f"MEM_{k}": v for k, v in MEM.items()})
 VDP_ID = 0x5A
 SYNC_BYTE = 0xA5            # spi_slave が 1 バイト目に返す値
 CONTROL_IRQ_EN = 0x04
@@ -125,6 +137,47 @@ class Vdp:
 
     def read1(self, addr):
         return self.read(addr)[0]
+
+    def read32(self, addr):
+        return int.from_bytes(self.read(addr, 4), "little")
+
+    def write32(self, addr, value):
+        self.write(addr, value.to_bytes(4, "little"))
+
+    def mem_wait(self, timeout):
+        deadline = time.monotonic() + timeout
+        while True:
+            st = self.read1(MEM["STATUS"])
+            if not st & MEM_ST_BUSY:
+                return st
+            if time.monotonic() > deadline:
+                raise HarnessError("SDRAM test timed out")
+            time.sleep(0.01)
+
+
+def memtest(bridge, size, samples, seed):
+    """SDRAM の BIST を取り込み位置 (rd_sample) ごとに実行する"""
+    vdp = Vdp(bridge)
+    st = vdp.read1(MEM["STATUS"])
+    if not st & MEM_ST_INIT:
+        return {"ok": False, "error": "SDRAM not initialized", "status": st}
+    runs = []
+    for h in samples:
+        vdp.write(MEM["CFG"], [h])
+        vdp.write(MEM["SIZE"], [size])
+        vdp.write(MEM["SEED"], [seed])
+        start = time.monotonic()
+        vdp.write(MEM["CMD"], [MEM_CMD_BIST])
+        st = vdp.mem_wait(timeout=30.0)
+        run = {"rd_sample": h, "pass": bool(st & MEM_ST_PASS), "errors": vdp.read32(MEM["ERRORS"]),
+               "seconds": round(time.monotonic() - start, 2)}
+        if not run["pass"]:
+            exp, got = vdp.read32(MEM["FAIL_EXP"]), vdp.read32(MEM["FAIL_GOT"])
+            run.update(first_fail_addr=f"0x{vdp.read32(MEM['FAIL_ADDR']):06x}", expected=f"0x{exp:08x}",
+                       got=f"0x{got:08x}", bad_bits=f"0x{exp ^ got:08x}")
+        runs.append(run)
+    passing = [r["rd_sample"] for r in runs if r["pass"]]
+    return {"ok": bool(passing), "words": 1 << size, "passing_rd_sample": passing, "runs": runs}
 
 
 def parse_reg(text):
@@ -222,6 +275,9 @@ def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--port")
     ap.add_argument("--iterations", type=int, default=1000, help="selftest: SCRATCH round trips per SPI speed")
+    ap.add_argument("--size", type=int, default=21, help="memtest: log2 of the number of words (1..21)")
+    ap.add_argument("--samples", default="2,3,4,5,6,7", help="memtest: rd_sample values to try")
+    ap.add_argument("--seed", type=int, default=0x3C, help="memtest: pattern seed (0..255)")
     ap.add_argument("command")
     ap.add_argument("args", nargs="*")
     a = ap.parse_args()
@@ -232,11 +288,32 @@ def main():
         # make の出力は標準エラーへ (標準出力は JSON だけにする)
         r = subprocess.run(["make", "prog", f"TARGET={a.args[0]}"], cwd=REPO, stdout=sys.stderr)
         result = {"ok": r.returncode == 0, "target": a.args[0]}
-    elif a.command in ("reg", "selftest"):
+    elif a.command in ("reg", "selftest", "memtest", "mem"):
         bridge = Bridge(find_port(a.port))
         try:
+            vdp = Vdp(bridge)
             if a.command == "selftest":
                 result = selftest(bridge, a.iterations)
+            elif a.command == "memtest":
+                samples = [int(x) for x in a.samples.split(",")]
+                result = memtest(bridge, a.size, samples, a.seed)
+            elif a.command == "mem" and len(a.args) >= 2 and a.args[0] == "read":
+                vdp.write32(MEM["ADDR"], int(a.args[1], 0))
+                words = []
+                for _ in range(int(a.args[2]) if len(a.args) > 2 else 1):
+                    vdp.write(MEM["CMD"], [MEM_CMD_READ])
+                    vdp.mem_wait(timeout=1.0)
+                    words.append(f"{vdp.read32(MEM['DATA']):08x}")
+                result = {"ok": True, "addr": a.args[1], "words": words}
+            elif a.command == "mem" and len(a.args) >= 3 and a.args[0] == "write":
+                vdp.write32(MEM["ADDR"], int(a.args[1], 0))
+                for w in a.args[2:]:
+                    vdp.write32(MEM["DATA"], int(w, 16))
+                    vdp.write(MEM["CMD"], [MEM_CMD_WRITE])
+                    vdp.mem_wait(timeout=1.0)
+                result = {"ok": True, "addr": a.args[1], "words": len(a.args) - 2}
+            elif a.command == "mem":
+                ap.error("mem read <word_addr> [n] | mem write <word_addr> <hex32>...")
             elif len(a.args) >= 2 and a.args[0] == "read":
                 addr = parse_reg(a.args[1])
                 n = int(a.args[2]) if len(a.args) > 2 else 1
