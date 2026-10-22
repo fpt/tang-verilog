@@ -48,7 +48,7 @@ module top_lcd (
     logic [7:0] r, g, b;
 
     vdp_video #(.MODE(1)) u_video (
-        .clk_pix, .rst, .freeze(1'b0), .r, .g, .b,
+        .clk_pix, .rst, .freeze(1'b0), .fb_en(1'b0), .fb_rgb(24'h0), .x(), .y(), .r, .g, .b,
         .de(lcd_de), .hsync(lcd_hsync), .vsync(lcd_vsync), .vblank(), .frame_start()
     );
 

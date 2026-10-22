@@ -425,6 +425,8 @@ python3 tools/harness/harness.py prog hdmi       # make prog TARGET=hdmi (pinche
 | `frametest [--ref-dir DIR] [--no-capture] [--out DIR]` | アニメーションを止め、`FRAME_CRC` を参照 (`make render FREEZE=1`) と比べ、HDMI キャプチャも比べる。キャプチャと差分画像を `build/hw/` に保存 |
 | `memtest [--size N] [--samples 2,..,7] [--seed S]` | SDRAM の BIST を読み出しの取り込み位置ごとに実行 (`--size 21` で 8MiB 全域、1 回 1.2 秒) |
 | `mem read <addr> [n]` / `mem write <addr> <hex32>...` | SDRAM を 1 ワードずつ読み書き |
+| `fb upload [<png>] [--slot N]` / `fb show` / `fb off` | 320x240 の画像 (省略時はテスト画像) をフレームバッファへ / 表示の切り替え |
+| `fbtest [<png>] [--slot N] [--keep] [--no-capture]` | アップロードして表示し、`FRAME_CRC`・`UNDERFLOW`・キャプチャを参照モデル (`fbmodel.py`) と比べる |
 | `prog <target>` | `make prog TARGET=<target>` |
 
 - 出力は 1 つの JSON。`"ok"` が true でなければ終了コード 1

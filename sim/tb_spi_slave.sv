@@ -20,6 +20,14 @@ module tb_spi_slave;
     int errors = 0, frame_errors = 0;
     always @(posedge clk) if (frame_error) frame_errors++;
 
+    // ポート (0x30) への書き込みを数える。0x31 に書かれたらアドレスが進んでしまっている
+    int port_writes = 0;
+    bit port_advanced = 0;
+    always @(posedge clk) begin
+        if (reg_we && reg_addr == 7'h30) port_writes++;
+        if (reg_we && reg_addr == 7'h31) port_advanced = 1;
+    end
+
     real half = 500.0;          // SCK の半周期 [ns]
 
     // mode 0: SCK が Low の間に COPI を変え、立ち上がりで CIPO をサンプルする
@@ -104,6 +112,22 @@ module tb_spi_slave;
             $display("  unexpected frame errors: %0d", frame_errors);
             errors++;
         end
+
+        // 0x30..0x3F (ポート) はアドレスが進まない: 3 バイト書くと全部 0x30 へ、読むと同じ値が続く
+        half = 500.0;
+        port_writes = 0;
+        cs = 1;
+        #(half);
+        xfer_byte({1'b0, 7'h30}, rx);
+        xfer_byte(8'h01, rx);
+        xfer_byte(8'h02, rx);
+        xfer_byte(8'h03, rx);
+        #(half);
+        cs = 0;
+        #(1000);
+        if (port_writes != 3) begin $display("  port writes: %0d (expected 3)", port_writes); errors++; end
+        if (port_advanced) begin $display("  port address advanced to 0x31"); errors++; end
+        if (mem[7'h30] !== 8'h03) begin $display("  port value: %02h", mem[7'h30]); errors++; end
 
         // バイトの途中で CS を下げるとフレームエラー、書き込みは起きない
         half = 500.0;

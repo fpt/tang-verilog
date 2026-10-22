@@ -6,6 +6,7 @@
 // トランザクション:
 //   書き込み: CS↑ [0 | addr(7)] [data] [data] ... CS↓   (2 バイト目以降は addr, addr+1, ... へ)
 //   読み出し: CS↑ [1 | addr(7)] [xx]   [xx]   ... CS↓   (2 バイト目以降に addr, addr+1, ... の値が返る)
+//   ただし 0x30..0x3F (ポート) はアドレスを進めない (同じレジスタに続けて書く / 読む)
 //   1 バイト目の間、CIPO には同期確認用の 0xA5 が出る。
 //   CS がバイトの途中で下がったら frame_error を 1 クロック出す。
 //
@@ -49,6 +50,10 @@ module spi_slave (
 
     assign next_in = {shift_in, copi_s[1]};
 
+    // 0x30..0x3F はポートなので進めない
+    logic [6:0] addr_next;
+    assign addr_next = (addr[6:4] == 3'b011) ? addr : addr + 7'd1;
+
     always_ff @(posedge clk) begin
         reg_we      <= 1'b0;
         reg_re      <= 1'b0;
@@ -77,10 +82,10 @@ module spi_slave (
                     reg_addr  <= addr;
                     reg_wdata <= next_in;
                     reg_we    <= 1'b1;
-                    addr      <= addr + 7'd1;
+                    addr      <= addr_next;
                 end else begin
-                    addr         <= addr + 7'd1;
-                    reg_addr     <= addr + 7'd1;
+                    addr         <= addr_next;
+                    reg_addr     <= addr_next;
                     load_pending <= 1'b1;
                 end
             end

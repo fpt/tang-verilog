@@ -10,6 +10,8 @@ module tb_mem_test;
     logic [20:0] mem_addr;
     logic [31:0] mem_wdata, mem_rdata;
     logic [2:0]  rd_sample;
+    logic [8:0]  mem_len;
+    logic        mem_rvalid;
 
     logic        cke, cs_n, ras_n, cas_n, we_n, dq_oe;
     logic [1:0]  ba;
@@ -21,11 +23,11 @@ module tb_mem_test;
 
     mem_test dut (
         .clk, .rst, .addr, .wdata, .we, .rdata,
-        .mem_req, .mem_we, .mem_addr, .mem_wdata, .mem_ack, .mem_rdata, .mem_init_done(init_done), .rd_sample
+        .mem_req, .mem_we, .mem_addr, .mem_wdata, .mem_len, .mem_ack, .mem_rvalid, .mem_rdata, .mem_init_done(init_done), .rd_sample
     );
 
     sdram_ctrl #(.CLK_HZ(63_000_000), .INIT_US(2)) u_ctrl (
-        .clk, .rst, .req(mem_req), .we(mem_we), .addr(mem_addr), .wdata(mem_wdata), .ack(mem_ack),
+        .clk, .rst, .req(mem_req), .we(mem_we), .addr(mem_addr), .wdata(mem_wdata), .len(mem_len), .ack(mem_ack), .rvalid(mem_rvalid),
         .rdata(mem_rdata), .init_done, .rd_sample,
         .sdram_cke(cke), .sdram_cs_n(cs_n), .sdram_ras_n(ras_n), .sdram_cas_n(cas_n), .sdram_we_n(we_n),
         .sdram_ba(ba), .sdram_addr(sa), .sdram_dqm(dqm), .sdram_dq_out(dq_out), .sdram_dq_oe(dq_oe),
@@ -109,6 +111,21 @@ module tb_mem_test;
         wait_idle();
         rd32(7'h2C, v);
         if (v != 32'hDEAD_BEEF) begin $display("  MEM_DATA after read: %0h", v); errors++; end
+
+        // アップロード用のポート: MEM_ADDR = 0x200 から 8 バイト (2 ワード) 流し込み、1 ワードずつ読んで確かめる
+        wr(7'h28, 8'h00); wr(7'h29, 8'h02); wr(7'h2A, 8'h00); wr(7'h2B, 8'h00);
+        wr(7'h30, 8'h11); wr(7'h30, 8'h22); wr(7'h30, 8'h33); wr(7'h30, 8'h44);
+        wr(7'h30, 8'h55); wr(7'h30, 8'h66); wr(7'h30, 8'h77); wr(7'h30, 8'h88);
+        wait_idle();
+        rd32(7'h28, v);
+        if (v != 32'h0000_0202) begin $display("  MEM_ADDR after port: %0h", v); errors++; end
+        wr(7'h28, 8'h00); wr(7'h29, 8'h02);
+        wr(7'h10, 8'd2); wait_idle(); rd32(7'h2C, v);
+        if (v != 32'h4433_2211) begin $display("  port word 0: %0h", v); errors++; end
+        wr(7'h10, 8'd2); wait_idle(); rd32(7'h2C, v);
+        if (v != 32'h8877_6655) begin $display("  port word 1: %0h", v); errors++; end
+        rd(7'h12, s);
+        if (s[4]) begin $display("  port overflow flagged"); errors++; end
 
         if (model.violations != 0) begin $display("  model timing violations: %0d", model.violations); errors++; end
         if (errors == 0) $display("PASS: tb_mem_test");
