@@ -87,20 +87,23 @@ def capture(w, h, device=None, skip=5):
     return r.stdout
 
 
-def edge_mask(ref, w, h, radius=2):
-    """参照画像で、横 radius ピクセル以内、または縦 1 ライン以内に違う色があるピクセル
-    (キャプチャは 4:2:2 で横に、縮小・スケーラの都合で縦にも 1 ラインほどにじむ)"""
+def edge_mask(ref, w, h, threshold, radius=2):
+    """参照画像で、横 radius ピクセル以内、または縦 1 ライン以内に、どれかのチャンネルが threshold より大きく違う色があるピクセル
+    (キャプチャは 4:2:2 で横に、スケーラの都合で縦にも 1 ラインほどにじむ。なだらかなグラデーションは境目に数えない)"""
+    def jump(i, j):
+        return max(abs(ref[i] - ref[j]), abs(ref[i + 1] - ref[j + 1]), abs(ref[i + 2] - ref[j + 2])) > threshold
+
     mask = bytearray(w * h)
     for y in range(h):
-        row = [ref[3 * (y * w + x):3 * (y * w + x) + 3] for x in range(w)]
         for x in range(w - 1):
-            if row[x] != row[x + 1]:
+            i = 3 * (y * w + x)
+            if jump(i, i + 3):
                 for k in range(max(0, x - radius + 1), min(w, x + radius + 1)):
                     mask[y * w + k] = 1
         if y + 1 < h:
             for x in range(w):
                 i = 3 * (y * w + x)
-                if ref[i:i + 3] != ref[i + 3 * w:i + 3 * w + 3]:
+                if jump(i, i + 3 * w):
                     mask[y * w + x] = mask[(y + 1) * w + x] = 1
     return mask
 
@@ -109,7 +112,7 @@ def compare(ref, cap, w, h, tolerance=40):
     """チャンネルごとに倍率とオフセットを合わせてから比べる。(結果の dict, 差分画像の rgb) を返す。
     match_ratio は色の境目付近を除いたピクセルでの割合"""
     n = w * h
-    edges = edge_mask(ref, w, h)
+    edges = edge_mask(ref, w, h, tolerance)
     fit = []
     for ch in range(3):
         xs, ys = ref[ch::3], cap[ch::3]

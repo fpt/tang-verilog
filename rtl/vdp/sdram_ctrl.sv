@@ -1,15 +1,16 @@
 // SDR SDRAM コントローラ (GW2AR-18 のパッケージ内 64Mbit: 2M ワード x 32bit、4 バンク x 2048 行 x 256 列)
 //
-// まずは動かすことを優先した最小構成 (docs/GPU_PLAN.md の M3):
-//   - 1 ワードずつ: ACTIVE -> READ/WRITE (オートプリチャージ付き) -> 待ち。バーストは後で
+// 最小構成 (docs/GPU_PLAN.md の M3、M4 で読み出しのバーストを追加):
+//   - 書き込みは 1 ワードずつ: ACTIVE -> WRITE (オートプリチャージ付き) -> 待ち
+//   - 読み出しは同じ行の中で len ワード: ACTIVE -> READ を毎クロック (最後だけオートプリチャージ付き) -> データを待つ
 //   - CAS レイテンシ 2、バースト長 1
 //   - SDRAM のクロックはこのモジュールのクロックの逆相 (180°) を想定。トップが ODDR で出す
 //   - 読み出しデータを取り込む位置は rd_sample (半周期単位) で実行時に変えられる。
 //     READ を出したクロックの立ち上がりを 0 として、偶数 h は立ち上がり h/2、奇数 h は立ち下がり (h-1)/2 で取り込む。
 //     180° の SDRAM クロックで CL2 なら、データは立ち下がり 1 の tAC 後から立ち下がり 2 の tOH 後まで有効。
-//     実機 (Tang Nano 20K, 63MHz) では往復の遅れでこれより遅く、h = 5..7 で 8MiB 全域の BIST に合格、4 以下は不合格だった
-//     (harness.py memtest)。7 は SDRAM が出し終えたあとなので、バスが浮いたまま値を保っているだけと考えられる。
-//     既定は真ん中の 6 (mem_test の MEM_CFG)
+//     実機 (Tang Nano 20K, 63MHz) では往復の遅れでこれより遅く、バースト読み出しで正しく読めるのは h = 5 だけ
+//     (4 と 6 はフレームごとに値が揺れ、7 はいつも次のワードを読む)。1 ワードずつの読み出しなら 5..7 で読めるが、
+//     6, 7 は SDRAM が出し終えたあとも浮いたバスが値を保っているだけ。既定は 5 (mem_test の MEM_CFG)
 //
 // ワードアドレスの割り当て: addr[7:0] = 列, addr[9:8] = バンク, addr[20:10] = 行
 // (1 ライン 256 ワードを 1 行に置くと、隣のラインは別のバンクになる)
@@ -20,12 +21,15 @@ module sdram_ctrl #(
 ) (
     input  logic        clk,
     input  logic        rst,
-    // 利用側: req を ack まで保持する。読み出しは ack と同時に rdata が有効
+    // 利用側: req と we / addr / wdata / len を ack まで保持する。
+    // 読み出しは 1 ワードごとに rvalid と rdata が出て、最後のワードのあとに ack。ack のときの rdata は最後のワード
     input  logic        req,
     input  logic        we,
     input  logic [20:0] addr,
     input  logic [31:0] wdata,
+    input  logic [8:0]  len,            // 読み出すワード数 (1..256)。addr[7:0] + len が 256 を超えないこと (行をまたがない)
     output logic        ack,
+    output logic        rvalid,
     output logic [31:0] rdata,
     output logic        init_done,
     input  logic [2:0]  rd_sample,      // 読み出しの取り込み位置 (半周期単位、2..7)
@@ -63,7 +67,7 @@ module sdram_ctrl #(
 
     typedef enum logic [3:0] {
         S_INIT_WAIT, S_INIT_PRE, S_INIT_REF, S_INIT_MRS,
-        S_IDLE, S_REF, S_ACT, S_RW, S_READ_WAIT, S_WAIT
+        S_IDLE, S_REF, S_ACT, S_READ, S_READ_DRAIN, S_WAIT
     } state_t;
     state_t state;
 
@@ -72,7 +76,10 @@ module sdram_ctrl #(
     logic [3:0]  ref_count;      // 初期化中のリフレッシュ回数
     logic [15:0] ref_timer;
     logic        ref_due;
-    logic [2:0]  rd_cnt;
+    logic [7:0]  col;            // 次に READ する列
+    logic [8:0]  issued, received;
+    logic [3:0]  rd_pipe;        // READ を出してからの経過 (rd_sample[2:1] 番目で取り込む)
+    logic        rd_push;
 
     assign {sdram_cs_n, sdram_ras_n, sdram_cas_n, sdram_we_n} = cmd;
     assign sdram_cke = 1'b1;
@@ -98,11 +105,23 @@ module sdram_ctrl #(
         end
     end
 
+    // READ を出したら rd_pipe に 1 を入れる。READ を出した立ち上がりを 0 として、立ち上がり floor(h/2)+1 で
+    // rd_pipe[floor(h/2)] が 1 になっているので、そこで取り込んだ値 (dq_pos か dq_neg) を読む
+    assign rd_push = (state == S_ACT && timer == 0 && !we) || state == S_READ;
+
     always_ff @(posedge clk) begin
         cmd         <= CMD_NOP;
         sdram_dq_oe <= 1'b0;
         ack         <= 1'b0;
+        rvalid      <= 1'b0;
         if (timer != 0) timer <= timer - 16'd1;
+
+        rd_pipe <= rst ? '0 : {rd_pipe[2:0], rd_push && !rst};
+        if (!rst && rd_pipe[rd_sample[2:1]]) begin
+            rdata    <= rd_sample[0] ? dq_neg : dq_pos;
+            rvalid   <= 1'b1;
+            received <= received + 9'd1;
+        end
 
         if (rst) begin
             state      <= S_INIT_WAIT;
@@ -162,29 +181,36 @@ module sdram_ctrl #(
                 end
                 S_REF: if (timer == 0) state <= S_IDLE;
                 S_ACT: if (timer == 0) begin
-                    sdram_addr <= {1'b1, 2'b00, addr[7:0]};  // A10 = 1: オートプリチャージ
                     if (we) begin
                         cmd          <= CMD_WRITE;
+                        sdram_addr   <= {1'b1, 2'b00, addr[7:0]};  // A10 = 1: オートプリチャージ
                         sdram_dq_out <= wdata;
                         sdram_dq_oe  <= 1'b1;
                         timer        <= 16'(T_WR + T_RP);
                         ack          <= 1'b1;
                         state        <= S_WAIT;
                     end else begin
-                        cmd    <= CMD_READ;
-                        rd_cnt <= '0;
-                        state  <= S_READ_WAIT;
+                        // 最後の READ だけ A10 = 1 (オートプリチャージ)
+                        cmd        <= CMD_READ;
+                        sdram_addr <= {len == 9'd1, 2'b00, addr[7:0]};
+                        col        <= addr[7:0] + 8'd1;
+                        issued     <= 9'd1;
+                        received   <= '0;
+                        if (len == 9'd1) state <= S_READ_DRAIN;
+                        else             state <= S_READ;
                     end
                 end
-                // READ を出した立ち上がりを 0 として、立ち上がり floor(h/2)+1 で取り込んだ値を読む
-                S_READ_WAIT: begin
-                    rd_cnt <= rd_cnt + 3'd1;
-                    if (rd_cnt == 3'(rd_sample[2:1])) begin
-                        rdata <= rd_sample[0] ? dq_neg : dq_pos;
-                        ack   <= 1'b1;
-                        timer <= 16'(T_RP);
-                        state <= S_WAIT;
-                    end
+                S_READ: begin
+                    cmd        <= CMD_READ;
+                    sdram_addr <= {issued == len - 9'd1, 2'b00, col};
+                    col        <= col + 8'd1;
+                    issued     <= issued + 9'd1;
+                    if (issued == len - 9'd1) state <= S_READ_DRAIN;
+                end
+                S_READ_DRAIN: if (received == len) begin
+                    ack   <= 1'b1;
+                    timer <= 16'(T_RP);
+                    state <= S_WAIT;
                 end
                 S_WAIT: if (timer == 0) state <= S_IDLE;
                 default: state <= S_INIT_WAIT;

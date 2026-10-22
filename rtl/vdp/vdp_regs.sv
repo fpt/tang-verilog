@@ -1,11 +1,13 @@
 // VDP のレジスタ (docs/GPU_PLAN.md の M1)。レジスタバスと同じシステムクロックで動く
 //
 //   0x00 STATUS      R  bit0: VBLANK 中, bit1: エラー (SPI のフレームエラーなど。読むとクリア)
-//   0x01 CONTROL     RW bit1: アニメーション停止 (スプライトをリセット位置に止める。比較用), bit2: IRQ 許可 (IRQ = VBLANK 中)。
-//                       bit0 は予約 (表示 ON)
+//   0x01 CONTROL     RW bit1: アニメーション停止 (スプライトをリセット位置に止める。比較用), bit2: IRQ 許可 (IRQ = VBLANK 中),
+//                       bit3: フレームバッファを表示 (0 ならテストパターン)。bit0 は予約 (表示 ON)
 //   0x04 FRAME_COUNT R  フレームカウンタの下位 8bit
 //   0x05 FRAME_CRC   R  直前のフレームの CRC-32 (32bit、リトルエンディアン、0x05..0x08)。frame_crc.sv
 //                       0x05 を読んだ時点の値を 0x06..0x08 用に取っておくので、0x05 から続けて読めば 4 バイトが同じフレームの値になる
+//   0x09 UNDERFLOW   R  表示に間に合わなかったライン数 (fb_scanout、飽和する)
+//   0x0A FB_BASE     RW 表示するフレームバッファの先頭 (256 ワード = 1KiB 単位、13bit、リトルエンディアン 0x0A..0x0B)
 //   0x7D SCRATCH     RW 書いた値がそのまま読める (SPI リンクの確認用)
 //   0x7E ID          R  0x5A
 //   0x7F VERSION     R  RTL の版
@@ -26,6 +28,8 @@ module vdp_regs #(
     input  logic [31:0] crc_async,     // フレームの CRC (ピクセルクロック側、crc_toggle が変わるまで変化しない)
     input  logic       crc_toggle_async,
     input  logic       error_event,    // エラーを 1 クロック (このクロック側)
+    input  logic [7:0] underflow_count,
+    output logic [12:0] fb_base,
     output logic [7:0] control,
     output logic       irq,
     output logic       error
@@ -66,6 +70,7 @@ module vdp_regs #(
             scratch     <= '0;
             frame_count <= '0;
             error       <= 1'b0;
+            fb_base     <= '0;
         end else begin
             if (frame_s[2] != frame_s[1]) frame_count <= frame_count + 8'd1;
 
@@ -76,6 +81,8 @@ module vdp_regs #(
                 unique case (addr)
                     A_CONTROL: control <= wdata;
                     A_SCRATCH: scratch <= wdata;
+                    7'h0A:     fb_base[7:0]  <= wdata;
+                    7'h0B:     fb_base[12:8] <= wdata[4:0];
                     default:   ;
                 endcase
             end
@@ -91,6 +98,9 @@ module vdp_regs #(
             7'h06:         rdata = crc_snap[15:8];
             7'h07:         rdata = crc_snap[23:16];
             7'h08:         rdata = crc_snap[31:24];
+            7'h09:         rdata = underflow_count;
+            7'h0A:         rdata = fb_base[7:0];
+            7'h0B:         rdata = {3'b0, fb_base[12:8]};
             A_SCRATCH:     rdata = scratch;
             A_ID:          rdata = ID;
             A_VERSION:     rdata = VERSION;

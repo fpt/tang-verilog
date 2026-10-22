@@ -117,6 +117,8 @@ lint:
 	$(FPGA) verilator --lint-only -Wall --top-module vdp_regs $(VDP_SRC)
 	$(FPGA) verilator --lint-only -Wall --top-module sdram_ctrl $(VDP_SRC)
 	$(FPGA) verilator --lint-only -Wall --top-module mem_test $(VDP_SRC)
+	$(FPGA) verilator --lint-only -Wall --top-module sdram_arb $(VDP_SRC)
+	$(FPGA) verilator --lint-only -Wall --top-module fb_scanout $(VDP_SRC)
 
 sim: $(addprefix sim-,$(TBS))
 

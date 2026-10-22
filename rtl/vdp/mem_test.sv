@@ -3,8 +3,11 @@
 // レジスタ (0x10..0x2F。複数バイトの値はリトルエンディアン):
 //   0x10 MEM_CMD        W  1: BIST 開始, 2: MEM_ADDR を読んで MEM_DATA へ, 3: MEM_DATA を MEM_ADDR へ書く
 //                          (2 と 3 のあと MEM_ADDR は 1 進む)
-//   0x11 MEM_CFG        RW [2:0] 読み出しの取り込み位置 (sdram_ctrl の rd_sample)。既定 6 (実機で 5..7 が合格した真ん中)
-//   0x12 MEM_STATUS     R  bit0: SDRAM 初期化完了, bit1: 実行中, bit2: BIST 完了, bit3: BIST 合格
+//   0x11 MEM_CFG        RW [2:0] 読み出しの取り込み位置 (sdram_ctrl の rd_sample)。既定 5
+//                          (実機でバースト読み出しが正しく読めるのは 5 だけ。1 ワードずつなら 5..7 で読めるが、6, 7 は浮いたバスが
+//                          値を保っているだけで、次のワードがすぐ続くバーストでは崩れる。M4 で判明)
+//   0x12 MEM_STATUS     R  bit0: SDRAM 初期化完了, bit1: 実行中 (アップロードの書き込み待ちを含む), bit2: BIST 完了,
+//                          bit3: BIST 合格, bit4: アップロードのあふれ (MEM_ADDR の 0x28 を書くとクリア)
 //   0x13 BIST_SIZE      RW テストするワード数の log2 (1..21、既定 21 = 全 8MiB)
 //   0x14 BIST_SEED      RW パターンの種
 //   0x18 BIST_ERRORS    R  32bit 不一致の数
@@ -13,8 +16,14 @@
 //   0x24 BIST_FAIL_GOT  R  32bit そのときに読めた値
 //   0x28 MEM_ADDR       RW 32bit ワードアドレス (下位 21bit が有効)
 //   0x2C MEM_DATA       RW 32bit
+//   0x30 MEM_PORT       W  アップロード用のポート。書いたバイトを 4 つずつ (リトルエンディアン) 1 ワードにして MEM_ADDR に書き、
+//                          MEM_ADDR を 1 進める。spi_slave は 0x30..0x3F ではアドレスを進めないので、1 回のトランザクションで
+//                          続けて流し込める。MEM_ADDR (0x28) を書くとワードの組み立てをやり直す。
+//                          書き込み待ちは 1 ワード分 (書き込み中 + 待ち + 組み立て中) なので、表示の読み出しで少し待たされても
+//                          8MHz の SPI (1 ワード 4us) なら間に合う。間に合わなければ bit4 を立ててそのワードを捨てる
 //
 // BIST: pattern(a) を全域に書いて読んで比べ、次に ~pattern(a) で同じことをする。
+//   読み出しは表示と同じく 1 行 (256 ワード) ずつのバーストで行う (取り込み位置の判定がバーストと同じになるように)。
 //   pattern(a) = {~a[10:0], a[20:0]} ^ {4{seed}}。アドレスごとに値が違うのでアドレス線の不良 (別の場所に書かれる) も見つかり、
 //   2 回目は全ビットを反転するので、各ビットが 0 と 1 の両方を通る。
 module mem_test (
@@ -30,7 +39,9 @@ module mem_test (
     output logic        mem_we,
     output logic [20:0] mem_addr,
     output logic [31:0] mem_wdata,
+    output logic [8:0]  mem_len,
     input  logic        mem_ack,
+    input  logic        mem_rvalid,     // バースト読み出しの 1 ワードごと
     input  logic [31:0] mem_rdata,
     input  logic        mem_init_done,
     output logic [2:0]  rd_sample
@@ -40,9 +51,10 @@ module mem_test (
     localparam logic [6:0] A_STATUS = 7'h12;
     localparam logic [6:0] A_SIZE   = 7'h13;
     localparam logic [6:0] A_SEED   = 7'h14;
+    localparam logic [6:0] A_PORT   = 7'h30;
     // 0x18..0x2F の 32bit レジスタは下の casez でバイト単位に読み書きする
 
-    typedef enum logic [2:0] {S_IDLE, S_SINGLE, S_BIST_WRITE, S_BIST_READ} state_t;
+    typedef enum logic [2:0] {S_IDLE, S_SINGLE, S_PORT, S_BIST_WRITE, S_BIST_READ} state_t;
     state_t state;
 
     logic [4:0]  bist_size;
@@ -51,6 +63,16 @@ module mem_test (
     logic [31:0] errors, fail_addr, fail_exp, fail_got;
     logic [31:0] reg_addr, reg_data;
     logic [20:0] cursor, last;
+
+    // アップロード用のポート
+    logic [23:0] port_bytes;     // 組み立て中の下位 3 バイト
+    logic [1:0]  port_cnt;
+    logic        port_pending, port_overflow;
+    logic [31:0] port_data;
+    logic [20:0] port_waddr;
+
+    logic        bist_rdone;     // 読み出し側で最後のワードまで比べ終えた
+
 
     function automatic logic [31:0] pattern(input logic [20:0] a, input logic [7:0] seed, input logic inv);
         logic [31:0] p;
@@ -63,13 +85,19 @@ module mem_test (
     assign size_c = (bist_size == 0) ? 5'd1 : (bist_size > 5'd21) ? 5'd21 : bist_size;
     assign last   = 21'((32'd1 << size_c) - 32'd1);
 
+    // BIST の読み出しは 1 行 (256 ワード) ずつ。全体がそれより小さければ全体を 1 回で
+    logic [8:0] burst_len;
+    assign burst_len = (size_c >= 5'd8) ? 9'd256 : 9'(32'd1 << size_c);
+
     logic [31:0] expect_now;
     assign expect_now = pattern(cursor, bist_seed, bist_inv);
 
     always_ff @(posedge clk) begin
         if (rst) begin
             state     <= S_IDLE;
-            rd_sample <= 3'd6;
+            rd_sample <= 3'd5;
+            mem_len   <= 9'd1;
+            bist_rdone <= 1'b0;
             bist_size <= 5'd21;
             bist_seed <= 8'h00;
             bist_done <= 1'b0;
@@ -80,7 +108,30 @@ module mem_test (
             reg_addr  <= '0;
             reg_data  <= '0;
             mem_req   <= 1'b0;
+            port_cnt      <= '0;
+            port_pending  <= 1'b0;
+            port_overflow <= 1'b0;
         end else begin
+            // --- アップロード用のポート ---
+            if (we && addr == 7'h28) begin
+                port_cnt      <= '0;
+                port_overflow <= 1'b0;
+            end else if (we && addr == A_PORT) begin
+                if (port_cnt == 2'd3) begin
+                    if (port_pending) begin
+                        port_overflow <= 1'b1;
+                    end else begin
+                        port_pending <= 1'b1;
+                        port_data    <= {wdata, port_bytes};
+                        port_waddr   <= reg_addr[20:0];
+                        reg_addr     <= reg_addr + 32'd1;
+                    end
+                end else begin
+                    port_bytes[8 * port_cnt +: 8] <= wdata;
+                end
+                port_cnt <= port_cnt + 2'd1;
+            end
+
             // --- レジスタ書き込み (実行中も受け付けるが、コマンドは S_IDLE のときだけ) ---
             if (we) begin
                 unique case (addr)
@@ -100,7 +151,14 @@ module mem_test (
             end
 
             unique case (state)
-                S_IDLE: if (we && addr == A_CMD && mem_init_done) begin
+                S_IDLE: if (port_pending && !(we && addr == A_CMD)) begin
+                    mem_req      <= 1'b1;
+                    mem_we       <= 1'b1;
+                    mem_addr     <= port_waddr;
+                    mem_wdata    <= port_data;
+                    port_pending <= 1'b0;          // 書き込み中のあいだに次のワードを受け付けられるように
+                    state        <= S_PORT;
+                end else if (we && addr == A_CMD && mem_init_done) begin
                     unique case (wdata)
                         8'd1: begin
                             bist_done <= 1'b0;
@@ -112,6 +170,7 @@ module mem_test (
                         8'd2: begin
                             mem_req  <= 1'b1;
                             mem_we   <= 1'b0;
+                            mem_len  <= 9'd1;
                             mem_addr <= reg_addr[20:0];
                             state    <= S_SINGLE;
                         end
@@ -125,6 +184,10 @@ module mem_test (
                         default: ;
                     endcase
                 end
+                S_PORT: if (mem_ack) begin
+                    mem_req <= 1'b0;
+                    state   <= S_IDLE;
+                end
                 S_SINGLE: if (mem_ack) begin
                     mem_req  <= 1'b0;
                     if (!mem_we) reg_data <= mem_rdata;
@@ -135,6 +198,7 @@ module mem_test (
                     if (!mem_req) begin
                         mem_req   <= 1'b1;
                         mem_we    <= 1'b1;
+                        mem_len   <= 9'd1;
                         mem_addr  <= cursor;
                         mem_wdata <= expect_now;
                     end else if (mem_ack) begin
@@ -148,12 +212,13 @@ module mem_test (
                     end
                 end
                 S_BIST_READ: begin
-                    if (!mem_req) begin
+                    if (!mem_req && !bist_rdone) begin
                         mem_req  <= 1'b1;
                         mem_we   <= 1'b0;
-                        mem_addr <= cursor;
-                    end else if (mem_ack) begin
-                        mem_req <= 1'b0;
+                        mem_addr <= cursor;           // 行の先頭 (cursor は 256 ワードごとに揃っている)
+                        mem_len  <= burst_len;
+                    end
+                    if (mem_req && mem_rvalid) begin
                         // !== はシミュレーションで X / Z (誰も駆動していないバス) を不一致として数えるため。合成では != と同じ
                         if (mem_rdata !== expect_now) begin
                             if (errors == 0) begin
@@ -163,15 +228,21 @@ module mem_test (
                             end
                             if (errors != 32'hFFFF_FFFF) errors <= errors + 32'd1;
                         end
-                        if (cursor != last) begin
-                            cursor <= cursor + 21'd1;
-                        end else if (!bist_inv) begin
-                            bist_inv <= 1'b1;            // 反転したパターンでもう 1 周
-                            cursor   <= '0;
-                            state    <= S_BIST_WRITE;
-                        end else begin
-                            bist_done <= 1'b1;
-                            state     <= S_IDLE;
+                        if (cursor == last) bist_rdone <= 1'b1;
+                        else                cursor     <= cursor + 21'd1;
+                    end
+                    if (mem_req && mem_ack) begin
+                        mem_req <= 1'b0;
+                        if (bist_rdone) begin
+                            bist_rdone <= 1'b0;
+                            if (!bist_inv) begin
+                                bist_inv <= 1'b1;            // 反転したパターンでもう 1 周
+                                cursor   <= '0;
+                                state    <= S_BIST_WRITE;
+                            end else begin
+                                bist_done <= 1'b1;
+                                state     <= S_IDLE;
+                            end
                         end
                     end
                 end
@@ -188,7 +259,8 @@ module mem_test (
     always_comb begin
         unique casez (addr)
             A_CFG:     rdata = {5'b0, rd_sample};
-            A_STATUS:  rdata = {4'b0, bist_done && errors == 0, bist_done, state != S_IDLE, mem_init_done};
+            A_STATUS:  rdata = {3'b0, port_overflow, bist_done && errors == 0, bist_done,
+                                state != S_IDLE || port_pending, mem_init_done};
             A_SIZE:    rdata = {3'b0, bist_size};
             A_SEED:    rdata = bist_seed;
             7'b001_10??: rdata = byte_of(errors, addr[1:0]);      // 0x18..0x1B

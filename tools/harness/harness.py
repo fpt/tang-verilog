@@ -20,6 +20,11 @@ usage: harness.py [--port PORT] <command> [args...]
   frametest [--ref-dir DIR] [--no-capture] [--out DIR]
                             アニメーションを止め、FRAME_CRC を参照 (make render FREEZE=1 の frames.json) と比べ、
                             HDMI キャプチャも参照画像と比べる。キャプチャと差分画像を --out に保存
+  fb upload [<png>] [--slot N]  320x240 の画像 (省略時はテスト画像) を SDRAM のフレームバッファへ (slot は 1KiB 単位)
+  fb show [--slot N] / fb off   フレームバッファの表示 / テストパターンに戻す
+  fbtest [<png>] [--slot N] [--keep] [--no-capture]
+                            アップロードして表示し、FRAME_CRC と UNDERFLOW を参照モデル (fbmodel.py) と比べ、
+                            HDMI キャプチャも比べる。--keep でそのまま表示を残す
   mem read <word_addr> [n]  SDRAM を 1 ワードずつ読む
   mem write <word_addr> <hex32>...  SDRAM に書く
 
@@ -45,6 +50,8 @@ REGS = {
     "CONTROL": 0x01,
     "FRAME_COUNT": 0x04,
     "FRAME_CRC": 0x05,      # 32bit、リトルエンディアン (0x05..0x08)
+    "UNDERFLOW": 0x09,
+    "FB_BASE": 0x0A,        # 13bit、256 ワード (1KiB) 単位 (0x0A..0x0B)
     "SCRATCH": 0x7D,
     "ID": 0x7E,
     "VERSION": 0x7F,
@@ -53,7 +60,9 @@ REGS = {
 MEM = {
     "CMD": 0x10, "CFG": 0x11, "STATUS": 0x12, "SIZE": 0x13, "SEED": 0x14,
     "ERRORS": 0x18, "FAIL_ADDR": 0x1C, "FAIL_EXP": 0x20, "FAIL_GOT": 0x24, "ADDR": 0x28, "DATA": 0x2C,
+    "PORT": 0x30,
 }
+MEM_ST_PORT_OVERFLOW = 0x10
 MEM_CMD_BIST, MEM_CMD_READ, MEM_CMD_WRITE = 1, 2, 3
 MEM_ST_INIT, MEM_ST_BUSY, MEM_ST_DONE, MEM_ST_PASS = 0x01, 0x02, 0x04, 0x08
 REGS.update({f"MEM_{k}": v for k, v in MEM.items()})
@@ -61,6 +70,7 @@ VDP_ID = 0x5A
 SYNC_BYTE = 0xA5            # spi_slave が 1 バイト目に返す値
 CONTROL_FREEZE = 0x02
 CONTROL_IRQ_EN = 0x04
+CONTROL_FB = 0x08
 STATUS_ERROR = 0x02
 
 
@@ -167,6 +177,7 @@ def memtest(bridge, size, samples, seed):
     if not st & MEM_ST_INIT:
         return {"ok": False, "error": "SDRAM not initialized", "status": st}
     runs = []
+    cfg = vdp.read1(MEM["CFG"])     # 終わったら元の取り込み位置に戻す (表示も同じ設定を使うので)
     for h in samples:
         vdp.write(MEM["CFG"], [h])
         vdp.write(MEM["SIZE"], [size])
@@ -181,6 +192,7 @@ def memtest(bridge, size, samples, seed):
             run.update(first_fail_addr=f"0x{vdp.read32(MEM['FAIL_ADDR']):06x}", expected=f"0x{exp:08x}",
                        got=f"0x{got:08x}", bad_bits=f"0x{exp ^ got:08x}")
         runs.append(run)
+    vdp.write(MEM["CFG"], [cfg])
     passing = [r["rd_sample"] for r in runs if r["pass"]]
     return {"ok": bool(passing), "words": 1 << size, "passing_rd_sample": passing, "runs": runs}
 
@@ -310,6 +322,88 @@ def frametest(bridge, ref_dir, do_capture, out_dir):
     return result
 
 
+def load_fb_image(path):
+    """フレームバッファに置く 320x240 の画像 (RGB565 のリスト) と、元の RGB を返す"""
+    import fbmodel
+    import imgcmp
+    if path:
+        w, h, rgb = imgcmp.read_png(path)
+        if (w, h) != (fbmodel.SRC_W, fbmodel.SRC_H):
+            raise HarnessError(f"image must be {fbmodel.SRC_W}x{fbmodel.SRC_H}, got {w}x{h}")
+    else:
+        rgb = fbmodel.test_image()
+    return fbmodel.rgb_to_565(rgb, fbmodel.SRC_W, fbmodel.SRC_H), rgb
+
+
+def fb_upload(bridge, img565, slot):
+    """1 ライン 1 トランザクション: 0x28 (MEM_ADDR) から書き始め、MEM_DATA を飛ばして 0x30 (ポート) に 640 バイト流す"""
+    import fbmodel
+    vdp = Vdp(bridge)
+    if not vdp.read1(MEM["STATUS"]) & MEM_ST_INIT:
+        raise HarnessError("SDRAM not initialized")
+    start = time.monotonic()
+    # 8MHz で流す (ポートは 1 ワード 4us に間に合うように作ってある。あふれたら MEM_STATUS bit4 でわかる)
+    bridge.command("freq 8000000")
+    try:
+        for y in range(fbmodel.SRC_H):
+            word_addr = (slot + y) * fbmodel.WORDS_PER_LINE
+            vdp.write(MEM["ADDR"], word_addr.to_bytes(4, "little") + bytes(4) + fbmodel.line_bytes(img565, y))
+    finally:
+        bridge.command("freq 1000000")
+    st = vdp.mem_wait(timeout=2.0)
+    if st & MEM_ST_PORT_OVERFLOW:
+        raise HarnessError("upload overflow (MEM_STATUS bit4)")
+    return round(time.monotonic() - start, 2)
+
+
+def fb_show(vdp, slot, on):
+    vdp.write(REGS["FB_BASE"], slot.to_bytes(2, "little"))
+    control = vdp.read1(REGS["CONTROL"])
+    vdp.write(REGS["CONTROL"], [(control | CONTROL_FB) if on else (control & ~CONTROL_FB)])
+
+
+def fbtest(bridge, png, slot, keep, do_capture, out_dir):
+    """アップロード -> 表示 -> FRAME_CRC / UNDERFLOW / キャプチャを参照モデルと比べる"""
+    import fbmodel
+    import imgcmp
+    vdp = Vdp(bridge)
+    img565, _ = load_fb_image(png)
+    expect = fbmodel.expected_output(img565)
+    expect_crc = f"0x{fbmodel.expected_crc(img565):08x}"
+    result = {"image": png or "test_image", "slot": slot, "expected_crc": expect_crc}
+
+    control = vdp.read1(REGS["CONTROL"])
+    result["upload_seconds"] = fb_upload(bridge, img565, slot)
+    under0 = vdp.read1(REGS["UNDERFLOW"])
+    try:
+        fb_show(vdp, slot, True)
+        time.sleep(0.1)
+        crcs = []
+        for _ in range(3):
+            crcs.append(f"0x{vdp.read32(REGS['FRAME_CRC']):08x}")
+            time.sleep(0.05)
+        result["crc"] = {"ok": all(c == expect_crc for c in crcs), "read": crcs}
+        if do_capture:
+            w, h = 2 * fbmodel.SRC_W, 2 * fbmodel.SRC_H
+            cap = imgcmp.capture(w, h)
+            stats, diff = imgcmp.compare(expect, cap, w, h)
+            os.makedirs(out_dir, exist_ok=True)
+            imgcmp.write_png(os.path.join(out_dir, "fb_expected.png"), w, h, expect)
+            imgcmp.write_png(os.path.join(out_dir, "fb_capture.png"), w, h, cap)
+            imgcmp.write_png(os.path.join(out_dir, "fb_diff.png"), w, h, diff)
+            stats.update(ok=stats["match_ratio"] >= 0.99, capture=os.path.join(out_dir, "fb_capture.png"),
+                         diff=os.path.join(out_dir, "fb_diff.png"))
+            result["capture"] = stats
+        under = (vdp.read1(REGS["UNDERFLOW"]) - under0) & 0xFF
+        result["underflow"] = {"ok": under == 0, "count": under}
+    finally:
+        if not keep:
+            vdp.write(REGS["CONTROL"], [control])
+    result["ok"] = (result["crc"]["ok"] and result["underflow"]["ok"]
+                    and result.get("capture", {"ok": True})["ok"])
+    return result
+
+
 def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--port")
@@ -319,7 +413,9 @@ def main():
     ap.add_argument("--seed", type=int, default=0x3C, help="memtest: pattern seed (0..255)")
     ap.add_argument("--ref-dir", default=os.path.join(REPO, "build", "render_frozen"),
                     help="frametest: reference from make render FREEZE=1")
-    ap.add_argument("--no-capture", action="store_true", help="frametest: CRC only")
+    ap.add_argument("--no-capture", action="store_true", help="frametest / fbtest: CRC only")
+    ap.add_argument("--slot", type=int, default=0, help="fb / fbtest: framebuffer base in 1KiB units")
+    ap.add_argument("--keep", action="store_true", help="fbtest: leave the framebuffer displayed")
     ap.add_argument("--out", default=os.path.join(REPO, "build", "hw"), help="frametest: where to save capture/diff")
     ap.add_argument("command")
     ap.add_argument("args", nargs="*")
@@ -331,12 +427,22 @@ def main():
         # make の出力は標準エラーへ (標準出力は JSON だけにする)
         r = subprocess.run(["make", "prog", f"TARGET={a.args[0]}"], cwd=REPO, stdout=sys.stderr)
         result = {"ok": r.returncode == 0, "target": a.args[0]}
-    elif a.command in ("reg", "selftest", "memtest", "mem", "frametest"):
+    elif a.command in ("reg", "selftest", "memtest", "mem", "frametest", "fb", "fbtest"):
         bridge = Bridge(find_port(a.port))
         try:
             vdp = Vdp(bridge)
             if a.command == "selftest":
                 result = selftest(bridge, a.iterations)
+            elif a.command == "fbtest":
+                result = fbtest(bridge, a.args[0] if a.args else None, a.slot, a.keep, not a.no_capture, a.out)
+            elif a.command == "fb" and a.args and a.args[0] == "upload":
+                img565, _ = load_fb_image(a.args[1] if len(a.args) > 1 else None)
+                result = {"ok": True, "slot": a.slot, "seconds": fb_upload(bridge, img565, a.slot)}
+            elif a.command == "fb" and a.args and a.args[0] in ("show", "off"):
+                fb_show(vdp, a.slot, a.args[0] == "show")
+                result = {"ok": True, "slot": a.slot, "display": a.args[0]}
+            elif a.command == "fb":
+                ap.error("fb upload [<png>] | fb show | fb off")
             elif a.command == "frametest":
                 result = frametest(bridge, a.ref_dir, not a.no_capture, a.out)
             elif a.command == "memtest":

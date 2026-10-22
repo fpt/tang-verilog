@@ -24,6 +24,7 @@ int main(int argc, char** argv) {
     };
 
     top.freeze = freeze;
+    top.fb_en = 0;      // フレームバッファの表示は SDRAM が要るので、ここではテストパターンだけ
     top.rst = 1;
     for (int i = 0; i < 4; i++) tick();
     top.rst = 0;

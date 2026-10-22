@@ -66,7 +66,7 @@ make help
 | `make bitstream TARGET=lcd` | 40 ピン RGB LCD (800x480) に HDMI と同じテストパターンを出す → `build/top_lcd.fs` (`make prog TARGET=lcd` で書き込み) |
 | `make render FREEZE=1` | アニメーションを止めた参照画像と各フレームの CRC (`frames.json`) を `build/render_frozen/` に (実機の `FRAME_CRC` と比べる) |
 | `make render TARGET=lcd` | LCD 版の映像を `build/render_lcd/frame_*.png` に保存 |
-| `make harness-fw` / `python3 tools/harness/harness.py <cmd>` | ハーネスの RP2 ブリッジとホストツール (`status` / `spi` / `wiretest` / `prog` など)。詳細は [docs/HARNESS.md](docs/HARNESS.md) |
+| `make harness-fw` / `python3 tools/harness/harness.py <cmd>` | ハーネスの RP2 ブリッジとホストツール (`status` / `selftest` / `memtest` / `frametest` / `fbtest` / `prog` など)。詳細は [docs/HARNESS.md](docs/HARNESS.md) |
 | `make prog` / `make flash` | Tang Nano 20K の SRAM / Flash に書き込み (先に `make pincheck` でハーネスのピンと衝突しないか検査する) |
 | `make fw` | RP2350 ファームウェアをビルド (`firmware/build/vdp_host.uf2`) |
 | `make shell` / `make shell-pico` | 各コンテナのシェルに入る |

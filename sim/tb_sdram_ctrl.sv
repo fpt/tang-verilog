@@ -4,7 +4,8 @@
 `timescale 1ns/1ps
 module tb_sdram_ctrl;
     logic        clk = 0, rst = 1;
-    logic        req = 0, we = 0, ack, init_done;
+    logic        req = 0, we = 0, ack, init_done, rvalid;
+    logic [8:0]  len = 9'd1;
     logic [20:0] addr = '0;
     logic [31:0] wdata = '0, rdata;
     logic [2:0]  rd_sample = 3'd4;
@@ -18,7 +19,7 @@ module tb_sdram_ctrl;
     assign dq = dq_oe ? dq_out : 'z;
 
     sdram_ctrl #(.CLK_HZ(63_000_000), .INIT_US(2)) dut (
-        .clk, .rst, .req, .we, .addr, .wdata, .ack, .rdata, .init_done, .rd_sample,
+        .clk, .rst, .req, .we, .addr, .wdata, .len, .ack, .rvalid, .rdata, .init_done, .rd_sample,
         .sdram_cke(cke), .sdram_cs_n(cs_n), .sdram_ras_n(ras_n), .sdram_cas_n(cas_n), .sdram_we_n(we_n),
         .sdram_ba(ba), .sdram_addr(sa), .sdram_dqm(dqm), .sdram_dq_out(dq_out), .sdram_dq_oe(dq_oe),
         .sdram_dq_in(dq)
@@ -87,6 +88,29 @@ module tb_sdram_ctrl;
         if (m != N) begin $display("  rd_sample=3: expected all %0d to fail, got %0d", N, m); errors++; end
         run(3'd6, m);
         if (m != N) begin $display("  rd_sample=6: expected all %0d to fail, got %0d", N, m); errors++; end
+
+        // バースト読み出し: 1 行 (列 0x10 から 160 ワード) を書いて、len = 160 で一度に読む
+        rd_sample = 3'd4;
+        begin
+            logic [31:0] q;
+            int got;
+            for (i = 0; i < 160; i++) access(1'b1, 21'h0A_C10 + 21'(i), 32'h5000_0000 + 32'(i * 7), q);
+            @(negedge clk);
+            req = 1; we = 0; addr = 21'h0A_C10; len = 9'd160;
+            got = 0;
+            do begin
+                @(negedge clk);   // rvalid と rdata はどちらもクロックの途中で見る
+                if (rvalid) begin
+                    if (rdata !== 32'h5000_0000 + 32'(got * 7)) begin
+                        if (errors < 10) $display("  burst word %0d: got %08h", got, rdata);
+                        errors++;
+                    end
+                    got++;
+                end
+            end while (!ack);
+            req = 0; len = 9'd1;
+            if (got != 160) begin $display("  burst: %0d words (expected 160)", got); errors++; end
+        end
 
         // 60us 放置してリフレッシュが続いていることを確かめ、もう一度読む
         rd_sample = 3'd4;
