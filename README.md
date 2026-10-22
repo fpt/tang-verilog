@@ -64,7 +64,8 @@ make help
 | `make bitstream` | 合成 → 配置配線 → `build/top.fs` |
 | `make bitstream TARGET=lcd` | 40 ピン RGB LCD (800x480) に HDMI と同じテストパターンを出す → `build/top_lcd.fs` (`make prog TARGET=lcd` で書き込み) |
 | `make render TARGET=lcd` | LCD 版の映像を `build/render_lcd/frame_*.png` に保存 |
-| `make prog` / `make flash` | Tang Nano 20K の SRAM / Flash に書き込み |
+| `make prog TARGET=harness_probe` / `make harness-fw` | ハーネスの配線テスト (FPGA 側 / RP2 側)。詳細は [docs/HARNESS.md](docs/HARNESS.md) |
+| `make prog` / `make flash` | Tang Nano 20K の SRAM / Flash に書き込み (先に `make pincheck` でハーネスのピンと衝突しないか検査する) |
 | `make fw` | RP2350 ファームウェアをビルド (`firmware/build/vdp_host.uf2`) |
 | `make shell` / `make shell-pico` | 各コンテナのシェルに入る |
 | `make zip` | 別環境へ持っていくためのソース一式を `dist/<ディレクトリ名>.zip` に作成 (ホストの git と zip を使用) |

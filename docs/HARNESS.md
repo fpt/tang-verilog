@@ -232,34 +232,20 @@ Pico 2 に SSD1306 の I2C OLED (128x64 または 128x32) をつなぎ、ハー�
 衝突の現実的な原因は偶然の故障ではなく、エージェントが cst・RTL・Pico のピン設定を書き換えて、入力のはずのピンを出力にしてしまうことです。
 これは書き込む前にソフトウェアで検出できるので、ハーネスで電気的に衝突させる前に止めます。
 
-**ピン表を 1 か所に置く**: 上のピン割り当て表を機械可読な形 (`harness/pins.yaml`、案) で持ち、FPGA 側の検査と Pico 側のファームウェアの両方がこれを使います。
+**ピン表を 1 か所に置く**: 上のピン割り当て表を機械可読な形 ([`harness/pins.json`](../harness/pins.json)) で持ち、FPGA 側の検査と Pico 側のファームウェアの両方がこれを使います。
+向きは FPGA から見たものです (`input` = ハーネスが駆動する線)。ツールのイメージに PyYAML が無いので JSON にしています。
 
-```yaml
-# harness/pins.yaml (案)。向きは FPGA から見たもの
-- {signal: SCK,       fpga_pin: 73, fpga_dir: input,  pico_gpio: 2}
-- {signal: COPI,      fpga_pin: 74, fpga_dir: input,  pico_gpio: 3}
-- {signal: CIPO,      fpga_pin: 75, fpga_dir: output, pico_gpio: 4}
-- {signal: CS_N,      fpga_pin: 72, fpga_dir: input,  pico_gpio: 5}
-- {signal: IRQ_N,     fpga_pin: 71, fpga_dir: output, pico_gpio: 6}
-- {signal: VSYNC,     fpga_pin: 42, fpga_dir: output, pico_gpio: 7}
-- {signal: HEARTBEAT, fpga_pin: 41, fpga_dir: output, pico_gpio: 8}
-- {signal: ERROR,     fpga_pin: 48, fpga_dir: output, pico_gpio: 9}
-- {signal: RESET_N,   fpga_pin: 86, fpga_dir: input,  pico_gpio: 10}
-- {signal: LED0,      fpga_pin: 15, fpga_dir: output, pico_gpio: 11}
-# ... LED1〜LED5 も同様
-```
+**FPGA 側 (`make pincheck`, [`scripts/pincheck.py`](../scripts/pincheck.py))**: `make prog` / `make flash` が書き込みの前に必ず実行し、失敗したら書き込まない。
 
-**FPGA 側 (`harness pincheck`)**: 書き込みの前に必ず実行し、失敗したら書き込まない。
-
-- `constraints/tangnano20k.cst` の `IO_LOC` から「ポート名 → ピン番号」を、合成結果の `build/top.json` (Yosys の JSON) から「ポート名 → 向き (`input` / `output` / `inout`)」を取り出して突き合わせる
+- `TARGET` の cst の `IO_LOC` から「ポート名 → ピン番号」を、合成結果の `build/<top>.json` (Yosys の JSON) から「ポート名 → 向き (`input` / `output` / `inout`)」を取り出して突き合わせる
 - ピン表で `input` のピンに `output` か `inout` のポートが割り当てられていたら失敗
 - ピン表で `output` のピンに `input` が割り当てられているのは衝突しないが、観測できなくなるので警告
 - ピン表にあるピンを cst が使っていない (ポートがない) 場合は、FPGA 側は弱プルアップの入力になるだけなので許可する
-- ビットストリームが検査済みの `top.json` から作られたことを確かめるため、`top.json` と `top.fs` の更新時刻 (またはハッシュ) も見る
+- ビットストリームが検査済みの JSON から作られたことを確かめるため、JSON と `.fs` の更新時刻も見る
 
 **Pico 側**:
 
-- ピンの向きと機能の設定 (`gpio_set_dir` / `gpio_set_function` / プル設定) は、ピン表から生成したヘッダ (`firmware/pins.h`、案) を使う 1 つのモジュールで、起動時に 1 回だけ行う
+- ピンの向きと機能の設定 (`gpio_set_dir` / `gpio_set_function` / プル設定) は、ピン表から生成したヘッダ (`pins.h`。`make harness-fw` が [`scripts/gen_pins_h.py`](../scripts/gen_pins_h.py) で生成) を使う 1 つのモジュールで、起動時に 1 回だけ行う
 - それ以外の場所でこれらの関数を呼んでいたら `make fw` を失敗させる (grep で十分)
 - ホストからのコマンドは観測ピンを読めるが、ピンの向きは変えられない。出力として動かせるのは CS_N・RESET_N と SPI だけ
 
@@ -403,6 +389,26 @@ USB の接続が切れていても読めるように、Pico 2 が自分で観測
 
 ## 検証方法
 
+### 配線テスト (実装済み)
+
+ハーネスを組んだら、まずこれで全部の線を確かめます。FPGA と RP2 の両方に専用のテストを書き込みます。
+
+```bash
+make prog TARGET=harness_probe   # FPGA の SRAM に書き込む (pincheck を通ってから。Flash の内容はそのまま)
+make harness-fw                  # RP2 のテストファームウェア (既定は RP2040-Zero。HARNESS_BOARD / HARNESS_PLATFORM で変更)
+# RP2 を BOOTSEL で接続し、harness/firmware/build/harness_probe.uf2 を RPI-RP2 ドライブへコピーする
+```
+
+- FPGA ([`rtl/gowin/top_harness_probe.sv`](../rtl/gowin/top_harness_probe.sv)): FPGA → RP2 の 11 本をそれぞれ違う周波数 (13.2kHz〜12.9Hz) でトグルさせる。RP2 → FPGA の 4 本のどれかが High の間は、SCK→CIPO, COPI→IRQ_N, CS_N→VSYNC, RESET_N→HEARTBEAT と折り返す。RP2 → FPGA の線は FPGA 側でもプルダウン
+- RP2 ([`harness/firmware/src/main.c`](../harness/firmware/src/main.c)): 起動後 2 秒、以降 3 秒ごと (または USB シリアルに `t` を送ったとき) に実行し、1 行 1 JSON で結果を出す
+  1. 全ピンを入力 + プルダウンにする
+  2. 500ms 読むだけ。FPGA → RP2 の各線の立ち上がり回数が期待値 ±10% か、RP2 → FPGA の線がずっと Low か
+  3. 2 が全部通ったときだけ、RP2 → FPGA の線を 1 本ずつ 100µs High にし、折り返し先だけが High になるかを見る
+  4. 全ピンを入力 + プルダウンに戻す
+- FPGA にテスト用の設計が入っていない (電源を入れ直して HDMI に戻った、など) と 2 で失敗するので、RP2 は何も駆動しない
+- 結果の読み方 (macOS): `stty -f /dev/cu.usbmodem* raw; cat /dev/cu.usbmodem*`。`"pass":true` なら配線は正しい
+- macOS 26 では `cp` で `RPI-RP2` にコピーすると固まることがあったので、Finder でドラッグするのが確実 (`make harness-deploy` は Linux 向け)
+
 ### `harness selftest`
 
 エージェントが最初に呼ぶ 1 コマンドです。各項目を pass/fail の JSON で返し、失敗した段階で止めます。
@@ -485,8 +491,8 @@ make hw-test
 機材を買う前に閉ループが回り始める順番:
 
 1. `ID` / `SCRATCH` / `FRAME_CRC` レジスタと `heartbeat` 出力を RTL に追加
-2. `harness/pins.yaml` を書き、`harness pincheck` を実装する (実機がなくても `make bitstream` の成果物だけで試せる)
-3. Pico 2 のファームウェアに `ping` / `spi` / `measure` を実装し、ピン設定を `pins.yaml` から生成したヘッダに寄せる
+2. ~~`harness/pins.json` と `make pincheck`、配線テスト~~ (実装済み)
+3. Pico 2 のファームウェアに `ping` / `spi` / `measure` を実装し、ピン設定を `pins.json` から生成したヘッダに寄せる
 4. Linux ホストで USB デバイスを渡したコンテナから `openFPGALoader` と Pico 2 の両方が見えることを確認
 5. ホスト側に Python の `harness selftest` を実装
 6. `make render` の PNG から CRC を計算し、実機の `FRAME_CRC` と比較する `make hw-test` を作る

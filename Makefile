@@ -11,7 +11,7 @@ PICO       := $(DOCKER_RUN) $(PICO_IMAGE)
 # --- FPGA ---
 # TARGET でビルドするトップを選ぶ (HDMI と 40 ピン LCD はピンを共用しているので別のビットストリームにする)
 # VIDEO_MODE は make render で使う vdp_video の MODE (0: 640x480, 1: 800x480)
-TARGET   ?= hdmi                # hdmi | lcd
+TARGET   ?= hdmi                # hdmi | lcd | harness_probe
 ifeq ($(strip $(TARGET)),hdmi)
 TOP        := top
 CST        := constraints/tangnano20k.cst
@@ -22,8 +22,13 @@ TOP        := top_lcd
 CST        := constraints/tangnano20k_lcd.cst
 VIDEO_MODE := 1
 RENDER_DIR := build/render_lcd
+else ifeq ($(strip $(TARGET)),harness_probe)
+TOP        := top_harness_probe
+CST        := constraints/tangnano20k_harness_probe.cst
+VIDEO_MODE := 0
+RENDER_DIR := build/render
 else
-$(error TARGET=$(strip $(TARGET)) は未対応です (hdmi | lcd))
+$(error TARGET=$(strip $(TARGET)) は未対応です (hdmi | lcd | harness_probe))
 endif
 
 DEVICE   := GW2AR-LV18QN88C8/I7
@@ -41,11 +46,19 @@ FRAMES   ?= 3
 
 BUILD    := build
 
+# --- ハーネス (docs/HARNESS.md) ---
+HARNESS_PINS     := harness/pins.json
+HARNESS_BOARD    ?= waveshare_rp2040_zero
+HARNESS_PLATFORM ?= rp2040
+HARNESS_FW_BUILD := harness/firmware/build
+HARNESS_UF2      := $(HARNESS_FW_BUILD)/harness_probe.uf2
+RP2_MOUNT         = $(firstword $(wildcard /Volumes/RPI-RP2 /Volumes/RP2350 /media/*/RPI-RP2 /media/*/RP2350))
+
 # --- RP2350 ---
 PICO_BOARD    ?= pico2
 PICO_PLATFORM ?= rp2350-arm-s   # rp2350-riscv にすると Hazard3 コア用
 
-.PHONY: help images image-fpga image-pico all lint sim $(addprefix sim-,$(TBS)) render synth pnr bitstream prog flash fw shell shell-pico zip clean
+.PHONY: help images image-fpga image-pico all lint sim $(addprefix sim-,$(TBS)) render synth pnr bitstream pincheck prog flash fw harness-fw harness-deploy shell shell-pico zip clean
 
 help:
 	@echo "make images      Docker イメージをビルド (image-fpga / image-pico で個別に)"
@@ -53,9 +66,12 @@ help:
 	@echo "make sim         テストベンチを全部実行 (SIM=iverilog|verilator, VCD は build/sim/)"
 	@echo "make sim-<tb>    個別テストベンチ実行 (例: make sim-tb_tmds_encoder)"
 	@echo "make render      Verilator で映像出力を PNG 化 ($(RENDER_DIR)/, FRAMES=$(FRAMES), TARGET=lcd で 800x480)"
-	@echo "make bitstream   合成 -> 配置配線 -> $(BUILD)/$(TOP).fs (TARGET=hdmi|lcd)"
+	@echo "make bitstream   合成 -> 配置配線 -> $(BUILD)/$(TOP).fs (TARGET=hdmi|lcd|harness_probe)"
+	@echo "make pincheck    ハーネスが駆動するピンを FPGA が駆動しないか検査 (prog / flash の前に自動で実行)"
 	@echo "make prog        SRAM に書き込み (ホストの openFPGALoader が必要)"
 	@echo "make flash       Flash に書き込み (同上)"
+	@echo "make harness-fw  ハーネスの配線テスト用 RP2 ファームウェア (HARNESS_BOARD=$(HARNESS_BOARD))"
+	@echo "make harness-deploy  BOOTSEL の RP2 に書き込む (ホストで実行)"
 	@echo "make fw          RP2350 ファームウェアをビルド (firmware/build/*.uf2)"
 	@echo "make shell       FPGA ツールコンテナのシェル"
 	@echo "make shell-pico  RP2350 ツールコンテナのシェル"
@@ -133,12 +149,17 @@ $(BUILD)/$(TOP).fs: $(BUILD)/$(TOP)_pnr.json
 	@grep -A30 'Device utilisation' $(BUILD)/$(TOP)_nextpnr.log | grep -E 'LUT|DFF|BSRAM|PLL|OSER|IOB' || true
 	@grep -E 'Max frequency' $(BUILD)/$(TOP)_nextpnr.log | tail -n 4 || true
 
-# Docker Desktop (macOS) のコンテナからは USB が見えないので書き込みだけはホストで行う
-prog: $(BUILD)/$(TOP).fs
-	openFPGALoader -b $(BOARD) $<
+# ハーネスが駆動するピン (harness/pins.json) を FPGA も駆動しようとしていないか検査する。
+# ハーネスがつながっている前提なので、prog / flash は必ずこれを通してから書き込む
+pincheck: $(BUILD)/$(TOP).fs
+	$(FPGA) python3 scripts/pincheck.py $(HARNESS_PINS) $(CST) $(BUILD)/$(TOP).json $<
 
-flash: $(BUILD)/$(TOP).fs
-	openFPGALoader -b $(BOARD) -f $<
+# Docker Desktop (macOS) のコンテナからは USB が見えないので書き込みだけはホストで行う
+prog: pincheck
+	openFPGALoader -b $(BOARD) $(BUILD)/$(TOP).fs
+
+flash: pincheck
+	openFPGALoader -b $(BOARD) -f $(BUILD)/$(TOP).fs
 
 # ---------------------------------------------------------------- RP2350
 fw:
@@ -146,6 +167,22 @@ fw:
 		-DPICO_BOARD=$(strip $(PICO_BOARD)) -DPICO_PLATFORM=$(strip $(PICO_PLATFORM)) \
 		&& cmake --build firmware/build'
 	@ls firmware/build/*.uf2
+
+# ---------------------------------------------------------------- ハーネス
+# ピン定義は harness/pins.json から生成する (ファームウェア側で手書きしない)
+harness-fw:
+	@mkdir -p $(HARNESS_FW_BUILD)
+	$(PICO) python3 scripts/gen_pins_h.py $(HARNESS_PINS) $(HARNESS_FW_BUILD)/pins.h
+	$(PICO) sh -c 'cmake -S harness/firmware -B $(HARNESS_FW_BUILD) -G Ninja \
+		-DPICO_BOARD=$(strip $(HARNESS_BOARD)) -DPICO_PLATFORM=$(strip $(HARNESS_PLATFORM)) \
+		&& cmake --build $(HARNESS_FW_BUILD)'
+	@ls $(HARNESS_UF2)
+
+# BOOTSEL で出てくるドライブに UF2 をコピーする (コンテナから USB は見えないのでホストで実行)
+harness-deploy: harness-fw
+	@if [ -z "$(RP2_MOUNT)" ]; then echo "RP2 の BOOTSEL ドライブが見つかりません (BOOT を押しながら USB をつなぐ)"; exit 1; fi
+	cp $(HARNESS_UF2) $(RP2_MOUNT)/
+	@echo "-> $(RP2_MOUNT)"
 
 # ---------------------------------------------------------------- その他
 shell:
@@ -170,4 +207,4 @@ zip:
 	@echo "-> $(ZIP)"
 
 clean:
-	rm -rf $(BUILD) firmware/build certs.pem dist
+	rm -rf $(BUILD) firmware/build $(HARNESS_FW_BUILD) certs.pem dist
