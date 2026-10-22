@@ -1,5 +1,11 @@
 #!/usr/bin/env python3
-"""P6 PPM を PNG に変換する (標準ライブラリのみ)。 usage: ppm2png.py in.ppm [...]"""
+"""P6 PPM を PNG に変換する (標準ライブラリのみ)。 usage: ppm2png.py in.ppm [...]
+
+同じディレクトリに frames.json も書く。各フレームのピクセル (行優先の RGB バイト列) の CRC-32 を入れておき、
+実機の FRAME_CRC (rtl/vdp/frame_crc.sv) と比べるのに使う。
+"""
+import json
+import os
 import struct
 import sys
 import zlib
@@ -36,7 +42,14 @@ def write_png(path, w, h, rgb):
         f.write(chunk(b"IEND", b""))
 
 
-for src in sys.argv[1:]:
+frames = []
+for src in sorted(sys.argv[1:]):
     dst = src.rsplit(".", 1)[0] + ".png"
-    write_png(dst, *read_ppm(src))
-    print(f"{src} -> {dst}")
+    w, h, rgb = read_ppm(src)
+    write_png(dst, w, h, rgb)
+    crc = zlib.crc32(rgb)
+    frames.append({"png": os.path.basename(dst), "width": w, "height": h, "crc": f"0x{crc:08x}"})
+    print(f"{src} -> {dst} (crc 0x{crc:08x})")
+if frames:
+    with open(os.path.join(os.path.dirname(sys.argv[1]), "frames.json"), "w") as f:
+        json.dump(frames, f, indent=1)

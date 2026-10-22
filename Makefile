@@ -30,6 +30,9 @@ RENDER_DIR := build/render
 else
 $(error TARGET=$(strip $(TARGET)) は未対応です (hdmi | lcd | harness_probe))
 endif
+ifeq ($(strip $(FREEZE)),1)
+RENDER_DIR := $(RENDER_DIR)_frozen
+endif
 
 DEVICE   := GW2AR-LV18QN88C8/I7
 FAMILY   := GW2A-18C
@@ -44,6 +47,7 @@ TBS      := $(basename $(notdir $(wildcard sim/tb_*.sv)))
 SIM_LIB  := $(filter-out sim/tb_%.sv,$(wildcard sim/*.sv))   # テストベンチが使うモデル (sdram_model など)
 SIM      ?= iverilog            # iverilog | verilator
 FRAMES   ?= 3
+FREEZE   ?= 0                   # 1: アニメーションを止めて描く (実機の FRAME_CRC と比べる参照用)
 
 BUILD    := build
 
@@ -67,6 +71,7 @@ help:
 	@echo "make sim         テストベンチを全部実行 (SIM=iverilog|verilator, VCD は build/sim/)"
 	@echo "make sim-<tb>    個別テストベンチ実行 (例: make sim-tb_tmds_encoder)"
 	@echo "make render      Verilator で映像出力を PNG 化 ($(RENDER_DIR)/, FRAMES=$(FRAMES), TARGET=lcd で 800x480)"
+	@echo "                 FREEZE=1 でアニメーションを止めた参照画像と CRC (frames.json) を build/render_frozen/ に"
 	@echo "make bitstream   合成 -> 配置配線 -> $(BUILD)/$(TOP).fs (TARGET=hdmi|lcd|harness_probe)"
 	@echo "make pincheck    ハーネスが駆動するピンを FPGA が駆動しないか検査 (prog / flash の前に自動で実行)"
 	@echo "make prog        SRAM に書き込み (ホストの openFPGALoader が必要)"
@@ -129,7 +134,7 @@ render: | $(RENDER_DIR)
 	$(FPGA) verilator --cc --exe --build -j 0 -O2 -Wno-fatal \
 		--top-module vdp_video -GMODE=$(VIDEO_MODE) -Mdir $(RENDER_DIR)/obj -o render \
 		$(VDP_SRC) sim/verilator/render_main.cpp
-	$(FPGA) $(RENDER_DIR)/obj/render $(RENDER_DIR) $(FRAMES)
+	$(FPGA) $(RENDER_DIR)/obj/render $(RENDER_DIR) $(FRAMES) $(strip $(FREEZE))
 	$(FPGA) python3 scripts/ppm2png.py $(RENDER_DIR)/*.ppm
 	@rm -f $(RENDER_DIR)/*.ppm
 

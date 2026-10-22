@@ -64,6 +64,7 @@ make help
 | `make render` | Verilator で映像出力を回し、各フレームを `build/render/frame_*.png` に保存 |
 | `make bitstream` | 合成 → 配置配線 → `build/top.fs` |
 | `make bitstream TARGET=lcd` | 40 ピン RGB LCD (800x480) に HDMI と同じテストパターンを出す → `build/top_lcd.fs` (`make prog TARGET=lcd` で書き込み) |
+| `make render FREEZE=1` | アニメーションを止めた参照画像と各フレームの CRC (`frames.json`) を `build/render_frozen/` に (実機の `FRAME_CRC` と比べる) |
 | `make render TARGET=lcd` | LCD 版の映像を `build/render_lcd/frame_*.png` に保存 |
 | `make harness-fw` / `python3 tools/harness/harness.py <cmd>` | ハーネスの RP2 ブリッジとホストツール (`status` / `spi` / `wiretest` / `prog` など)。詳細は [docs/HARNESS.md](docs/HARNESS.md) |
 | `make prog` / `make flash` | Tang Nano 20K の SRAM / Flash に書き込み (先に `make pincheck` でハーネスのピンと衝突しないか検査する) |
