@@ -11,6 +11,7 @@ Tang Nano 20K (Gowin GW2AR-18) と RP2350 で、レトロゲーム機の VDP の
 ## ドキュメント
 
 - [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md): 設計方針 (レジスタバス、タイル方式の画面生成)
+- [docs/GPU_PLAN.md](docs/GPU_PLAN.md): SDRAM フレームバッファの tiny-GPU の開発計画 (ハーネスで検証しながら進める)
 - [docs/WIRING.md](docs/WIRING.md): RP2350 と Tang Nano 20K の配線・SPI ピン割り当て
 - [docs/DEVELOPMENT.md](docs/DEVELOPMENT.md): 開発環境の補足
 
@@ -64,7 +65,7 @@ make help
 | `make bitstream` | 合成 → 配置配線 → `build/top.fs` |
 | `make bitstream TARGET=lcd` | 40 ピン RGB LCD (800x480) に HDMI と同じテストパターンを出す → `build/top_lcd.fs` (`make prog TARGET=lcd` で書き込み) |
 | `make render TARGET=lcd` | LCD 版の映像を `build/render_lcd/frame_*.png` に保存 |
-| `make prog TARGET=harness_probe` / `make harness-fw` | ハーネスの配線テスト (FPGA 側 / RP2 側)。詳細は [docs/HARNESS.md](docs/HARNESS.md) |
+| `make harness-fw` / `python3 tools/harness/harness.py <cmd>` | ハーネスの RP2 ブリッジとホストツール (`status` / `spi` / `wiretest` / `prog` など)。詳細は [docs/HARNESS.md](docs/HARNESS.md) |
 | `make prog` / `make flash` | Tang Nano 20K の SRAM / Flash に書き込み (先に `make pincheck` でハーネスのピンと衝突しないか検査する) |
 | `make fw` | RP2350 ファームウェアをビルド (`firmware/build/vdp_host.uf2`) |
 | `make shell` / `make shell-pico` | 各コンテナのシェルに入る |

@@ -8,16 +8,16 @@ IO_LOC  "spi_sck"   73;
 IO_PORT "spi_sck"   IO_TYPE=LVCMOS33 PULL_MODE=DOWN;
 IO_LOC  "spi_copi"  74;
 IO_PORT "spi_copi"  IO_TYPE=LVCMOS33 PULL_MODE=DOWN;
-IO_LOC  "spi_cs_n"  72;
-IO_PORT "spi_cs_n"  IO_TYPE=LVCMOS33 PULL_MODE=DOWN;
-IO_LOC  "rst_n_in"  86;
-IO_PORT "rst_n_in"  IO_TYPE=LVCMOS33 PULL_MODE=DOWN;
+IO_LOC  "spi_cs"    72;
+IO_PORT "spi_cs"    IO_TYPE=LVCMOS33 PULL_MODE=DOWN;
+IO_LOC  "rst_in"    86;
+IO_PORT "rst_in"    IO_TYPE=LVCMOS33 PULL_MODE=DOWN;
 
 // FPGA -> RP2
 IO_LOC  "spi_cipo"  75;
 IO_PORT "spi_cipo"  IO_TYPE=LVCMOS33 PULL_MODE=NONE DRIVE=8;
-IO_LOC  "vdp_irq_n" 71;
-IO_PORT "vdp_irq_n" IO_TYPE=LVCMOS33 PULL_MODE=NONE DRIVE=8;
+IO_LOC  "vdp_irq"   71;
+IO_PORT "vdp_irq"   IO_TYPE=LVCMOS33 PULL_MODE=NONE DRIVE=8;
 IO_LOC  "vsync_out" 42;
 IO_PORT "vsync_out" IO_TYPE=LVCMOS33 PULL_MODE=NONE DRIVE=8;
 IO_LOC  "heartbeat" 41;

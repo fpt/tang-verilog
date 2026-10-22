@@ -52,7 +52,7 @@ Zero 系 2 種の共通の注意:
 | --- | --- | --- |
 | ビルド | Linux ホスト (Docker) | 合成・配置配線・シミュレーション・`make render` による参照画像の生成。Mac でビルドして成果物だけ渡してもよい |
 | 書き込み・FPGA 側の観測 | Linux ホスト (Docker) | `openFPGALoader` で書き込み、BL616 の UART を受信、HDMI キャプチャ、参照との比較 |
-| 実行・ピン側の観測 | Pico 2 | SPI でコマンド実行、GPIO 監視 (周期測定)、RESET_N、シナリオ実行 |
+| 実行・ピン側の観測 | Pico 2 | SPI でコマンド実行、GPIO 監視 (周期測定)、RESET、シナリオ実行 |
 | 判断 | エージェント | `make hw-test` などを呼び、返ってきた JSON と差分画像を読んで次の修正を決める |
 
 ```text
@@ -91,7 +91,7 @@ JTAG で内部を覗くのは諦め、**UART を FPGA 側の自己申告チャ�
 - SPI でレジスタバスを駆動し、VDP にコマンドを送る (本番と同じプロトコル)
 - VSYNC / HEARTBEAT / ERROR / IRQ を GPIO で直接観測し、エッジの時刻を µs 精度で記録する
 - オンボード LED (ヘッダに出ている) を読む
-- RESET_N で VDP をリセットする
+- RESET で VDP をリセットする
 - シナリオを Pico 2 上で実行する (`wait_vsync` のようなタイミング依存の操作を USB の遅延に左右されずに実行できる)
 
 Pico 2 のファームウェアも Linux ホストから更新できます。`make fw` でビルドし、`picotool load -f -x` で書き込みます
@@ -115,19 +115,19 @@ Pico 2 と Tang Nano 20K はそれぞれ Linux ホストの USB から給電し�
 
 ### ピン割り当て
 
-SCK〜IRQ_N は [WIRING.md](WIRING.md) と同じです。ハーネス用に観測線と RESET_N、LED を足しています。
+SCK〜IRQ は [WIRING.md](WIRING.md) と同じです。ハーネス用に観測線と RESET、LED を足しています。
 
 | 信号 | 向き | Tang Nano ピン | Pico 2 GPIO | Pico 2 物理ピン | 備考 |
 | --- | --- | --- | --- | --- | --- |
 | SCK | Pico → FPGA | 73 | GP2 (SPI0 SCK) | 4 | WIRING.md と同じ |
 | COPI | Pico → FPGA | 74 | GP3 (SPI0 TX) | 5 | 同上 |
 | CIPO | FPGA → Pico | 75 | GP4 (SPI0 RX) | 6 | 同上 |
-| CS_N | Pico → FPGA | 72 | GP5 | 7 | 同上。GPIO で制御 |
-| IRQ_N | FPGA → Pico | 71 | GP6 | 9 | 同上。VBLANK 割り込み |
+| CS | Pico → FPGA | 72 | GP5 | 7 | 同上。GPIO で制御 |
+| IRQ | FPGA → Pico | 71 | GP6 | 9 | 同上。VBLANK 割り込み |
 | VSYNC | FPGA → Pico | 42 | GP7 | 10 | `video_timing` の vsync をそのまま出す |
 | HEARTBEAT | FPGA → Pico | 41 | GP8 | 11 | フレームごとにトグル (30Hz 方形波) |
 | ERROR | FPGA → Pico | 48 | GP9 | 12 | コマンド FIFO あふれなど。将来は SDRAM 初期化失敗も |
-| RESET_N | Pico → FPGA | 86 | GP10 | 14 | Pico から VDP をリセット |
+| RESET | Pico → FPGA | 86 | GP10 | 14 | Pico から VDP をリセット |
 | LED0〜4 | FPGA → Pico | 15〜19 | GP11〜GP15 | 15, 16, 17, 19, 20 | 読むだけ。負論理・プルアップ付き |
 | LED5 | FPGA → Pico | 20 | GP26 | 31 | 同上。Zero 系では GP16 が WS2812 なので GP26 に飛ばしている |
 | GND | — | GND ×2 | GND | 3, 18 | SCK の近くと LED 束の近くに 1 本ずつ |
@@ -171,12 +171,12 @@ Pico 2 に SSD1306 の I2C OLED (128x64 または 128x32) をつなぎ、ハー�
    4  GP2  SCK        ──────────────────────►  73
    5  GP3  COPI       ──────────────────────►  74
    6  GP4  CIPO       ◄──────────────────────  75
-   7  GP5  CS_N       ──────────────────────►  72
-   9  GP6  IRQ_N      ◄──────────────────────  71
+   7  GP5  CS       ──────────────────────►  72
+   9  GP6  IRQ      ◄──────────────────────  71
   10  GP7  VSYNC      ◄──────────────────────  42
   11  GP8  HEARTBEAT  ◄──────────────────────  41
   12  GP9  ERROR      ◄──────────────────────  48
-  14  GP10 RESET_N    ──────────────────────►  86
+  14  GP10 RESET    ──────────────────────►  86
   15  GP11 LED0       ◄──────────────────────  15
   16  GP12 LED1       ◄──────────────────────  16
   17  GP13 LED2       ◄──────────────────────  17
@@ -209,8 +209,8 @@ Pico 2 に SSD1306 の I2C OLED (128x64 または 128x32) をつなぎ、ハー�
 
 | 線 | 抵抗 | 衝突時の電流 | 理由 |
 | --- | --- | --- | --- |
-| SCK / COPI / CIPO / CS_N | 220Ω | 15mA | 速度が要る線。6MHz まではこれで成立する |
-| VSYNC / HEARTBEAT / ERROR / IRQ_N / RESET_N / LED0〜5 | 1kΩ | 3.3mA | 変化は数 ms に 1 回なので、遅いエッジでも困らない |
+| SCK / COPI / CIPO / CS | 220Ω | 15mA | 速度が要る線。6MHz まではこれで成立する |
+| VSYNC / HEARTBEAT / ERROR / IRQ / RESET / LED0〜5 | 1kΩ | 3.3mA | 変化は数 ms に 1 回なので、遅いエッジでも困らない |
 | GND | なし | — | — |
 
 - 抵抗は **ドライバ側 (信号の出口)** に置きます。Pico → FPGA の線は Pico 側、FPGA → Pico の線は Tang Nano 側
@@ -247,7 +247,7 @@ Pico 2 に SSD1306 の I2C OLED (128x64 または 128x32) をつなぎ、ハー�
 
 - ピンの向きと機能の設定 (`gpio_set_dir` / `gpio_set_function` / プル設定) は、ピン表から生成したヘッダ (`pins.h`。`make harness-fw` が [`scripts/gen_pins_h.py`](../scripts/gen_pins_h.py) で生成) を使う 1 つのモジュールで、起動時に 1 回だけ行う
 - それ以外の場所でこれらの関数を呼んでいたら `make fw` を失敗させる (grep で十分)
-- ホストからのコマンドは観測ピンを読めるが、ピンの向きは変えられない。出力として動かせるのは CS_N・RESET_N と SPI だけ
+- ホストからのコマンドは観測ピンを読めるが、ピンの向きは変えられない。出力として動かせるのは CS・RESET と SPI だけ
 
 この 2 つがあれば、ピンの向きの間違いは「電気的な衝突」ではなく「selftest の失敗」として表に出ます。
 直列抵抗が受け持つのは、電源投入直後や FPGA の書き込み中など、検査が及ばない瞬間だけになります。
@@ -264,8 +264,8 @@ IO_LOC  "heartbeat"   41;
 IO_PORT "heartbeat"   IO_TYPE=LVCMOS33 PULL_MODE=NONE DRIVE=8;
 IO_LOC  "error_out"   48;
 IO_PORT "error_out"   IO_TYPE=LVCMOS33 PULL_MODE=NONE DRIVE=8;
-IO_LOC  "rst_n_in"    86;
-IO_PORT "rst_n_in"    IO_TYPE=LVCMOS33 PULL_MODE=UP;
+IO_LOC  "rst_in"      86;
+IO_PORT "rst_in"      IO_TYPE=LVCMOS33 PULL_MODE=DOWN;
 IO_LOC  "uart_tx"     69;
 IO_PORT "uart_tx"     IO_TYPE=LVCMOS33 PULL_MODE=NONE DRIVE=8;
 IO_LOC  "uart_rx"     70;
@@ -276,7 +276,7 @@ IO_PORT "uart_rx"     IO_TYPE=LVCMOS33 PULL_MODE=UP;
 
 - ジャンパワイヤは 10〜15 cm 程度に収める
 - FPGA を書き込み直している間は CIPO / IRQ / 観測線が不定になるので、Pico 2 側はその間の値を信用しない
-- Pico 2 の入力ピンにはプルを設定しておく (CS_N / RESET_N の出力は起動直後に High を出す。入力は IRQ_N・LED がプルアップ、それ以外はプルダウン)
+- Pico 2 の入力ピンにはプルを設定しておく (ハーネスの全ピンは、駆動するとき以外は入力 + プルダウン。RP2 → FPGA の線はすべて正論理なので、プルダウンされた状態が「何もしていない」になる)
 
 ## FPGA 側に追加するもの
 
@@ -332,11 +332,11 @@ USB CDC 上で 1 行 1 JSON のやりとりをします。
 | コマンド | 内容 |
 | --- | --- |
 | `ping` | ファームウェアのバージョンを返す |
-| `spi` | 1 トランザクション (CS_N を下げて送受信して上げる) |
+| `spi` | 1 トランザクション (CS を上げて送受信して下げる) |
 | `read` / `write` | レジスタ名かアドレスで読み書き (`spi` の薄いラッパ) |
 | `gpio` | 全観測ピンの現在値 |
 | `measure` | 指定ピンのエッジ時刻を指定時間記録し、周期を返す (GPIO 割り込み + µs タイマ) |
-| `reset` | RESET_N を指定時間 Low にする |
+| `reset` | RESET を指定時間 High にする |
 | `run` | シナリオ (後述) を受け取って Pico 2 上で実行し、結果をまとめて返す |
 | `status` | OLED に任意の 1 行を表示する (ホスト側から段階名などを出す) |
 
@@ -389,25 +389,55 @@ USB の接続が切れていても読めるように、Pico 2 が自分で観測
 
 ## 検証方法
 
-### 配線テスト (実装済み)
+### RP2 ブリッジとホストツール (実装済み)
 
-ハーネスを組んだら、まずこれで全部の線を確かめます。FPGA と RP2 の両方に専用のテストを書き込みます。
+RP2 には [`harness/firmware`](../harness/firmware/src/main.c) のブリッジを一度だけ書き込み、以降はホストの
+[`tools/harness/harness.py`](../tools/harness/harness.py) から操作します ([GPU_PLAN.md](GPU_PLAN.md) の M0)。
+ブリッジは GPU のレジスタやコマンドの意味を知らず、SPI のバイト列を素通しするだけなので、GPU を作り変えても書き換える必要がありません。
 
 ```bash
-make prog TARGET=harness_probe   # FPGA の SRAM に書き込む (pincheck を通ってから。Flash の内容はそのまま)
-make harness-fw                  # RP2 のテストファームウェア (既定は RP2040-Zero。HARNESS_BOARD / HARNESS_PLATFORM で変更)
-# RP2 を BOOTSEL で接続し、harness/firmware/build/harness_probe.uf2 を RPI-RP2 ドライブへコピーする
+make harness-fw                                  # ブリッジ (既定は RP2040-Zero。HARNESS_BOARD / HARNESS_PLATFORM で変更)
+# 初回だけ: BOOT を押しながら USB をつなぎ、harness/firmware/build/harness_bridge.uf2 を RPI-RP2 ドライブへコピー
+python3 tools/harness/harness.py bootsel         # 2 回目以降は BOOT ボタンなしで BOOTSEL に入れる
+python3 tools/harness/harness.py status          # ピンの値、HEARTBEAT / VSYNC / IRQ の周期、ready
+python3 tools/harness/harness.py spi a55a0102    # SPI の 1 トランザクション
+python3 tools/harness/harness.py prog hdmi       # make prog TARGET=hdmi (pincheck 込み)
 ```
 
-- FPGA ([`rtl/gowin/top_harness_probe.sv`](../rtl/gowin/top_harness_probe.sv)): FPGA → RP2 の 11 本をそれぞれ違う周波数 (13.2kHz〜12.9Hz) でトグルさせる。RP2 → FPGA の 4 本のどれかが High の間は、SCK→CIPO, COPI→IRQ_N, CS_N→VSYNC, RESET_N→HEARTBEAT と折り返す。RP2 → FPGA の線は FPGA 側でもプルダウン
-- RP2 ([`harness/firmware/src/main.c`](../harness/firmware/src/main.c)): 起動後 2 秒、以降 3 秒ごと (または USB シリアルに `t` を送ったとき) に実行し、1 行 1 JSON で結果を出す
+| コマンド | 内容 |
+| --- | --- |
+| `ping` | ファームウェア名・版・ボード |
+| `status` | 全ハーネスピンの値、HEARTBEAT / VSYNC / IRQ の周期と最後のエッジからの時間、ready、SPI の周波数と回数 |
+| `spi <hex>` | CS を上げて送受信し、受信を hex で返す (最大 4096 バイト)。ready でなければ何も駆動しない |
+| `freq <hz>` | SPI の周波数 (既定 1MHz) |
+| `reset [ms]` | RESET を指定時間 High にする (FPGA が止まったときの復旧用なので ready は見ない) |
+| `irqwait [ms]` | IRQ の立ち上がりを待つ |
+| `wiretest` | 配線テスト (下記) |
+| `bootsel` | BOOTSEL モードで再起動する |
+
+- 出力は 1 つの JSON。`"ok"` が true でなければ終了コード 1
+- **ready**: HEARTBEAT が直近 100ms 以内に立ち上がっていること。FPGA の書き込み中や、HEARTBEAT を出さない設計 (今の HDMI など) では `spi` を拒否する
+- ハーネスのピンは、駆動するとき以外は常に入力 + プルダウン。SPI 線もトランザクションの間だけ SPI 機能にする
+- ブリッジは自分からは何も駆動しない (コマンドを受けたときだけ)
+- macOS 26 では `cp` で `RPI-RP2` にコピーすると固まることがあったので、Finder でドラッグするのが確実 (`make harness-deploy` は Linux 向け)
+- ハーネスのピンを使わない設計 (今の HDMI など) では、FPGA の未使用ピンの弱いプルアップが RP2 のプルダウンに勝ち、全部 High に読める。弱いプル同士なので衝突ではない
+
+### 配線テスト (実装済み)
+
+ハーネスを組んだら、まずこれで全部の線を確かめます。
+
+```bash
+python3 tools/harness/harness.py prog harness_probe   # FPGA の SRAM にテスト用の設計を書き込む (Flash の内容はそのまま)
+python3 tools/harness/harness.py wiretest
+```
+
+- FPGA ([`rtl/gowin/top_harness_probe.sv`](../rtl/gowin/top_harness_probe.sv)): FPGA → RP2 の 11 本をそれぞれ違う周波数 (13.2kHz〜12.9Hz) でトグルさせる。RP2 → FPGA の 4 本のどれかが High の間は、SCK→CIPO, COPI→IRQ, CS→VSYNC, RESET→HEARTBEAT と折り返す。RP2 → FPGA の線は FPGA 側でもプルダウン
+- RP2 の `wiretest`:
   1. 全ピンを入力 + プルダウンにする
   2. 500ms 読むだけ。FPGA → RP2 の各線の立ち上がり回数が期待値 ±10% か、RP2 → FPGA の線がずっと Low か
   3. 2 が全部通ったときだけ、RP2 → FPGA の線を 1 本ずつ 100µs High にし、折り返し先だけが High になるかを見る
   4. 全ピンを入力 + プルダウンに戻す
-- FPGA にテスト用の設計が入っていない (電源を入れ直して HDMI に戻った、など) と 2 で失敗するので、RP2 は何も駆動しない
-- 結果の読み方 (macOS): `stty -f /dev/cu.usbmodem* raw; cat /dev/cu.usbmodem*`。`"pass":true` なら配線は正しい
-- macOS 26 では `cp` で `RPI-RP2` にコピーすると固まることがあったので、Finder でドラッグするのが確実 (`make harness-deploy` は Linux 向け)
+- FPGA にテスト用の設計が入っていないと 2 で失敗するので、RP2 は何も駆動しない
 
 ### `harness selftest`
 
@@ -424,7 +454,7 @@ make harness-fw                  # RP2 のテストファームウェア (既定
 | 7 | `ID` = `0x5A`、`SCRATCH` に乱数を書いて読み返し、1MHz で 100 往復してエラー 0 | Pico | 配線か SPI スレーブ |
 | 8 | UART に起動バナーが出ている | ホスト | UART TX、リセット系 |
 | 9 | LED0〜5 の現在値を報告 | Pico | (情報のみ) |
-| 10 | RESET_N を落とすと HEARTBEAT が止まり、戻すと再開する | Pico | リセット配線 |
+| 10 | RESET を上げると HEARTBEAT が止まり、下げると再開する | Pico | リセット配線 |
 
 項目 2 が失敗し、項目 1 が通る場合は Pico 2 側の問題、と切り分けられます。
 
@@ -472,7 +502,7 @@ make hw-test
 ```
 
 - 失敗時にエージェントが読むのは JSON と差分画像だけにする
-- タイムアウトと復旧: FPGA が固まったら RESET_N → 効かなければ USB 経由で再書き込み (SRAM 書き込みなので再起動相当) → それでもだめなら `uhubctl` で USB 給電を落とす (ポート個別の電源制御に対応したハブが必要)
+- タイムアウトと復旧: FPGA が固まったら RESET → 効かなければ USB 経由で再書き込み (SRAM 書き込みなので再起動相当) → それでもだめなら `uhubctl` で USB 給電を落とす (ポート個別の電源制御に対応したハブが必要)
 - Pico 2 が応答しなくなったら `picotool reboot` → 効かなければ `uhubctl` で Pico 2 のポートの給電を落とす
 - `harness` は小さな Python CLI として実装し、`pincheck` / `prog` / `spi` / `gpio` / `uart` / `capture` / `compare` / `selftest` / `run` のサブコマンドを持たせる。`prog` は内部で必ず `pincheck` を先に実行し、`--force` のような回避手段は用意しない
 

@@ -6,6 +6,7 @@ Tang Nano 20K (FPGA, VDP 本体) + RP2350 (ホスト CPU) でレトロゲーム�
 ## 前提
 
 - ツールはすべて Docker で動かす。ホストにツールをインストールしない (ボードへの書き込み用の `openFPGALoader` だけは例外)
+  - USB を使うハーネスのホストツール `tools/harness/harness.py` (Python 標準ライブラリだけ) もホストで直接動かす。macOS の Docker Desktop からは USB が見えないため
 - オープンソースのツールだけを使う (Gowin EDA は使わない)
 - 操作は `Makefile` を通す。新しい処理を足すときも、コンテナ内で動く Make ターゲットとして追加する
 - ホストは Apple Silicon の macOS + Docker Desktop。メモリに余裕がないので、重い `docker build` は並列に走らせない

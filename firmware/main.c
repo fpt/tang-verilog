@@ -18,9 +18,9 @@ int main(void) {
     gpio_set_function(PIN_SCK, GPIO_FUNC_SPI);
     gpio_set_function(PIN_MOSI, GPIO_FUNC_SPI);
     gpio_set_function(PIN_MISO, GPIO_FUNC_SPI);
-    gpio_init(PIN_CS);
+    gpio_init(PIN_CS);                 // CS は正論理 (High で選択)。docs/WIRING.md
     gpio_set_dir(PIN_CS, GPIO_OUT);
-    gpio_put(PIN_CS, 1);
+    gpio_put(PIN_CS, 0);
 
 #ifdef PICO_DEFAULT_LED_PIN
     gpio_init(PICO_DEFAULT_LED_PIN);
@@ -31,9 +31,9 @@ int main(void) {
     while (true) {
         // 例: [コマンド, 引数] を送る (FPGA 側のプロトコルは今後設計)
         uint8_t cmd[2] = {0x01, frame++};
-        gpio_put(PIN_CS, 0);
-        spi_write_blocking(VDP_SPI, cmd, sizeof cmd);
         gpio_put(PIN_CS, 1);
+        spi_write_blocking(VDP_SPI, cmd, sizeof cmd);
+        gpio_put(PIN_CS, 0);
 
 #ifdef PICO_DEFAULT_LED_PIN
         gpio_put(PICO_DEFAULT_LED_PIN, frame & 0x10);

@@ -13,13 +13,13 @@ RP2350 が SPI マスタ、FPGA が SPI スレーブです。設計の背景は 
 | SCK | RP2350 → FPGA | GP2 (SPI0 SCK) | 4 | D8 | **73** | `spi_sck` |
 | COPI (MOSI) | RP2350 → FPGA | GP3 (SPI0 TX) | 5 | D10 | **74** | `spi_copi` |
 | CIPO (MISO) | FPGA → RP2350 | GP4 (SPI0 RX) | 6 | D9 | **75** | `spi_cipo` |
-| CS (負論理) | RP2350 → FPGA | GP5 (GPIO 出力) | 7 | D3 | **72** | `spi_cs_n` |
-| IRQ (負論理) | FPGA → RP2350 | GP6 (GPIO 入力) | 9 | D4 | **71** | `vdp_irq_n` |
+| CS (正論理) | RP2350 → FPGA | GP5 (GPIO 出力) | 7 | D3 | **72** | `spi_cs` |
+| IRQ (正論理) | FPGA → RP2350 | GP6 (GPIO 入力) | 9 | D4 | **71** | `vdp_irq` |
 | GND | — | GND | 3 または 8 | GND | GND (左列いちばん下 / 右列 2 番目) | — |
 
 - SCK / COPI / CIPO / CS の GPIO は `firmware/main.c` の `PIN_SCK` / `PIN_MOSI` / `PIN_MISO` / `PIN_CS` と同じです
-- CS はハードウェアの SPI0 CSn ではなく GPIO で制御します (複数バイトのトランザクション中に CS を下げたままにするため)
-- IRQ は VBLANK 通知用です。最初の試作では未使用でもかまいません (RP2350 側でプルアップしておく)
+- CS はハードウェアの SPI0 CSn ではなく GPIO で制御します (複数バイトのトランザクション中に CS を上げたままにするため)
+- IRQ は VBLANK 通知用です。最初の試作では未使用でもかまいません (RP2350 側でプルダウンしておく)
 - 電源はそれぞれの USB から取り、**3V3 同士・5V 同士はつながない** (GND だけ共通にする)
 
 ### Tang Nano 20K 側のピンを選んだ理由
@@ -100,12 +100,12 @@ SPI スレーブを実装するときに下げてください。
 トランザクションの形式 (案):
 
 ```text
-書き込み: CS↓  [0x00 | addr(7bit)] [data] ... CS↑
-読み出し: CS↓  [0x80 | addr(7bit)] [dummy → data] CS↑
+書き込み: CS↑  [0x00 | addr(7bit)] [data] ... CS↓
+読み出し: CS↑  [0x80 | addr(7bit)] [dummy → data] CS↓
 ```
 
 先頭バイトの最上位ビットで読み書きを区別し、残り 7 bit がレジスタアドレスです ([ARCHITECTURE.md](ARCHITECTURE.md) のレジスタマップ)。
-`VRAM_DATA` への連続書き込みは、CS を下げたままデータバイトを続けて送るとアドレスが自動インクリメントされる想定です。
+`VRAM_DATA` への連続書き込みは、CS を上げたままデータバイトを続けて送るとアドレスが自動インクリメントされる想定です。
 
 ## 制約ファイルに足す内容
 
@@ -119,13 +119,14 @@ IO_LOC  "spi_copi" 74;
 IO_PORT "spi_copi" IO_TYPE=LVCMOS33 PULL_MODE=DOWN;
 IO_LOC  "spi_cipo" 75;
 IO_PORT "spi_cipo" IO_TYPE=LVCMOS33 PULL_MODE=NONE DRIVE=8;
-IO_LOC  "spi_cs_n" 72;
-IO_PORT "spi_cs_n" IO_TYPE=LVCMOS33 PULL_MODE=UP;
-IO_LOC  "vdp_irq_n" 71;
-IO_PORT "vdp_irq_n" IO_TYPE=LVCMOS33 PULL_MODE=NONE DRIVE=8;
+IO_LOC  "spi_cs" 72;
+IO_PORT "spi_cs" IO_TYPE=LVCMOS33 PULL_MODE=DOWN;
+IO_LOC  "vdp_irq" 71;
+IO_PORT "vdp_irq" IO_TYPE=LVCMOS33 PULL_MODE=NONE DRIVE=8;
 ```
 
-CS をプルアップしておくと、RP2350 をつないでいないときや起動中に FPGA が誤って選択されません。
+CS は正論理 (High で選択) にしてプルダウンしておくと、RP2350 をつないでいないときや起動中、RP2350 がピンを離しているときに FPGA が誤って選択されません。
+RESET・IRQ も同じく正論理で、Low が「何もしていない」状態です ([GPU_PLAN.md](GPU_PLAN.md) の M0)。
 
 ## 注意
 
