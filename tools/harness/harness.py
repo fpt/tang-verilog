@@ -17,6 +17,9 @@ usage: harness.py [--port PORT] <command> [args...]
   selftest [--iterations N] HARNESS.md の selftest (FPGA に hdmi などの設計が入っている前提)
   memtest [--size N] [--samples 2,3,..] [--seed S]
                             SDRAM の BIST を読み出しの取り込み位置ごとに実行 (size はワード数の log2、既定 21 = 8MiB)
+  frametest [--ref-dir DIR] [--no-capture] [--out DIR]
+                            アニメーションを止め、FRAME_CRC を参照 (make render FREEZE=1 の frames.json) と比べ、
+                            HDMI キャプチャも参照画像と比べる。キャプチャと差分画像を --out に保存
   mem read <word_addr> [n]  SDRAM を 1 ワードずつ読む
   mem write <word_addr> <hex32>...  SDRAM に書く
 
@@ -41,6 +44,7 @@ REGS = {
     "STATUS": 0x00,
     "CONTROL": 0x01,
     "FRAME_COUNT": 0x04,
+    "FRAME_CRC": 0x05,      # 32bit、リトルエンディアン (0x05..0x08)
     "SCRATCH": 0x7D,
     "ID": 0x7E,
     "VERSION": 0x7F,
@@ -55,6 +59,7 @@ MEM_ST_INIT, MEM_ST_BUSY, MEM_ST_DONE, MEM_ST_PASS = 0x01, 0x02, 0x04, 0x08
 REGS.update({f"MEM_{k}": v for k, v in MEM.items()})
 VDP_ID = 0x5A
 SYNC_BYTE = 0xA5            # spi_slave が 1 バイト目に返す値
+CONTROL_FREEZE = 0x02
 CONTROL_IRQ_EN = 0x04
 STATUS_ERROR = 0x02
 
@@ -271,6 +276,40 @@ def selftest(bridge, iterations):
     return {"ok": all(i["ok"] for i in items), "items": items}
 
 
+def frametest(bridge, ref_dir, do_capture, out_dir):
+    """アニメーションを止めた画面を、参照 (make render FREEZE=1) と CRC とキャプチャで比べる"""
+    import imgcmp
+
+    with open(os.path.join(ref_dir, "frames.json")) as f:
+        ref = json.load(f)[0]
+    vdp = Vdp(bridge)
+    result = {"reference": os.path.join(ref_dir, ref["png"]), "expected_crc": ref["crc"]}
+    control = vdp.read1(REGS["CONTROL"])
+    try:
+        vdp.write(REGS["CONTROL"], [control | CONTROL_FREEZE])
+        time.sleep(0.1)    # 数フレーム待って、止めたあとのフレームの CRC にする
+        crcs = []
+        for _ in range(3):
+            crcs.append(f"0x{vdp.read32(REGS['FRAME_CRC']):08x}")
+            time.sleep(0.05)
+        result["crc"] = {"ok": all(c == ref["crc"] for c in crcs), "read": crcs}
+
+        if do_capture:
+            w, h, ref_rgb = imgcmp.read_png(result["reference"])
+            cap = imgcmp.capture(w, h)
+            stats, diff = imgcmp.compare(ref_rgb, cap, w, h)
+            os.makedirs(out_dir, exist_ok=True)
+            imgcmp.write_png(os.path.join(out_dir, "capture.png"), w, h, cap)
+            imgcmp.write_png(os.path.join(out_dir, "diff.png"), w, h, diff)
+            stats.update(ok=stats["match_ratio"] >= 0.99, capture=os.path.join(out_dir, "capture.png"),
+                         diff=os.path.join(out_dir, "diff.png"))
+            result["capture"] = stats
+    finally:
+        vdp.write(REGS["CONTROL"], [control])
+    result["ok"] = result["crc"]["ok"] and result.get("capture", {"ok": True})["ok"]
+    return result
+
+
 def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--port")
@@ -278,6 +317,10 @@ def main():
     ap.add_argument("--size", type=int, default=21, help="memtest: log2 of the number of words (1..21)")
     ap.add_argument("--samples", default="2,3,4,5,6,7", help="memtest: rd_sample values to try")
     ap.add_argument("--seed", type=int, default=0x3C, help="memtest: pattern seed (0..255)")
+    ap.add_argument("--ref-dir", default=os.path.join(REPO, "build", "render_frozen"),
+                    help="frametest: reference from make render FREEZE=1")
+    ap.add_argument("--no-capture", action="store_true", help="frametest: CRC only")
+    ap.add_argument("--out", default=os.path.join(REPO, "build", "hw"), help="frametest: where to save capture/diff")
     ap.add_argument("command")
     ap.add_argument("args", nargs="*")
     a = ap.parse_args()
@@ -288,12 +331,14 @@ def main():
         # make の出力は標準エラーへ (標準出力は JSON だけにする)
         r = subprocess.run(["make", "prog", f"TARGET={a.args[0]}"], cwd=REPO, stdout=sys.stderr)
         result = {"ok": r.returncode == 0, "target": a.args[0]}
-    elif a.command in ("reg", "selftest", "memtest", "mem"):
+    elif a.command in ("reg", "selftest", "memtest", "mem", "frametest"):
         bridge = Bridge(find_port(a.port))
         try:
             vdp = Vdp(bridge)
             if a.command == "selftest":
                 result = selftest(bridge, a.iterations)
+            elif a.command == "frametest":
+                result = frametest(bridge, a.ref_dir, not a.no_capture, a.out)
             elif a.command == "memtest":
                 samples = [int(x) for x in a.samples.split(",")]
                 result = memtest(bridge, a.size, samples, a.seed)

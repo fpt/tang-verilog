@@ -85,8 +85,21 @@ module top (
     // --- 映像 ---
     logic [7:0] r, g, b;
     logic de, hsync, vsync, vblank, frame_start;
+    logic [7:0] control;
 
-    vdp_video u_video (.clk_pix, .rst, .r, .g, .b, .de, .hsync, .vsync, .vblank, .frame_start);
+    // CONTROL のアニメーション停止 (clk_sys) をピクセルクロックへ
+    logic [1:0] freeze_s;
+    always_ff @(posedge clk_pix) freeze_s <= {freeze_s[0], control[1]};
+
+    vdp_video u_video (.clk_pix, .rst, .freeze(freeze_s[1]), .r, .g, .b, .de, .hsync, .vsync, .vblank, .frame_start);
+
+    // 表示ピクセルの CRC (FRAME_CRC レジスタ)
+    logic [31:0] frame_crc_value;
+    logic        frame_crc_toggle;
+    frame_crc u_crc (
+        .clk(clk_pix), .rst, .de, .r, .g, .b, .vblank,
+        .crc(frame_crc_value), .crc_toggle(frame_crc_toggle)
+    );
 
     dvi_tx u_dvi (
         .clk_pix, .clk_ser, .rst,
@@ -104,7 +117,7 @@ module top (
 
     // --- SPI スレーブとレジスタ (システムクロック) ---
     logic [6:0] reg_addr;
-    logic [7:0] reg_wdata, reg_rdata, vdp_rdata, mem_rdata, control;
+    logic [7:0] reg_wdata, reg_rdata, vdp_rdata, mem_rdata;
     logic       reg_we, reg_re, spi_frame_error;
 
     // 0x10..0x2F は SDRAM のテスト (mem_test)、それ以外は vdp_regs
@@ -123,6 +136,7 @@ module top (
         .clk(clk_sys), .rst(rst_sys),
         .addr(reg_addr), .wdata(reg_wdata), .we(reg_we && !sel_mem), .re(reg_re && !sel_mem), .rdata(vdp_rdata),
         .vblank_async(vblank), .frame_toggle_async(heartbeat),
+        .crc_async(frame_crc_value), .crc_toggle_async(frame_crc_toggle),
         .error_event(spi_frame_error),
         .control, .irq(vdp_irq), .error(error_out)
     );

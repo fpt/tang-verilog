@@ -6,6 +6,8 @@ module tb_vdp_regs;
     logic [7:0] wdata = '0, rdata, control;
     logic       we = 0, re = 0;
     logic       vblank_async = 0, frame_toggle_async = 0, error_event = 0;
+    logic [31:0] crc_async = '0;
+    logic       crc_toggle_async = 0;
     logic       irq, error;
 
     vdp_regs #(.VERSION(8'h01)) dut (.*);
@@ -92,6 +94,20 @@ module tb_vdp_regs;
         rd_re(7'h00, d); check("STATUS read with re", d, 8'h02);
         rd(7'h00, d); check("STATUS after clear", d, 8'h00);
         check("ERROR pin after clear", {7'b0, error}, 8'h00);
+
+        // FRAME_CRC: トグルが変わったら取り込む。0x05 を読んだ時点の値が 0x06..0x08 に残る
+        crc_async = 32'h1234_5678;
+        #50 crc_toggle_async = 1;
+        #100;
+        rd_re(7'h05, d); check("FRAME_CRC[7:0]", d, 8'h78);
+        crc_async = 32'hAABB_CCDD;          // 次のフレームの CRC が届いても
+        #50 crc_toggle_async = 0;
+        #100;
+        rd(7'h06, d); check("FRAME_CRC[15:8] (snapshot)", d, 8'h56);
+        rd(7'h07, d); check("FRAME_CRC[23:16] (snapshot)", d, 8'h34);
+        rd(7'h08, d); check("FRAME_CRC[31:24] (snapshot)", d, 8'h12);
+        rd_re(7'h05, d); check("FRAME_CRC[7:0] (next frame)", d, 8'hDD);
+        rd(7'h08, d); check("FRAME_CRC[31:24] (next frame)", d, 8'hAA);
 
         // リセットでレジスタが戻る
         @(negedge clk);

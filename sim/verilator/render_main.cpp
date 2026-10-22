@@ -1,5 +1,6 @@
 // vdp_video を Verilator で回し、各フレームを PPM 画像として書き出す。
-//   usage: render <出力ディレクトリ> <フレーム数>
+//   usage: render <出力ディレクトリ> <フレーム数> [freeze]
+//   freeze を 1 にすると vdp_video の freeze を立てたまま回す (実機で CONTROL のアニメーション停止を立てたときと同じ画面)
 // 画像の大きさは DE の幅と行数から求める (vdp_video の MODE に依存しない)
 #include <cstdio>
 #include <cstdlib>
@@ -11,6 +12,7 @@
 int main(int argc, char** argv) {
     const std::string outdir = argc > 1 ? argv[1] : ".";
     const int frames = argc > 2 ? std::atoi(argv[2]) : 3;
+    const bool freeze = argc > 3 && std::atoi(argv[3]) != 0;
     constexpr int MAX_W = 2048, MAX_H = 1024;
 
     VerilatedContext ctx;
@@ -21,6 +23,7 @@ int main(int argc, char** argv) {
         top.clk_pix = 1; top.eval();
     };
 
+    top.freeze = freeze;
     top.rst = 1;
     for (int i = 0; i < 4; i++) tick();
     top.rst = 0;

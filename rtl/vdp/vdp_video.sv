@@ -7,6 +7,7 @@ module vdp_video #(
 ) (
     input  logic       clk_pix,
     input  logic       rst,
+    input  logic       freeze,       // アニメーション停止 (clk_pix に同期済みであること)
     output logic [7:0] r,
     output logic [7:0] g,
     output logic [7:0] b,
@@ -43,7 +44,7 @@ module vdp_video #(
 
     vdp_core #(.SCREEN_W(H_ACTIVE), .SCREEN_H(V_ACTIVE)) u_core (
         .clk(clk_pix), .rst,
-        .x, .y, .de(t_de), .hsync(t_hs), .vsync(t_vs), .frame_start(t_fs),
+        .x, .y, .de(t_de), .hsync(t_hs), .vsync(t_vs), .frame_start(t_fs), .freeze,
         .r, .g, .b, .de_o(de), .hsync_o(hsync), .vsync_o(vsync)
     );
 endmodule

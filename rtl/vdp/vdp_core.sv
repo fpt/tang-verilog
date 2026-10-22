@@ -13,6 +13,7 @@ module vdp_core #(
     input  logic        hsync,
     input  logic        vsync,
     input  logic        frame_start,
+    input  logic        freeze,        // スプライトをリセット位置に止める (画面を毎フレーム同じにして比べるため)
     // 出力は 1 クロック遅延 (同期信号もそろえて遅延させる)
     output logic [7:0]  r,
     output logic [7:0]  g,
@@ -32,6 +33,11 @@ module vdp_core #(
 
     always_ff @(posedge clk) begin
         if (rst) begin
+            spr_x  <= 11'd100;
+            spr_y  <= 10'd60;
+            spr_dx <= 1'b1;
+            spr_dy <= 1'b1;
+        end else if (freeze) begin
             spr_x  <= 11'd100;
             spr_y  <= 10'd60;
             spr_dx <= 1'b1;

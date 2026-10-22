@@ -14,7 +14,7 @@ Tang Nano 20K を VDP (小さな GPU) 本体、RP2 (RP2350 / RP2040) をホス�
 ## 全体像
 
 ```text
-RP2 ──SPI──► spi_slave ──► register bus ──┬─► vdp_regs   (ID, STATUS, CONTROL, FRAME_COUNT, SCRATCH)   ✅ M1
+RP2 ──SPI──► spi_slave ──► register bus ──┬─► vdp_regs   (ID, STATUS, CONTROL, FRAME_COUNT, FRAME_CRC, SCRATCH)   ✅ M1, M2
                                           ├─► mem_test   (SDRAM の BIST と 1 ワード読み書き)          ✅ M3
                                           └─► command FIFO → GPU core (clear / rect / line / blit / tilemap)  M5〜
                                                                 │
@@ -58,14 +58,15 @@ SPI のトランザクションの形式 (同期バイト `0xA5`、アドレス�
 | アドレス | 名前 | 内容 | 実装 |
 | --- | --- | --- | --- |
 | `0x00` | `STATUS` | bit0: VBLANK 中, bit1: エラー (読むとクリア) | `vdp_regs` |
-| `0x01` | `CONTROL` | bit2: IRQ 許可 (IRQ = VBLANK 中)。bit0, 1 は予約 (表示 ON, アニメーション停止) | `vdp_regs` |
+| `0x01` | `CONTROL` | bit1: アニメーション停止 (比較用), bit2: IRQ 許可 (IRQ = VBLANK 中)。bit0 は予約 (表示 ON) | `vdp_regs` |
 | `0x04` | `FRAME_COUNT` | フレームカウンタの下位 8bit | `vdp_regs` |
+| `0x05`〜`0x08` | `FRAME_CRC` | 直前のフレームの表示ピクセルの CRC-32 (リトルエンディアン、`zlib.crc32` と同じ) | `frame_crc` + `vdp_regs` |
 | `0x10`〜`0x2F` | `MEM_*` | SDRAM の BIST と 1 ワード読み書き ([`mem_test.sv`](../rtl/vdp/mem_test.sv) の先頭に一覧) | `mem_test` |
 | `0x7D` | `SCRATCH` | 書いた値がそのまま読める | `vdp_regs` |
 | `0x7E` | `ID` | `0x5A` | `vdp_regs` |
 | `0x7F` | `VERSION` | RTL の版 | `vdp_regs` |
 
-`FRAME_CRC` (M2)、GPU のコマンド FIFO (M5) などは、空いているアドレスに足していきます。
+GPU のコマンド FIFO (M5) などは、空いているアドレスに足していきます。
 
 ## SDRAM
 

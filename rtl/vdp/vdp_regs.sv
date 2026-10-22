@@ -1,13 +1,16 @@
 // VDP のレジスタ (docs/GPU_PLAN.md の M1)。レジスタバスと同じシステムクロックで動く
 //
 //   0x00 STATUS      R  bit0: VBLANK 中, bit1: エラー (SPI のフレームエラーなど。読むとクリア)
-//   0x01 CONTROL     RW bit2: IRQ 許可 (IRQ = VBLANK 中)。bit0, bit1 は予約 (表示 ON, アニメーション停止)
+//   0x01 CONTROL     RW bit1: アニメーション停止 (スプライトをリセット位置に止める。比較用), bit2: IRQ 許可 (IRQ = VBLANK 中)。
+//                       bit0 は予約 (表示 ON)
 //   0x04 FRAME_COUNT R  フレームカウンタの下位 8bit
+//   0x05 FRAME_CRC   R  直前のフレームの CRC-32 (32bit、リトルエンディアン、0x05..0x08)。frame_crc.sv
+//                       0x05 を読んだ時点の値を 0x06..0x08 用に取っておくので、0x05 から続けて読めば 4 バイトが同じフレームの値になる
 //   0x7D SCRATCH     RW 書いた値がそのまま読める (SPI リンクの確認用)
 //   0x7E ID          R  0x5A
 //   0x7F VERSION     R  RTL の版
 //
-// vblank と frame_toggle はピクセルクロック側の信号なので、ここで同期化する。
+// vblank / frame_toggle / crc はピクセルクロック側の信号なので、ここで同期化する。
 module vdp_regs #(
     parameter logic [7:0] VERSION = 8'h01
 ) (
@@ -20,6 +23,8 @@ module vdp_regs #(
     output logic [7:0] rdata,
     input  logic       vblank_async,   // VBLANK 中 (ピクセルクロック側)
     input  logic       frame_toggle_async,  // フレームごとにトグル (ピクセルクロック側)
+    input  logic [31:0] crc_async,     // フレームの CRC (ピクセルクロック側、crc_toggle が変わるまで変化しない)
+    input  logic       crc_toggle_async,
     input  logic       error_event,    // エラーを 1 クロック (このクロック側)
     output logic [7:0] control,
     output logic       irq,
@@ -28,6 +33,7 @@ module vdp_regs #(
     localparam logic [6:0] A_STATUS      = 7'h00;
     localparam logic [6:0] A_CONTROL     = 7'h01;
     localparam logic [6:0] A_FRAME_COUNT = 7'h04;
+    localparam logic [6:0] A_FRAME_CRC   = 7'h05;   // 0x05..0x08
     localparam logic [6:0] A_SCRATCH     = 7'h7D;
     localparam logic [6:0] A_ID          = 7'h7E;
     localparam logic [6:0] A_VERSION     = 7'h7F;
@@ -35,10 +41,19 @@ module vdp_regs #(
 
     // --- ピクセルクロック側からの同期化 ---
     logic [1:0] vblank_s;
-    logic [2:0] frame_s;
+    logic [2:0] frame_s, crc_s;
     always_ff @(posedge clk) begin
         vblank_s <= {vblank_s[0], vblank_async};
         frame_s  <= {frame_s[1:0], frame_toggle_async};
+        crc_s    <= {crc_s[1:0], crc_toggle_async};
+    end
+
+    // crc_async はトグルより前に確定し、次のトグルまで変わらないので、トグルの変化を見てから取り込めばよい
+    logic [31:0] crc;
+    logic [31:8] crc_snap;     // 0x05 (下位バイト) はその場で返すので、残りの 3 バイトだけ取っておく
+    always_ff @(posedge clk) begin
+        if (crc_s[2] != crc_s[1]) crc <= crc_async;
+        if (re && addr == A_FRAME_CRC) crc_snap <= crc[31:8];
     end
     logic vblank;
     assign vblank = vblank_s[1];
@@ -72,6 +87,10 @@ module vdp_regs #(
             A_STATUS:      rdata = {6'b0, error, vblank};
             A_CONTROL:     rdata = control;
             A_FRAME_COUNT: rdata = frame_count;
+            A_FRAME_CRC:   rdata = crc[7:0];
+            7'h06:         rdata = crc_snap[15:8];
+            7'h07:         rdata = crc_snap[23:16];
+            7'h08:         rdata = crc_snap[31:24];
             A_SCRATCH:     rdata = scratch;
             A_ID:          rdata = ID;
             A_VERSION:     rdata = VERSION;
