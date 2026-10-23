@@ -409,6 +409,7 @@ python3 tools/harness/harness.py prog hdmi       # make prog TARGET=hdmi (pinche
 | `ping` | ファームウェア名・版・ボード |
 | `status` | 全ハーネスピンの値、HEARTBEAT / VSYNC / IRQ の周期と最後のエッジからの時間、ready、SPI の周波数と回数 |
 | `spi <hex>` | CS を上げて送受信し、受信を hex で返す (最大 4096 バイト)。ready でなければ何も駆動しない |
+| `spib <n>` | 改行 (`\n` 1 文字) の直後に n バイトの生データを続ける書き込み専用の版 (v2 から)。応答は受信の最初の 1 バイト (同期バイト) だけ。ホストツールは書き込みに自動で使う |
 | `freq <hz>` | SPI の周波数 (既定 1MHz) |
 | `reset [ms]` | RESET を指定時間 High にする (FPGA が止まったときの復旧用なので ready は見ない) |
 | `irqwait [ms]` | IRQ の立ち上がりを待つ |
@@ -434,6 +435,8 @@ python3 tools/harness/harness.py prog hdmi       # make prog TARGET=hdmi (pinche
 - **ready**: HEARTBEAT が直近 100ms 以内に立ち上がっていること。FPGA の書き込み中や、HEARTBEAT を出さない設計 (今の HDMI など) では `spi` を拒否する
 - ハーネスのピンは、駆動するとき以外は常に入力 + プルダウン。SPI 線もトランザクションの間だけ SPI 機能にする
 - ブリッジは自分からは何も駆動しない (コマンドを受けたときだけ)
+- v2 (M5 のあと): USB の入力を 1 文字ずつではなくまとめて読み、書き込みは `spib` (生データ、受信を送り返さない) にした。
+  2KiB の書き込みが 62ms → 9.6ms、320x240 の画像のアップロードが 4.8 秒 → 0.9 秒。ホストツールは `ping` の版を見て、v1 なら `spi` を使う
 - macOS 26 では `cp` で `RPI-RP2` にコピーすると固まることがあったので、Finder でドラッグするのが確実 (`make harness-deploy` は Linux 向け)
 - ハーネスのピンを使わない設計 (今の HDMI など) では、FPGA の未使用ピンの弱いプルアップが RP2 のプルダウンに勝ち、全部 High に読める。弱いプル同士なので衝突ではない
 

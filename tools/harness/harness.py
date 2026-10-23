@@ -109,12 +109,21 @@ class Bridge:
         termios.tcsetattr(self.fd, termios.TCSANOW, attrs)
         termios.tcflush(self.fd, termios.TCIOFLUSH)
         self.buf = b""
+        self._version = None
+
+    def version(self):
+        """ブリッジの版 (ping)。v2 から spib (生データの書き込み) が使える"""
+        if self._version is None:
+            r = self.command("ping")
+            self._version = r.get("version", 1) if r.get("ok") else 1
+        return self._version
 
     def close(self):
         os.close(self.fd)
 
-    def command(self, line, timeout=5.0):
-        data = (line + "\n").encode()
+    def command(self, line, timeout=5.0, payload=b""):
+        """1 行のコマンドを送り、1 行の JSON の応答を返す。payload は改行の直後に続けて送る生データ (spib 用)"""
+        data = (line + "\n").encode() + payload
         while data:
             n = os.write(self.fd, data)
             data = data[n:]
@@ -196,7 +205,16 @@ class Vdp:
         return self._spi([0x80 | addr] + [0] * n)
 
     def write(self, addr, data):
-        self._spi([addr & 0x7F] + list(data))
+        frame = bytes([addr & 0x7F]) + bytes(data)
+        if self.bridge.version() >= 2:
+            # 生データで送る (16 進にしないので速い)。応答は受信の最初の 1 バイトだけ = 同期バイト
+            r = self.bridge.command(f"spib {len(frame)}", timeout=5.0, payload=frame)
+            if not r.get("ok"):
+                raise HarnessError(r.get("error", "spib failed"))
+            if int(r["rx0"], 16) != SYNC_BYTE:
+                raise HarnessError(f"bad sync byte 0x{r['rx0']} (expected 0x{SYNC_BYTE:02x})")
+        else:
+            self._spi(frame)
 
     def read1(self, addr):
         return self.read(addr)[0]
@@ -641,7 +659,7 @@ def main():
         finally:
             bridge.close()
     else:
-        simple = {"ping", "status", "wiretest", "bootsel", "spi", "freq", "reset", "irqwait"}
+        simple = {"ping", "status", "wiretest", "bootsel", "spi", "freq", "reset", "irqwait"}   # spib はホストツール内部で使う
         if a.command == "raw":
             line = " ".join(a.args)
         elif a.command in simple:
