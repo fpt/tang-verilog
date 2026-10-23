@@ -15,8 +15,9 @@ usage: harness.py [--port PORT] <command> [args...]
   reg read <reg> [n]        レジスタを読む (<reg> は名前か 0x7e のような番地)
   reg write <reg> <hex>     レジスタに書く (複数バイトなら番地が 1 ずつ進む)
   selftest [--iterations N] HARNESS.md の selftest (FPGA に hdmi などの設計が入っている前提)
-  memtest [--size N] [--samples 2,3,..] [--seed S]
-                            SDRAM の BIST を読み出しの取り込み位置ごとに実行 (size はワード数の log2、既定 21 = 8MiB)
+  memtest [--size N] [--samples 2,3,..] [--seed S] [--phases 0-15]
+                            SDRAM の BIST を読み出しの取り込み位置ごと (と SDRAM クロックの位相ごと) に実行
+                            (size はワード数の log2、既定 21 = 8MiB)。--phases を付けると位相 x 取り込み位置の合否表を出す
   frametest [--ref-dir DIR] [--no-capture] [--out DIR]
                             アニメーションを止め、FRAME_CRC を参照 (make render FREEZE=1 の frames.json) と比べ、
                             HDMI キャプチャも参照画像と比べる。キャプチャと差分画像を --out に保存
@@ -58,7 +59,7 @@ REGS = {
 }
 # rtl/vdp/mem_test.sv (SDRAM のテスト)
 MEM = {
-    "CMD": 0x10, "CFG": 0x11, "STATUS": 0x12, "SIZE": 0x13, "SEED": 0x14,
+    "CMD": 0x10, "CFG": 0x11, "STATUS": 0x12, "SIZE": 0x13, "SEED": 0x14, "CLK": 0x15,
     "ERRORS": 0x18, "FAIL_ADDR": 0x1C, "FAIL_EXP": 0x20, "FAIL_GOT": 0x24, "ADDR": 0x28, "DATA": 0x2C,
     "PORT": 0x30,
 }
@@ -170,15 +171,17 @@ class Vdp:
             time.sleep(0.01)
 
 
-def memtest(bridge, size, samples, seed):
-    """SDRAM の BIST を取り込み位置 (rd_sample) ごとに実行する"""
+def memtest(bridge, size, samples, seed, phases=None):
+    """SDRAM の BIST を取り込み位置 (rd_sample) ごとに実行する。
+    phases を渡すと SDRAM クロックの位相 (MEM_CLK) も変え、位相 x 取り込み位置の合否表 (eye) を作る"""
     vdp = Vdp(bridge)
     st = vdp.read1(MEM["STATUS"])
     if not st & MEM_ST_INIT:
         return {"ok": False, "error": "SDRAM not initialized", "status": st}
-    runs = []
-    cfg = vdp.read1(MEM["CFG"])     # 終わったら元の取り込み位置に戻す (表示も同じ設定を使うので)
-    for h in samples:
+    cfg = vdp.read1(MEM["CFG"])     # 終わったら元に戻す (表示も同じ設定を使うので)
+    clk = vdp.read1(MEM["CLK"])
+
+    def run_bist(h):
         vdp.write(MEM["CFG"], [h])
         vdp.write(MEM["SIZE"], [size])
         vdp.write(MEM["SEED"], [seed])
@@ -191,10 +194,28 @@ def memtest(bridge, size, samples, seed):
             exp, got = vdp.read32(MEM["FAIL_EXP"]), vdp.read32(MEM["FAIL_GOT"])
             run.update(first_fail_addr=f"0x{vdp.read32(MEM['FAIL_ADDR']):06x}", expected=f"0x{exp:08x}",
                        got=f"0x{got:08x}", bad_bits=f"0x{exp ^ got:08x}")
-        runs.append(run)
-    vdp.write(MEM["CFG"], [cfg])
-    passing = [r["rd_sample"] for r in runs if r["pass"]]
-    return {"ok": bool(passing), "words": 1 << size, "passing_rd_sample": passing, "runs": runs}
+        return run
+
+    try:
+        if phases is None:
+            runs = [run_bist(h) for h in samples]
+            passing = [r["rd_sample"] for r in runs if r["pass"]]
+            return {"ok": bool(passing), "words": 1 << size, "passing_rd_sample": passing, "runs": runs}
+
+        eye = {}
+        for ph in phases:
+            vdp.write(MEM["CLK"], [ph])
+            time.sleep(0.01)                       # PLL の位相が落ち着くまで
+            eye[ph] = [h for h in samples if run_bist(h)["pass"]]
+        # 表: 行 = 位相、列 = 取り込み位置。# が合格
+        table = ["phase " + " ".join(str(h) for h in samples)]
+        for ph in phases:
+            table.append(f"{ph:5d} " + " ".join("#" if h in eye[ph] else "." for h in samples))
+        return {"ok": any(eye.values()), "words": 1 << size,
+                "eye": {str(k): v for k, v in eye.items()}, "table": table}
+    finally:
+        vdp.write(MEM["CFG"], [cfg])
+        vdp.write(MEM["CLK"], [clk])
 
 
 def parse_reg(text):
@@ -279,6 +300,20 @@ def selftest(bridge, iterations):
         scratch = vdp.read1(REGS["SCRATCH"])
         item("RESET stops HEARTBEAT and clears registers", r1 - r0 <= 2 and r2 - r1 >= 7 and scratch == 0,
              heartbeat_rises_during_300ms_reset=r1 - r0, heartbeat_rises_300ms_after=r2 - r1, scratch=scratch)
+
+        # SDRAM: 今の取り込み位置で、位相を何段ずらしても読めるか (前後の余裕)。毎回記録する
+        vdp = Vdp(bridge)
+        cfg, phase = vdp.read1(MEM["CFG"]), vdp.read1(MEM["CLK"])
+        r = memtest(bridge, 16, [cfg], 0x3C, list(range(16)))
+        ok_phases = {int(p) for p, hs in r["eye"].items() if cfg in hs}
+        early = late = 0
+        while (phase - early - 1) % 16 in ok_phases and early < 8:
+            early += 1
+        while (phase + late + 1) % 16 in ok_phases and late < 8:
+            late += 1
+        item("SDRAM phase margin >= 2 steps each side", phase in ok_phases and early >= 2 and late >= 2,
+             rd_sample=cfg, phase=phase, margin_early=early, margin_late=late,
+             passing_phases=sorted(ok_phases))
 
         pins = bridge.command("status")["pins"]
         items.append({"name": "LED0-5 (info)", "ok": True, "leds": [pins[f"LED{i}"] for i in range(6)]})
@@ -411,6 +446,7 @@ def main():
     ap.add_argument("--size", type=int, default=21, help="memtest: log2 of the number of words (1..21)")
     ap.add_argument("--samples", default="2,3,4,5,6,7", help="memtest: rd_sample values to try")
     ap.add_argument("--seed", type=int, default=0x3C, help="memtest: pattern seed (0..255)")
+    ap.add_argument("--phases", help="memtest: SDRAM clock phases to sweep, e.g. 0-15")
     ap.add_argument("--ref-dir", default=os.path.join(REPO, "build", "render_frozen"),
                     help="frametest: reference from make render FREEZE=1")
     ap.add_argument("--no-capture", action="store_true", help="frametest / fbtest: CRC only")
@@ -447,7 +483,11 @@ def main():
                 result = frametest(bridge, a.ref_dir, not a.no_capture, a.out)
             elif a.command == "memtest":
                 samples = [int(x) for x in a.samples.split(",")]
-                result = memtest(bridge, a.size, samples, a.seed)
+                phases = None
+                if a.phases:
+                    lo, _, hi = a.phases.partition("-")
+                    phases = list(range(int(lo), int(hi or lo) + 1))
+                result = memtest(bridge, a.size, samples, a.seed, phases)
             elif a.command == "mem" and len(a.args) >= 2 and a.args[0] == "read":
                 vdp.write32(MEM["ADDR"], int(a.args[1], 0))
                 words = []
