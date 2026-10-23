@@ -30,6 +30,7 @@ rtl/vdp/gpu.sv と同じ規則でコマンドを解釈し、表示される面�
       {"op": "oam_write", "addr": 0, "words": ["deadbeef", ...]},      # OAM (ワードアドレス、256 ワードで折り返す)
       {"op": "oam", "sprites": [{"x": -4, "y": 10, "w": 2, "h": 1, "tile": 3, "hflip": false, "vflip": false,
                                  "pal": 0, "pri": 0, "order": 0}, ...]}  # OAM 全体 (書かなかったエントリは無効)
+      {"op": "demo_setup"}, {"op": "demo_frame", "frame": 120, "mark": true}   # M9 のデモ (demo.py) のコマンド
   ]}
 タイル レイヤの形式は rtl/vdp/tile_layer.sv、スプライト (OAM) は rtl/vdp/sprite_layer.sv。VRAM・パレット・OAM は、
 印を付けたフレームの記録中には書かないこと (モデルは最後の内容で合成する)。
@@ -123,6 +124,12 @@ def encode(step):
         return oam_write_words(step["addr"], [int(w, 16) if isinstance(w, str) else w for w in step["words"]])
     if op == "oam":
         return oam_write_words(0, oam_words(step["sprites"]))
+    if op == "demo_setup":
+        import demo
+        return demo.setup_words()
+    if op == "demo_frame":
+        import demo
+        return demo.frame_words(step["frame"], step.get("mark", False))
     if op in ("check", "check_marked"):
         return []
     raise ValueError(f"unknown op {op!r}")

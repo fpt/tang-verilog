@@ -1,0 +1,16 @@
+{
+ "name": "m9_demo",
+ "description": "M9 のデモ (tools/harness/demo.py): 多重スクロール・空のグラデーション・水面の揺れ (WAIT_LINE)、スプライト 42 個、図形 (ビットマップ、SWAP) のフレームを、印を付けて比べる",
+ "steps": [
+  {"op": "demo_setup"},
+  {"op": "demo_frame", "frame": 0},
+  {"op": "demo_frame", "frame": 1},
+  {"op": "demo_frame", "frame": 2, "mark": true},
+  {"op": "wait_vblank"},
+  {"op": "check_marked"},
+  {"op": "demo_frame", "frame": 310},
+  {"op": "demo_frame", "frame": 311, "mark": true},
+  {"op": "wait_vblank"},
+  {"op": "check_marked"}
+ ]
+}
