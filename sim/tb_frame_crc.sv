@@ -7,6 +7,9 @@ module tb_frame_crc;
     logic [31:0] crc;
     logic        crc_toggle;
     logic [15:0] frame;
+    logic        mark_toggle_async = 0;
+    logic [31:0] held_crc;
+    logic [7:0]  mark_count;
 
     frame_crc dut (.*);
 
@@ -45,6 +48,19 @@ module tb_frame_crc;
         send_frame("1");
         if (crc !== 32'hCBF4_3926) begin $display("  second frame: got %08h", crc); errors++; end
         if (frame !== 16'd1) begin $display("  second frame number: %0d", frame); errors++; end
+
+        // 印: 印を変えてから始まったフレームの CRC だけが held_crc に残る
+        if (mark_count !== 8'd0) begin $display("  mark_count before mark: %0d", mark_count); errors++; end
+        mark_toggle_async = 1;
+        #200;                            // 2 段の同期化を通るまで (実機では印はフレームの 1 ライン以上前に来る)
+        send_frame("1");
+        if (mark_count !== 8'd1 || held_crc !== 32'hCBF4_3926) begin
+            $display("  marked frame: count %0d held %08h", mark_count, held_crc); errors++;
+        end
+        send_frame("0");
+        if (mark_count !== 8'd1 || held_crc !== 32'hCBF4_3926) begin
+            $display("  unmarked frame changed held_crc: count %0d held %08h", mark_count, held_crc); errors++;
+        end
 
         // 1 バイト違えば CRC も変わる
         send_frame("0");

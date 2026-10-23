@@ -1,7 +1,8 @@
 // コマンド GPU: SDRAM の振る舞いモデル相手に、CLEAR (64 ワードずつのバースト)、奇数の端の FILL_RECT (バイトマスク)、
 // はみ出しの切り取り、UPLOAD、SWAP (表示が取り込むまで待つ)、知らないコマンド、FIFO の空きとあふれ、
 // DRAW_LINE (8 方向・水平・垂直・1 点・画面の外から)、POINT、CLIP (CLEAR には効かない)、
-// BLIT (偶数 / 奇数の位置、左右・上下反転、透過、画面の外、クリップ、SDRAM の行をまたぐソース) を確認
+// BLIT (偶数 / 奇数の位置、左右・上下反転、透過、画面の外、クリップ、SDRAM の行をまたぐソース)、
+// 合成のレジスタ (REG_WRITE)、WAIT_LINE / WAIT_VBLANK (印)、READY を確認
 `timescale 1ns/1ps
 module tb_gpu;
     localparam int SRC_W = 320, SRC_H = 16, FIFO_WORDS = 16;
@@ -12,6 +13,11 @@ module tb_gpu;
     logic        we = 0, re = 0;
     logic        base_latched = 0;
     logic [12:0] fb_base;
+    logic [15:0] bg_color, bitmap_key;
+    logic [1:0]  layer_ctrl;
+    logic        mark_req, ready;
+    logic        line_start = 0;
+    logic [7:0]  line_num = 0;
 
     logic        mem_req, mem_we, mem_ack, mem_wnext, mem_rvalid, init_done;
     logic [20:0] mem_addr;
@@ -31,7 +37,7 @@ module tb_gpu;
         .clk, .rst, .addr, .wdata, .we, .re, .rdata,
         .mem_req, .mem_we, .mem_addr, .mem_wdata, .mem_wmask, .mem_len, .mem_ack, .mem_wnext, .mem_rvalid,
         .mem_rdata(rdata32),
-        .fb_base, .base_latched
+        .fb_base, .base_latched, .bg_color, .layer_ctrl, .bitmap_key, .mark_req, .line_start, .line_num, .ready
     );
 
     sdram_ctrl #(.CLK_HZ(63_000_000), .INIT_US(2)) u_ctrl (
@@ -217,6 +223,31 @@ module tb_gpu;
         if (mem_req && mem_ack) $display("  [trace] state %0d ack addr %h len %0d we %b", dut.state, mem_addr, mem_len, mem_we);
     end
 
+    always @(posedge clk) if (trace && dut.state == 15) $display("  [trace] WAIT_LINE target %0d armed %b mark %b line_start %b line_num %0d op %02h",
+                                                     dut.wait_target, dut.wait_armed, dut.wait_mark, line_start, line_num, dut.op);
+    always @(posedge clk) if (trace && mark_req) $display("  [trace] mark_req at t=%0t", $time);
+    int mark_count_tb = 0, mark_line = -1;
+    int prev_line = 0;
+    always @(posedge clk) begin
+        if (line_start) prev_line <= int'(line_num);
+        if (mark_req) begin
+            mark_count_tb++;
+            mark_line = prev_line;
+        end
+    end
+
+    // line_compositor の代わり: 40 クロックごとにライン 0..SRC_H-1 の合成の開始を知らせる
+    bit lines_on = 0;
+    always begin
+        repeat (40) @(negedge clk);
+        if (lines_on) begin
+            line_start = 1;
+            @(negedge clk);
+            line_start = 0;
+            line_num = (line_num == 8'(SRC_H - 1)) ? 8'd0 : line_num + 8'd1;
+        end
+    end
+
     // 止まったときのための見張り (シミュレーション時間 20ms)
     initial begin
         #40_000_000;
@@ -349,6 +380,43 @@ module tb_gpu;
         clip(0, 0, 319, 239);
         wait_idle();
         check_all("BLIT with clip");
+
+        // ---- 合成のレジスタと WAIT_LINE / WAIT_VBLANK (E1) ----
+        if (bg_color !== 16'h0000 || layer_ctrl !== 2'b01 || bitmap_key !== 16'h0000) begin
+            $display("  layer registers after reset: %04h %b %04h", bg_color, layer_ctrl, bitmap_key); errors++;
+        end
+        cmd(32'h0900_1234); cmd(32'h0901_0002); cmd(32'h0902_5678);
+        wait_idle();
+        if (bg_color !== 16'h1234 || layer_ctrl !== 2'b10 || bitmap_key !== 16'h5678) begin
+            $display("  REG_WRITE: %04h %b %04h", bg_color, layer_ctrl, bitmap_key); errors++;
+        end
+        rd(7'h48, f0); rd(7'h49, f1);
+        if ({f1, f0} != 16'h1234) begin $display("  BG_COLOR read back: %04h", {f1, f0}); errors++; end
+        wr(7'h4A, 8'h01);
+        if (layer_ctrl !== 2'b01) begin $display("  LAYER_CTRL host write: %b", layer_ctrl); errors++; end
+        // WAIT_LINE 5 のあとの REG_WRITE は、ライン 4 の合成が始まったあとで効く
+        lines_on = 1;
+        cmd(32'h0A00_0005); cmd(32'h0900_7777);
+        wait (bg_color == 16'h7777);
+        if (line_num != 8'd5) begin $display("  WAIT_LINE 5 released after line %0d", int'(line_num) - 1); errors++; end
+        // READY: WAIT_LINE で止まっているあいだに FIFO を 3/4 まで埋めると下がる (16 ワードの半分 = 8 が境目)
+        if (!ready) begin $display("  READY low with an empty FIFO"); errors++; end
+        cmd(32'h0A00_0002);
+        for (x = 0; x < 12; x++) cmd_nowait(32'h0000_0000);
+        if (ready) begin $display("  READY high with 12/16 words queued"); errors++; end
+        wait_idle();
+        if (!ready) begin $display("  READY low after the FIFO drained"); errors++; end
+        // WAIT_VBLANK (印付き): 最後のライン (SRC_H-1) の合成が始まったところで mark_req を 1 回出す
+        mark_count_tb = 0;
+        cmd(32'h0B00_0001);
+        wait_idle();
+        repeat (2) @(posedge clk);       // mark_req は終わったのと同じクロックで出るので、数え終わるのを待つ
+        if (mark_count_tb != 1 || mark_line != SRC_H - 1) begin
+            $display("  WAIT_VBLANK mark: %0d pulses, after line %0d", mark_count_tb, mark_line); errors++;
+        end
+        lines_on = 0;
+        cmd(32'h0900_0000);
+        wait_idle();
 
         // SWAP: 入れ替えて、fb_scanout が取り込むまで (base_latched) 実行中のまま
         cmd(32'h0300_0000);

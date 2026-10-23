@@ -57,12 +57,17 @@ REGS = {
     "FRAME_CRC": 0x05,      # 32bit、リトルエンディアン (0x05..0x08)
     "UNDERFLOW": 0x09,
     "CRC_FRAME": 0x0A,      # FRAME_CRC のフレーム番号 (16bit、0x05 を読んだ時点の値)
+    "MARK_COUNT": 0x02,     # 印を付けたフレームの CRC を更新するたびに 1 増える
+    "MARK_CRC": 0x0C,       # 印を付けたフレーム (WAIT_VBLANK、印付き) の CRC (32bit)
     # rtl/vdp/gpu.sv
     "CMD": 0x30,            # コマンドのポート (アドレスが進まない)
     "GPU_STATUS": 0x40,     # bit0 実行中, bit1 エラー, bit2 FIFO あふれ (読むとクリア) / 書き込み bit0 で FIFO を空に
     "GPU_FREE": 0x41,       # FIFO の空き (ワード数、16bit)
     "FB_BASE": 0x44,        # 表示する面 (13bit、256 ワード = 1KiB 単位)
     "DRAW_BASE": 0x46,      # 描く面
+    "BG_COLOR": 0x48,       # 合成の背景色 (RGB565)
+    "LAYER_CTRL": 0x4A,     # bit0 ビットマップ レイヤ有効, bit1 ビットマップの透過色を有効
+    "BITMAP_KEY": 0x4C,     # ビットマップの透過色
     "SCRATCH": 0x7D,
     "ID": 0x7E,
     "VERSION": 0x7F,
@@ -83,6 +88,7 @@ SYNC_BYTE = 0xA5            # spi_slave が 1 バイト目に返す値
 CONTROL_FREEZE = 0x02
 CONTROL_IRQ_EN = 0x04
 CONTROL_FB = 0x08
+CONTROL_IRQ_READY = 0x10   # IRQ ピンを READY (GPU の FIFO が半分以上空いている) にする
 STATUS_ERROR = 0x02
 
 
@@ -383,6 +389,23 @@ def selftest(bridge, iterations):
              rd_sample=cfg, phase=phase, margin_early=early, margin_late=late,
              passing_phases=sorted(ok_phases))
 
+        # READY の線 (IRQ ピンを READY にする): FIFO が空なら High、GPU を WAIT_LINE で 2 フレームほど止めて
+        # FIFO を半分以上 (300 / 512 ワード) 埋めると Low、空になると High に戻る
+        control = vdp.read1(REGS["CONTROL"])
+        gpu = Gpu(vdp)
+        vdp.write(REGS["CONTROL"], [control | CONTROL_IRQ_READY])
+        try:
+            idle_level = bridge.command("status")["pins"]["IRQ"]
+            block = [0x0A00_0000 | n for n in (200, 100, 200, 100)]     # 下がるたびに次のフレームまで待つ
+            gpu.send(block + [0] * 300)
+            busy_level = bridge.command("status")["pins"]["IRQ"]
+            gpu.wait_idle()
+            after_level = bridge.command("status")["pins"]["IRQ"]
+        finally:
+            vdp.write(REGS["CONTROL"], [control])
+        item("READY wire (IRQ pin with CONTROL bit4)", idle_level == 1 and busy_level == 0 and after_level == 1,
+             idle=idle_level, with_300_words_queued=busy_level, after_drain=after_level)
+
         pins = bridge.command("status")["pins"]
         items.append({"name": "LED0-5 (info)", "ok": True, "leds": [pins[f"LED{i}"] for i in range(6)]})
         items.append({"name": "UART banner", "ok": True, "skipped": "not implemented yet"})
@@ -483,7 +506,8 @@ def scenario(bridge, path, do_capture, out_dir):
     import gpu_model
     import imgcmp
     sc = gpu_model.load(path)
-    words, checks = gpu_model.expected(sc)
+    kinds = []
+    words, checks = gpu_model.expected(sc, kinds)
     vdp = Vdp(bridge)
     gpu = Gpu(vdp)
     control = vdp.read1(REGS["CONTROL"])
@@ -496,19 +520,33 @@ def scenario(bridge, path, do_capture, out_dir):
         gpu.status()
         vdp.write(REGS["FB_BASE"], gpu_model.FB_BASE_RESET.to_bytes(2, "little"))
         vdp.write(REGS["DRAW_BASE"], gpu_model.DRAW_BASE_RESET.to_bytes(2, "little"))
+        vdp.write(REGS["BG_COLOR"], gpu_model.LAYER_RESET["bg_color"].to_bytes(2, "little"))
+        vdp.write(REGS["LAYER_CTRL"], [gpu_model.LAYER_RESET["layer_ctrl"]])
+        vdp.write(REGS["BITMAP_KEY"], gpu_model.LAYER_RESET["bitmap_key"].to_bytes(2, "little"))
         vdp.write(REGS["CONTROL"], [control | CONTROL_FB])
         under0 = vdp.read1(REGS["UNDERFLOW"])
         sent = 0
-        for i, (n, img, crc) in enumerate(checks):
+        for i, ((n, img, crc), kind) in enumerate(zip(checks, kinds)):
             start = time.monotonic()
+            marks0 = vdp.read1(REGS["MARK_COUNT"])
             gpu.send(words[sent:n])
             sent = n
             st = gpu.wait_idle()
-            got, frame = settled_crc(vdp)
-            r = {"check": i, "words": n, "expected_crc": f"0x{crc:08x}", "crc": f"0x{got:08x}", "frame": frame,
+            if kind == "check_marked":
+                # 印を付けたフレームが表示し終わるのを待ち、そのフレームの CRC を読む
+                deadline = time.monotonic() + 1.0
+                while vdp.read1(REGS["MARK_COUNT"]) == marks0:
+                    if time.monotonic() > deadline:
+                        raise HarnessError("marked frame did not complete")
+                    time.sleep(0.002)
+                got = int.from_bytes(vdp.read(REGS["MARK_CRC"], 4), "little")
+                frame = None
+            else:
+                got, frame = settled_crc(vdp)
+            r = {"check": i, "kind": kind, "words": n, "expected_crc": f"0x{crc:08x}", "crc": f"0x{got:08x}", "frame": frame,
                  "gpu_status": st, "ok": got == crc and not st & (GPU_ST_ERROR | GPU_ST_OVERFLOW),
                  "seconds": round(time.monotonic() - start, 2)}
-            if do_capture:
+            if do_capture and kind == "check":       # 印のフレームは過ぎてしまっているのでキャプチャしない (CRC だけ)
                 w, h = 2 * fbmodel.SRC_W, 2 * fbmodel.SRC_H
                 expect = fbmodel.expected_output(img)
                 cap = imgcmp.capture(w, h)

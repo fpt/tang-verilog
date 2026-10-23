@@ -1,0 +1,2320 @@
+{
+ "name": "e1_raster",
+ "description": "ラインごとの合成 (E1): WAIT_LINE + REG_WRITE でラインごとに背景色を変える (ラスター バー)、帯ごとにレイヤの有効・透過色を変える。印を付けたフレームを比べる",
+ "steps": [
+  {
+   "op": "clear",
+   "color": "#ff00ff"
+  },
+  {
+   "op": "fill_rect",
+   "x": 20,
+   "y": 20,
+   "w": 120,
+   "h": 80,
+   "color": "#ffffff"
+  },
+  {
+   "op": "fill_rect",
+   "x": 180,
+   "y": 40,
+   "w": 100,
+   "h": 160,
+   "color": "#00c000"
+  },
+  {
+   "op": "fill_rect",
+   "x": 60,
+   "y": 140,
+   "w": 90,
+   "h": 70,
+   "color": "#ff00ff"
+  },
+  {
+   "op": "line",
+   "x0": 0,
+   "y0": 0,
+   "x1": 319,
+   "y1": 239,
+   "color": "#ffff00"
+  },
+  {
+   "op": "line",
+   "x0": 319,
+   "y0": 0,
+   "x1": 0,
+   "y1": 239,
+   "color": "#00ffff"
+  },
+  {
+   "op": "fill_rect",
+   "x": 150,
+   "y": 0,
+   "w": 20,
+   "h": 240,
+   "color": "#ffffff"
+  },
+  {
+   "op": "swap"
+  },
+  {
+   "op": "reg",
+   "name": "bitmap_key",
+   "value": "#ff00ff"
+  },
+  {
+   "op": "reg",
+   "name": "layer_ctrl",
+   "value": 3
+  },
+  {
+   "op": "wait_vblank",
+   "mark": true
+  },
+  {
+   "op": "reg",
+   "name": "bg_color",
+   "value": "#000000"
+  },
+  {
+   "op": "wait_line",
+   "line": 1
+  },
+  {
+   "op": "reg",
+   "name": "bg_color",
+   "value": "#8cee1a"
+  },
+  {
+   "op": "wait_line",
+   "line": 2
+  },
+  {
+   "op": "reg",
+   "name": "bg_color",
+   "value": "#9ae917"
+  },
+  {
+   "op": "wait_line",
+   "line": 3
+  },
+  {
+   "op": "reg",
+   "name": "bg_color",
+   "value": "#a8e413"
+  },
+  {
+   "op": "wait_line",
+   "line": 4
+  },
+  {
+   "op": "reg",
+   "name": "bg_color",
+   "value": "#b5df10"
+  },
+  {
+   "op": "wait_line",
+   "line": 5
+  },
+  {
+   "op": "reg",
+   "name": "bg_color",
+   "value": "#c1d90d"
+  },
+  {
+   "op": "wait_line",
+   "line": 6
+  },
+  {
+   "op": "reg",
+   "name": "bg_color",
+   "value": "#ccd20a"
+  },
+  {
+   "op": "wait_line",
+   "line": 7
+  },
+  {
+   "op": "reg",
+   "name": "bg_color",
+   "value": "#d7cc08"
+  },
+  {
+   "op": "wait_line",
+   "line": 8
+  },
+  {
+   "op": "reg",
+   "name": "bg_color",
+   "value": "#e0c406"
+  },
+  {
+   "op": "wait_line",
+   "line": 9
+  },
+  {
+   "op": "reg",
+   "name": "bg_color",
+   "value": "#e9bd04"
+  },
+  {
+   "op": "wait_line",
+   "line": 10
+  },
+  {
+   "op": "reg",
+   "name": "bg_color",
+   "value": "#f0b502"
+  },
+  {
+   "op": "wait_line",
+   "line": 11
+  },
+  {
+   "op": "reg",
+   "name": "bg_color",
+   "value": "#f5ad01"
+  },
+  {
+   "op": "wait_line",
+   "line": 12
+  },
+  {
+   "op": "reg",
+   "name": "bg_color",
+   "value": "#faa400"
+  },
+  {
+   "op": "wait_line",
+   "line": 13
+  },
+  {
+   "op": "reg",
+   "name": "bg_color",
+   "value": "#fc9c00"
+  },
+  {
+   "op": "wait_line",
+   "line": 14
+  },
+  {
+   "op": "reg",
+   "name": "bg_color",
+   "value": "#fd9300"
+  },
+  {
+   "op": "wait_line",
+   "line": 15
+  },
+  {
+   "op": "reg",
+   "name": "bg_color",
+   "value": "#fd8a00"
+  },
+  {
+   "op": "wait_line",
+   "line": 16
+  },
+  {
+   "op": "reg",
+   "name": "bg_color",
+   "value": "#fb8100"
+  },
+  {
+   "op": "wait_line",
+   "line": 17
+  },
+  {
+   "op": "reg",
+   "name": "bg_color",
+   "value": "#f87801"
+  },
+  {
+   "op": "wait_line",
+   "line": 18
+  },
+  {
+   "op": "reg",
+   "name": "bg_color",
+   "value": "#f36f02"
+  },
+  {
+   "op": "wait_line",
+   "line": 19
+  },
+  {
+   "op": "reg",
+   "name": "bg_color",
+   "value": "#ed6703"
+  },
+  {
+   "op": "wait_line",
+   "line": 20
+  },
+  {
+   "op": "reg",
+   "name": "bg_color",
+   "value": "#e55e05"
+  },
+  {
+   "op": "wait_line",
+   "line": 21
+  },
+  {
+   "op": "reg",
+   "name": "bg_color",
+   "value": "#dc5607"
+  },
+  {
+   "op": "wait_line",
+   "line": 22
+  },
+  {
+   "op": "reg",
+   "name": "bg_color",
+   "value": "#d24d09"
+  },
+  {
+   "op": "wait_line",
+   "line": 23
+  },
+  {
+   "op": "reg",
+   "name": "bg_color",
+   "value": "#c7450b"
+  },
+  {
+   "op": "wait_line",
+   "line": 24
+  },
+  {
+   "op": "reg",
+   "name": "bg_color",
+   "value": "#bc3d0e"
+  },
+  {
+   "op": "wait_line",
+   "line": 25
+  },
+  {
+   "op": "reg",
+   "name": "bg_color",
+   "value": "#af3611"
+  },
+  {
+   "op": "wait_line",
+   "line": 26
+  },
+  {
+   "op": "reg",
+   "name": "bg_color",
+   "value": "#a22f15"
+  },
+  {
+   "op": "wait_line",
+   "line": 27
+  },
+  {
+   "op": "reg",
+   "name": "bg_color",
+   "value": "#942818"
+  },
+  {
+   "op": "wait_line",
+   "line": 28
+  },
+  {
+   "op": "reg",
+   "name": "bg_color",
+   "value": "#86221c"
+  },
+  {
+   "op": "wait_line",
+   "line": 29
+  },
+  {
+   "op": "reg",
+   "name": "bg_color",
+   "value": "#781c21"
+  },
+  {
+   "op": "wait_line",
+   "line": 30
+  },
+  {
+   "op": "reg",
+   "name": "bg_color",
+   "value": "#6a1725"
+  },
+  {
+   "op": "wait_line",
+   "line": 31
+  },
+  {
+   "op": "reg",
+   "name": "bg_color",
+   "value": "#5d122a"
+  },
+  {
+   "op": "wait_line",
+   "line": 32
+  },
+  {
+   "op": "reg",
+   "name": "bg_color",
+   "value": "#500d2e"
+  },
+  {
+   "op": "wait_line",
+   "line": 33
+  },
+  {
+   "op": "reg",
+   "name": "bg_color",
+   "value": "#430a33"
+  },
+  {
+   "op": "wait_line",
+   "line": 34
+  },
+  {
+   "op": "reg",
+   "name": "bg_color",
+   "value": "#370639"
+  },
+  {
+   "op": "wait_line",
+   "line": 35
+  },
+  {
+   "op": "reg",
+   "name": "bg_color",
+   "value": "#2c043e"
+  },
+  {
+   "op": "wait_line",
+   "line": 36
+  },
+  {
+   "op": "reg",
+   "name": "bg_color",
+   "value": "#220243"
+  },
+  {
+   "op": "wait_line",
+   "line": 37
+  },
+  {
+   "op": "reg",
+   "name": "bg_color",
+   "value": "#190049"
+  },
+  {
+   "op": "wait_line",
+   "line": 38
+  },
+  {
+   "op": "reg",
+   "name": "bg_color",
+   "value": "#11004f"
+  },
+  {
+   "op": "wait_line",
+   "line": 39
+  },
+  {
+   "op": "reg",
+   "name": "bg_color",
+   "value": "#0b0055"
+  },
+  {
+   "op": "wait_line",
+   "line": 40
+  },
+  {
+   "op": "reg",
+   "name": "bg_color",
+   "value": "#06005b"
+  },
+  {
+   "op": "wait_line",
+   "line": 41
+  },
+  {
+   "op": "reg",
+   "name": "bg_color",
+   "value": "#020161"
+  },
+  {
+   "op": "wait_line",
+   "line": 42
+  },
+  {
+   "op": "reg",
+   "name": "bg_color",
+   "value": "#000367"
+  },
+  {
+   "op": "wait_line",
+   "line": 43
+  },
+  {
+   "op": "reg",
+   "name": "bg_color",
+   "value": "#00056e"
+  },
+  {
+   "op": "wait_line",
+   "line": 44
+  },
+  {
+   "op": "reg",
+   "name": "bg_color",
+   "value": "#010874"
+  },
+  {
+   "op": "wait_line",
+   "line": 45
+  },
+  {
+   "op": "reg",
+   "name": "bg_color",
+   "value": "#030b7a"
+  },
+  {
+   "op": "wait_line",
+   "line": 46
+  },
+  {
+   "op": "reg",
+   "name": "bg_color",
+   "value": "#071081"
+  },
+  {
+   "op": "wait_line",
+   "line": 47
+  },
+  {
+   "op": "reg",
+   "name": "bg_color",
+   "value": "#0d1487"
+  },
+  {
+   "op": "wait_line",
+   "line": 48
+  },
+  {
+   "op": "reg",
+   "name": "bg_color",
+   "value": "#13198d"
+  },
+  {
+   "op": "wait_line",
+   "line": 49
+  },
+  {
+   "op": "reg",
+   "name": "bg_color",
+   "value": "#1c1f94"
+  },
+  {
+   "op": "wait_line",
+   "line": 50
+  },
+  {
+   "op": "reg",
+   "name": "bg_color",
+   "value": "#25259a"
+  },
+  {
+   "op": "wait_line",
+   "line": 51
+  },
+  {
+   "op": "reg",
+   "name": "bg_color",
+   "value": "#2f2ba0"
+  },
+  {
+   "op": "wait_line",
+   "line": 52
+  },
+  {
+   "op": "reg",
+   "name": "bg_color",
+   "value": "#3b32a6"
+  },
+  {
+   "op": "wait_line",
+   "line": 53
+  },
+  {
+   "op": "reg",
+   "name": "bg_color",
+   "value": "#473aac"
+  },
+  {
+   "op": "wait_line",
+   "line": 54
+  },
+  {
+   "op": "reg",
+   "name": "bg_color",
+   "value": "#5441b2"
+  },
+  {
+   "op": "wait_line",
+   "line": 55
+  },
+  {
+   "op": "reg",
+   "name": "bg_color",
+   "value": "#6149b8"
+  },
+  {
+   "op": "wait_line",
+   "line": 56
+  },
+  {
+   "op": "reg",
+   "name": "bg_color",
+   "value": "#6f51bd"
+  },
+  {
+   "op": "wait_line",
+   "line": 57
+  },
+  {
+   "op": "reg",
+   "name": "bg_color",
+   "value": "#7d5ac3"
+  },
+  {
+   "op": "wait_line",
+   "line": 58
+  },
+  {
+   "op": "reg",
+   "name": "bg_color",
+   "value": "#8b62c8"
+  },
+  {
+   "op": "wait_line",
+   "line": 59
+  },
+  {
+   "op": "reg",
+   "name": "bg_color",
+   "value": "#996bcd"
+  },
+  {
+   "op": "wait_line",
+   "line": 60
+  },
+  {
+   "op": "reg",
+   "name": "bg_color",
+   "value": "#a674d2"
+  },
+  {
+   "op": "wait_line",
+   "line": 61
+  },
+  {
+   "op": "reg",
+   "name": "bg_color",
+   "value": "#b37dd7"
+  },
+  {
+   "op": "wait_line",
+   "line": 62
+  },
+  {
+   "op": "reg",
+   "name": "bg_color",
+   "value": "#bf86db"
+  },
+  {
+   "op": "wait_line",
+   "line": 63
+  },
+  {
+   "op": "reg",
+   "name": "bg_color",
+   "value": "#cb8fdf"
+  },
+  {
+   "op": "wait_line",
+   "line": 64
+  },
+  {
+   "op": "reg",
+   "name": "bg_color",
+   "value": "#d697e3"
+  },
+  {
+   "op": "wait_line",
+   "line": 65
+  },
+  {
+   "op": "reg",
+   "name": "bg_color",
+   "value": "#dfa0e7"
+  },
+  {
+   "op": "wait_line",
+   "line": 66
+  },
+  {
+   "op": "reg",
+   "name": "bg_color",
+   "value": "#e8a8eb"
+  },
+  {
+   "op": "wait_line",
+   "line": 67
+  },
+  {
+   "op": "reg",
+   "name": "bg_color",
+   "value": "#efb1ee"
+  },
+  {
+   "op": "wait_line",
+   "line": 68
+  },
+  {
+   "op": "reg",
+   "name": "bg_color",
+   "value": "#f5b9f1"
+  },
+  {
+   "op": "wait_line",
+   "line": 69
+  },
+  {
+   "op": "reg",
+   "name": "bg_color",
+   "value": "#f9c1f3"
+  },
+  {
+   "op": "wait_line",
+   "line": 70
+  },
+  {
+   "op": "reg",
+   "name": "bg_color",
+   "value": "#fcc8f6"
+  },
+  {
+   "op": "wait_line",
+   "line": 71
+  },
+  {
+   "op": "reg",
+   "name": "bg_color",
+   "value": "#fdcff8"
+  },
+  {
+   "op": "wait_line",
+   "line": 72
+  },
+  {
+   "op": "reg",
+   "name": "bg_color",
+   "value": "#fdd6f9"
+  },
+  {
+   "op": "wait_line",
+   "line": 73
+  },
+  {
+   "op": "reg",
+   "name": "bg_color",
+   "value": "#fcdcfb"
+  },
+  {
+   "op": "wait_line",
+   "line": 74
+  },
+  {
+   "op": "reg",
+   "name": "bg_color",
+   "value": "#f8e2fc"
+  },
+  {
+   "op": "wait_line",
+   "line": 75
+  },
+  {
+   "op": "reg",
+   "name": "bg_color",
+   "value": "#f4e7fd"
+  },
+  {
+   "op": "wait_line",
+   "line": 76
+  },
+  {
+   "op": "reg",
+   "name": "bg_color",
+   "value": "#eeecfd"
+  },
+  {
+   "op": "wait_line",
+   "line": 77
+  },
+  {
+   "op": "reg",
+   "name": "bg_color",
+   "value": "#e6f0fd"
+  },
+  {
+   "op": "wait_line",
+   "line": 78
+  },
+  {
+   "op": "reg",
+   "name": "bg_color",
+   "value": "#ddf4fd"
+  },
+  {
+   "op": "wait_line",
+   "line": 79
+  },
+  {
+   "op": "reg",
+   "name": "bg_color",
+   "value": "#d4f7fd"
+  },
+  {
+   "op": "wait_line",
+   "line": 80
+  },
+  {
+   "op": "reg",
+   "name": "bg_color",
+   "value": "#c9f9fc"
+  },
+  {
+   "op": "wait_line",
+   "line": 81
+  },
+  {
+   "op": "reg",
+   "name": "bg_color",
+   "value": "#bdfbfb"
+  },
+  {
+   "op": "wait_line",
+   "line": 82
+  },
+  {
+   "op": "reg",
+   "name": "bg_color",
+   "value": "#b1fdfa"
+  },
+  {
+   "op": "wait_line",
+   "line": 83
+  },
+  {
+   "op": "reg",
+   "name": "bg_color",
+   "value": "#a3fdf8"
+  },
+  {
+   "op": "wait_line",
+   "line": 84
+  },
+  {
+   "op": "reg",
+   "name": "bg_color",
+   "value": "#96fdf6"
+  },
+  {
+   "op": "wait_line",
+   "line": 85
+  },
+  {
+   "op": "reg",
+   "name": "bg_color",
+   "value": "#88fdf4"
+  },
+  {
+   "op": "wait_line",
+   "line": 86
+  },
+  {
+   "op": "reg",
+   "name": "bg_color",
+   "value": "#7afcf1"
+  },
+  {
+   "op": "wait_line",
+   "line": 87
+  },
+  {
+   "op": "reg",
+   "name": "bg_color",
+   "value": "#6cfaee"
+  },
+  {
+   "op": "wait_line",
+   "line": 88
+  },
+  {
+   "op": "reg",
+   "name": "bg_color",
+   "value": "#5ef8eb"
+  },
+  {
+   "op": "wait_line",
+   "line": 89
+  },
+  {
+   "op": "reg",
+   "name": "bg_color",
+   "value": "#51f5e8"
+  },
+  {
+   "op": "wait_line",
+   "line": 90
+  },
+  {
+   "op": "reg",
+   "name": "bg_color",
+   "value": "#44f1e4"
+  },
+  {
+   "op": "wait_line",
+   "line": 91
+  },
+  {
+   "op": "reg",
+   "name": "bg_color",
+   "value": "#38ede0"
+  },
+  {
+   "op": "wait_line",
+   "line": 92
+  },
+  {
+   "op": "reg",
+   "name": "bg_color",
+   "value": "#2de8dc"
+  },
+  {
+   "op": "wait_line",
+   "line": 93
+  },
+  {
+   "op": "reg",
+   "name": "bg_color",
+   "value": "#23e3d7"
+  },
+  {
+   "op": "wait_line",
+   "line": 94
+  },
+  {
+   "op": "reg",
+   "name": "bg_color",
+   "value": "#1addd3"
+  },
+  {
+   "op": "wait_line",
+   "line": 95
+  },
+  {
+   "op": "reg",
+   "name": "bg_color",
+   "value": "#12d7ce"
+  },
+  {
+   "op": "wait_line",
+   "line": 96
+  },
+  {
+   "op": "reg",
+   "name": "bg_color",
+   "value": "#0bd1c9"
+  },
+  {
+   "op": "wait_line",
+   "line": 97
+  },
+  {
+   "op": "reg",
+   "name": "bg_color",
+   "value": "#06cac4"
+  },
+  {
+   "op": "wait_line",
+   "line": 98
+  },
+  {
+   "op": "reg",
+   "name": "bg_color",
+   "value": "#02c2be"
+  },
+  {
+   "op": "wait_line",
+   "line": 99
+  },
+  {
+   "op": "reg",
+   "name": "bg_color",
+   "value": "#00bbb9"
+  },
+  {
+   "op": "wait_line",
+   "line": 100
+  },
+  {
+   "op": "reg",
+   "name": "bg_color",
+   "value": "#00b3b3"
+  },
+  {
+   "op": "wait_line",
+   "line": 101
+  },
+  {
+   "op": "reg",
+   "name": "bg_color",
+   "value": "#00abad"
+  },
+  {
+   "op": "wait_line",
+   "line": 102
+  },
+  {
+   "op": "reg",
+   "name": "bg_color",
+   "value": "#03a2a7"
+  },
+  {
+   "op": "wait_line",
+   "line": 103
+  },
+  {
+   "op": "reg",
+   "name": "bg_color",
+   "value": "#079aa1"
+  },
+  {
+   "op": "wait_line",
+   "line": 104
+  },
+  {
+   "op": "reg",
+   "name": "bg_color",
+   "value": "#0c919b"
+  },
+  {
+   "op": "wait_line",
+   "line": 105
+  },
+  {
+   "op": "reg",
+   "name": "bg_color",
+   "value": "#138895"
+  },
+  {
+   "op": "wait_line",
+   "line": 106
+  },
+  {
+   "op": "reg",
+   "name": "bg_color",
+   "value": "#1b7f8e"
+  },
+  {
+   "op": "wait_line",
+   "line": 107
+  },
+  {
+   "op": "reg",
+   "name": "bg_color",
+   "value": "#247688"
+  },
+  {
+   "op": "wait_line",
+   "line": 108
+  },
+  {
+   "op": "reg",
+   "name": "bg_color",
+   "value": "#2e6d82"
+  },
+  {
+   "op": "wait_line",
+   "line": 109
+  },
+  {
+   "op": "reg",
+   "name": "bg_color",
+   "value": "#39657b"
+  },
+  {
+   "op": "wait_line",
+   "line": 110
+  },
+  {
+   "op": "reg",
+   "name": "bg_color",
+   "value": "#455c75"
+  },
+  {
+   "op": "wait_line",
+   "line": 111
+  },
+  {
+   "op": "reg",
+   "name": "bg_color",
+   "value": "#52546f"
+  },
+  {
+   "op": "wait_line",
+   "line": 112
+  },
+  {
+   "op": "reg",
+   "name": "bg_color",
+   "value": "#604b68"
+  },
+  {
+   "op": "wait_line",
+   "line": 113
+  },
+  {
+   "op": "reg",
+   "name": "bg_color",
+   "value": "#6d4362"
+  },
+  {
+   "op": "wait_line",
+   "line": 114
+  },
+  {
+   "op": "reg",
+   "name": "bg_color",
+   "value": "#7b3c5c"
+  },
+  {
+   "op": "wait_line",
+   "line": 115
+  },
+  {
+   "op": "reg",
+   "name": "bg_color",
+   "value": "#893456"
+  },
+  {
+   "op": "wait_line",
+   "line": 116
+  },
+  {
+   "op": "reg",
+   "name": "bg_color",
+   "value": "#972d50"
+  },
+  {
+   "op": "wait_line",
+   "line": 117
+  },
+  {
+   "op": "reg",
+   "name": "bg_color",
+   "value": "#a4274a"
+  },
+  {
+   "op": "wait_line",
+   "line": 118
+  },
+  {
+   "op": "reg",
+   "name": "bg_color",
+   "value": "#b22044"
+  },
+  {
+   "op": "wait_line",
+   "line": 119
+  },
+  {
+   "op": "reg",
+   "name": "bg_color",
+   "value": "#be1b3f"
+  },
+  {
+   "op": "wait_line",
+   "line": 120
+  },
+  {
+   "op": "reg",
+   "name": "bg_color",
+   "value": "#ca1539"
+  },
+  {
+   "op": "wait_line",
+   "line": 121
+  },
+  {
+   "op": "reg",
+   "name": "bg_color",
+   "value": "#d41134"
+  },
+  {
+   "op": "wait_line",
+   "line": 122
+  },
+  {
+   "op": "reg",
+   "name": "bg_color",
+   "value": "#de0c2f"
+  },
+  {
+   "op": "wait_line",
+   "line": 123
+  },
+  {
+   "op": "reg",
+   "name": "bg_color",
+   "value": "#e7092a"
+  },
+  {
+   "op": "wait_line",
+   "line": 124
+  },
+  {
+   "op": "reg",
+   "name": "bg_color",
+   "value": "#ee0626"
+  },
+  {
+   "op": "wait_line",
+   "line": 125
+  },
+  {
+   "op": "reg",
+   "name": "bg_color",
+   "value": "#f40321"
+  },
+  {
+   "op": "wait_line",
+   "line": 126
+  },
+  {
+   "op": "reg",
+   "name": "bg_color",
+   "value": "#f9011d"
+  },
+  {
+   "op": "wait_line",
+   "line": 127
+  },
+  {
+   "op": "reg",
+   "name": "bg_color",
+   "value": "#fc0019"
+  },
+  {
+   "op": "wait_line",
+   "line": 128
+  },
+  {
+   "op": "reg",
+   "name": "bg_color",
+   "value": "#fd0015"
+  },
+  {
+   "op": "wait_line",
+   "line": 129
+  },
+  {
+   "op": "reg",
+   "name": "bg_color",
+   "value": "#fd0012"
+  },
+  {
+   "op": "wait_line",
+   "line": 130
+  },
+  {
+   "op": "reg",
+   "name": "bg_color",
+   "value": "#fc000f"
+  },
+  {
+   "op": "wait_line",
+   "line": 131
+  },
+  {
+   "op": "reg",
+   "name": "bg_color",
+   "value": "#f9010c"
+  },
+  {
+   "op": "wait_line",
+   "line": 132
+  },
+  {
+   "op": "reg",
+   "name": "bg_color",
+   "value": "#f40309"
+  },
+  {
+   "op": "wait_line",
+   "line": 133
+  },
+  {
+   "op": "reg",
+   "name": "bg_color",
+   "value": "#ee0607"
+  },
+  {
+   "op": "wait_line",
+   "line": 134
+  },
+  {
+   "op": "reg",
+   "name": "bg_color",
+   "value": "#e70905"
+  },
+  {
+   "op": "wait_line",
+   "line": 135
+  },
+  {
+   "op": "reg",
+   "name": "bg_color",
+   "value": "#df0c03"
+  },
+  {
+   "op": "wait_line",
+   "line": 136
+  },
+  {
+   "op": "reg",
+   "name": "bg_color",
+   "value": "#d51102"
+  },
+  {
+   "op": "wait_line",
+   "line": 137
+  },
+  {
+   "op": "reg",
+   "name": "bg_color",
+   "value": "#ca1501"
+  },
+  {
+   "op": "wait_line",
+   "line": 138
+  },
+  {
+   "op": "reg",
+   "name": "bg_color",
+   "value": "#be1b00"
+  },
+  {
+   "op": "wait_line",
+   "line": 139
+  },
+  {
+   "op": "reg",
+   "name": "bg_color",
+   "value": "#b22000"
+  },
+  {
+   "op": "wait_line",
+   "line": 140
+  },
+  {
+   "op": "reg",
+   "name": "bg_color",
+   "value": "#a52600"
+  },
+  {
+   "op": "wait_line",
+   "line": 141
+  },
+  {
+   "op": "reg",
+   "name": "bg_color",
+   "value": "#972d00"
+  },
+  {
+   "op": "wait_line",
+   "line": 142
+  },
+  {
+   "op": "reg",
+   "name": "bg_color",
+   "value": "#8a3400"
+  },
+  {
+   "op": "wait_line",
+   "line": 143
+  },
+  {
+   "op": "reg",
+   "name": "bg_color",
+   "value": "#7c3b01"
+  },
+  {
+   "op": "wait_line",
+   "line": 144
+  },
+  {
+   "op": "reg",
+   "name": "bg_color",
+   "value": "#6e4302"
+  },
+  {
+   "op": "wait_line",
+   "line": 145
+  },
+  {
+   "op": "reg",
+   "name": "bg_color",
+   "value": "#604b04"
+  },
+  {
+   "op": "wait_line",
+   "line": 146
+  },
+  {
+   "op": "reg",
+   "name": "bg_color",
+   "value": "#535305"
+  },
+  {
+   "op": "wait_line",
+   "line": 147
+  },
+  {
+   "op": "reg",
+   "name": "bg_color",
+   "value": "#465c07"
+  },
+  {
+   "op": "wait_line",
+   "line": 148
+  },
+  {
+   "op": "reg",
+   "name": "bg_color",
+   "value": "#3a640a"
+  },
+  {
+   "op": "wait_line",
+   "line": 149
+  },
+  {
+   "op": "reg",
+   "name": "bg_color",
+   "value": "#2e6d0c"
+  },
+  {
+   "op": "wait_line",
+   "line": 150
+  },
+  {
+   "op": "reg",
+   "name": "bg_color",
+   "value": "#24760f"
+  },
+  {
+   "op": "wait_line",
+   "line": 151
+  },
+  {
+   "op": "reg",
+   "name": "bg_color",
+   "value": "#1b7f13"
+  },
+  {
+   "op": "wait_line",
+   "line": 152
+  },
+  {
+   "op": "reg",
+   "name": "bg_color",
+   "value": "#138816"
+  },
+  {
+   "op": "wait_line",
+   "line": 153
+  },
+  {
+   "op": "reg",
+   "name": "bg_color",
+   "value": "#0c911a"
+  },
+  {
+   "op": "wait_line",
+   "line": 154
+  },
+  {
+   "op": "reg",
+   "name": "bg_color",
+   "value": "#07991e"
+  },
+  {
+   "op": "wait_line",
+   "line": 155
+  },
+  {
+   "op": "reg",
+   "name": "bg_color",
+   "value": "#03a222"
+  },
+  {
+   "op": "wait_line",
+   "line": 156
+  },
+  {
+   "op": "reg",
+   "name": "bg_color",
+   "value": "#00aa26"
+  },
+  {
+   "op": "wait_line",
+   "line": 157
+  },
+  {
+   "op": "reg",
+   "name": "bg_color",
+   "value": "#00b32b"
+  },
+  {
+   "op": "wait_line",
+   "line": 158
+  },
+  {
+   "op": "reg",
+   "name": "bg_color",
+   "value": "#00bb30"
+  },
+  {
+   "op": "wait_line",
+   "line": 159
+  },
+  {
+   "op": "reg",
+   "name": "bg_color",
+   "value": "#02c235"
+  },
+  {
+   "op": "wait_line",
+   "line": 160
+  },
+  {
+   "op": "reg",
+   "name": "bg_color",
+   "value": "#06ca3a"
+  },
+  {
+   "op": "wait_line",
+   "line": 161
+  },
+  {
+   "op": "reg",
+   "name": "bg_color",
+   "value": "#0bd140"
+  },
+  {
+   "op": "wait_line",
+   "line": 162
+  },
+  {
+   "op": "reg",
+   "name": "bg_color",
+   "value": "#12d745"
+  },
+  {
+   "op": "wait_line",
+   "line": 163
+  },
+  {
+   "op": "reg",
+   "name": "bg_color",
+   "value": "#19dd4b"
+  },
+  {
+   "op": "wait_line",
+   "line": 164
+  },
+  {
+   "op": "reg",
+   "name": "bg_color",
+   "value": "#23e351"
+  },
+  {
+   "op": "wait_line",
+   "line": 165
+  },
+  {
+   "op": "reg",
+   "name": "bg_color",
+   "value": "#2de857"
+  },
+  {
+   "op": "wait_line",
+   "line": 166
+  },
+  {
+   "op": "reg",
+   "name": "bg_color",
+   "value": "#38ed5d"
+  },
+  {
+   "op": "wait_line",
+   "line": 167
+  },
+  {
+   "op": "reg",
+   "name": "bg_color",
+   "value": "#44f163"
+  },
+  {
+   "op": "wait_line",
+   "line": 168
+  },
+  {
+   "op": "reg",
+   "name": "bg_color",
+   "value": "#51f569"
+  },
+  {
+   "op": "wait_line",
+   "line": 169
+  },
+  {
+   "op": "reg",
+   "name": "bg_color",
+   "value": "#5ef870"
+  },
+  {
+   "op": "wait_line",
+   "line": 170
+  },
+  {
+   "op": "reg",
+   "name": "bg_color",
+   "value": "#6cfa76"
+  },
+  {
+   "op": "wait_line",
+   "line": 171
+  },
+  {
+   "op": "reg",
+   "name": "bg_color",
+   "value": "#79fc7c"
+  },
+  {
+   "op": "wait_line",
+   "line": 172
+  },
+  {
+   "op": "reg",
+   "name": "bg_color",
+   "value": "#87fd83"
+  },
+  {
+   "op": "wait_line",
+   "line": 173
+  },
+  {
+   "op": "reg",
+   "name": "bg_color",
+   "value": "#95fd89"
+  },
+  {
+   "op": "wait_line",
+   "line": 174
+  },
+  {
+   "op": "reg",
+   "name": "bg_color",
+   "value": "#a3fd8f"
+  },
+  {
+   "op": "wait_line",
+   "line": 175
+  },
+  {
+   "op": "reg",
+   "name": "bg_color",
+   "value": "#b0fd96"
+  },
+  {
+   "op": "wait_line",
+   "line": 176
+  },
+  {
+   "op": "reg",
+   "name": "bg_color",
+   "value": "#bdfb9c"
+  },
+  {
+   "op": "wait_line",
+   "line": 177
+  },
+  {
+   "op": "reg",
+   "name": "bg_color",
+   "value": "#c8f9a2"
+  },
+  {
+   "op": "wait_line",
+   "line": 178
+  },
+  {
+   "op": "reg",
+   "name": "bg_color",
+   "value": "#d3f7a8"
+  },
+  {
+   "op": "wait_line",
+   "line": 179
+  },
+  {
+   "op": "reg",
+   "name": "bg_color",
+   "value": "#ddf4ae"
+  },
+  {
+   "op": "wait_line",
+   "line": 180
+  },
+  {
+   "op": "reg",
+   "name": "bg_color",
+   "value": "#e6f0b4"
+  },
+  {
+   "op": "wait_line",
+   "line": 181
+  },
+  {
+   "op": "reg",
+   "name": "bg_color",
+   "value": "#edecba"
+  },
+  {
+   "op": "wait_line",
+   "line": 182
+  },
+  {
+   "op": "reg",
+   "name": "bg_color",
+   "value": "#f3e7bf"
+  },
+  {
+   "op": "wait_line",
+   "line": 183
+  },
+  {
+   "op": "reg",
+   "name": "bg_color",
+   "value": "#f8e2c4"
+  },
+  {
+   "op": "wait_line",
+   "line": 184
+  },
+  {
+   "op": "reg",
+   "name": "bg_color",
+   "value": "#fbdcca"
+  },
+  {
+   "op": "wait_line",
+   "line": 185
+  },
+  {
+   "op": "reg",
+   "name": "bg_color",
+   "value": "#fdd6cf"
+  },
+  {
+   "op": "wait_line",
+   "line": 186
+  },
+  {
+   "op": "reg",
+   "name": "bg_color",
+   "value": "#fdcfd4"
+  },
+  {
+   "op": "wait_line",
+   "line": 187
+  },
+  {
+   "op": "reg",
+   "name": "bg_color",
+   "value": "#fcc8d8"
+  },
+  {
+   "op": "wait_line",
+   "line": 188
+  },
+  {
+   "op": "reg",
+   "name": "bg_color",
+   "value": "#f9c1dd"
+  },
+  {
+   "op": "wait_line",
+   "line": 189
+  },
+  {
+   "op": "reg",
+   "name": "bg_color",
+   "value": "#f5b9e1"
+  },
+  {
+   "op": "wait_line",
+   "line": 190
+  },
+  {
+   "op": "reg",
+   "name": "bg_color",
+   "value": "#efb1e5"
+  },
+  {
+   "op": "wait_line",
+   "line": 191
+  },
+  {
+   "op": "reg",
+   "name": "bg_color",
+   "value": "#e8a9e8"
+  },
+  {
+   "op": "wait_line",
+   "line": 192
+  },
+  {
+   "op": "reg",
+   "name": "bg_color",
+   "value": "#e0a0ec"
+  },
+  {
+   "op": "wait_line",
+   "line": 193
+  },
+  {
+   "op": "reg",
+   "name": "bg_color",
+   "value": "#d697ef"
+  },
+  {
+   "op": "wait_line",
+   "line": 194
+  },
+  {
+   "op": "reg",
+   "name": "bg_color",
+   "value": "#cb8ff2"
+  },
+  {
+   "op": "wait_line",
+   "line": 195
+  },
+  {
+   "op": "reg",
+   "name": "bg_color",
+   "value": "#c086f4"
+  },
+  {
+   "op": "wait_line",
+   "line": 196
+  },
+  {
+   "op": "reg",
+   "name": "bg_color",
+   "value": "#b47df6"
+  },
+  {
+   "op": "wait_line",
+   "line": 197
+  },
+  {
+   "op": "reg",
+   "name": "bg_color",
+   "value": "#a774f8"
+  },
+  {
+   "op": "wait_line",
+   "line": 198
+  },
+  {
+   "op": "reg",
+   "name": "bg_color",
+   "value": "#996bfa"
+  },
+  {
+   "op": "wait_line",
+   "line": 199
+  },
+  {
+   "op": "reg",
+   "name": "bg_color",
+   "value": "#8b63fb"
+  },
+  {
+   "op": "wait_line",
+   "line": 200
+  },
+  {
+   "op": "reg",
+   "name": "bg_color",
+   "value": "#7d5afc"
+  },
+  {
+   "op": "wait_line",
+   "line": 201
+  },
+  {
+   "op": "reg",
+   "name": "bg_color",
+   "value": "#6f52fd"
+  },
+  {
+   "op": "wait_line",
+   "line": 202
+  },
+  {
+   "op": "reg",
+   "name": "bg_color",
+   "value": "#6249fd"
+  },
+  {
+   "op": "wait_line",
+   "line": 203
+  },
+  {
+   "op": "reg",
+   "name": "bg_color",
+   "value": "#5441fd"
+  },
+  {
+   "op": "wait_line",
+   "line": 204
+  },
+  {
+   "op": "reg",
+   "name": "bg_color",
+   "value": "#473afd"
+  },
+  {
+   "op": "wait_line",
+   "line": 205
+  },
+  {
+   "op": "reg",
+   "name": "bg_color",
+   "value": "#3b32fd"
+  },
+  {
+   "op": "wait_line",
+   "line": 206
+  },
+  {
+   "op": "reg",
+   "name": "bg_color",
+   "value": "#302cfc"
+  },
+  {
+   "op": "wait_line",
+   "line": 207
+  },
+  {
+   "op": "reg",
+   "name": "bg_color",
+   "value": "#2525fb"
+  },
+  {
+   "op": "wait_line",
+   "line": 208
+  },
+  {
+   "op": "reg",
+   "name": "bg_color",
+   "value": "#1c1ff9"
+  },
+  {
+   "op": "wait_line",
+   "line": 209
+  },
+  {
+   "op": "reg",
+   "name": "bg_color",
+   "value": "#1419f7"
+  },
+  {
+   "op": "wait_line",
+   "line": 210
+  },
+  {
+   "op": "reg",
+   "name": "bg_color",
+   "value": "#0d14f5"
+  },
+  {
+   "op": "wait_line",
+   "line": 211
+  },
+  {
+   "op": "reg",
+   "name": "bg_color",
+   "value": "#0710f3"
+  },
+  {
+   "op": "wait_line",
+   "line": 212
+  },
+  {
+   "op": "reg",
+   "name": "bg_color",
+   "value": "#030cf0"
+  },
+  {
+   "op": "wait_line",
+   "line": 213
+  },
+  {
+   "op": "reg",
+   "name": "bg_color",
+   "value": "#0108ed"
+  },
+  {
+   "op": "wait_line",
+   "line": 214
+  },
+  {
+   "op": "reg",
+   "name": "bg_color",
+   "value": "#0005ea"
+  },
+  {
+   "op": "wait_line",
+   "line": 215
+  },
+  {
+   "op": "reg",
+   "name": "bg_color",
+   "value": "#0003e6"
+  },
+  {
+   "op": "wait_line",
+   "line": 216
+  },
+  {
+   "op": "reg",
+   "name": "bg_color",
+   "value": "#0201e3"
+  },
+  {
+   "op": "wait_line",
+   "line": 217
+  },
+  {
+   "op": "reg",
+   "name": "bg_color",
+   "value": "#0500df"
+  },
+  {
+   "op": "wait_line",
+   "line": 218
+  },
+  {
+   "op": "reg",
+   "name": "bg_color",
+   "value": "#0a00da"
+  },
+  {
+   "op": "wait_line",
+   "line": 219
+  },
+  {
+   "op": "reg",
+   "name": "bg_color",
+   "value": "#1100d6"
+  },
+  {
+   "op": "wait_line",
+   "line": 220
+  },
+  {
+   "op": "reg",
+   "name": "bg_color",
+   "value": "#1800d1"
+  },
+  {
+   "op": "wait_line",
+   "line": 221
+  },
+  {
+   "op": "reg",
+   "name": "bg_color",
+   "value": "#2102cc"
+  },
+  {
+   "op": "wait_line",
+   "line": 222
+  },
+  {
+   "op": "reg",
+   "name": "bg_color",
+   "value": "#2b04c7"
+  },
+  {
+   "op": "wait_line",
+   "line": 223
+  },
+  {
+   "op": "reg",
+   "name": "bg_color",
+   "value": "#3706c2"
+  },
+  {
+   "op": "wait_line",
+   "line": 224
+  },
+  {
+   "op": "reg",
+   "name": "bg_color",
+   "value": "#420abc"
+  },
+  {
+   "op": "wait_line",
+   "line": 225
+  },
+  {
+   "op": "reg",
+   "name": "bg_color",
+   "value": "#4f0db7"
+  },
+  {
+   "op": "wait_line",
+   "line": 226
+  },
+  {
+   "op": "reg",
+   "name": "bg_color",
+   "value": "#5c12b1"
+  },
+  {
+   "op": "wait_line",
+   "line": 227
+  },
+  {
+   "op": "reg",
+   "name": "bg_color",
+   "value": "#6a16ab"
+  },
+  {
+   "op": "wait_line",
+   "line": 228
+  },
+  {
+   "op": "reg",
+   "name": "bg_color",
+   "value": "#781ca5"
+  },
+  {
+   "op": "wait_line",
+   "line": 229
+  },
+  {
+   "op": "reg",
+   "name": "bg_color",
+   "value": "#86229f"
+  },
+  {
+   "op": "wait_line",
+   "line": 230
+  },
+  {
+   "op": "reg",
+   "name": "bg_color",
+   "value": "#942899"
+  },
+  {
+   "op": "wait_line",
+   "line": 231
+  },
+  {
+   "op": "reg",
+   "name": "bg_color",
+   "value": "#a12f92"
+  },
+  {
+   "op": "wait_line",
+   "line": 232
+  },
+  {
+   "op": "reg",
+   "name": "bg_color",
+   "value": "#ae368c"
+  },
+  {
+   "op": "wait_line",
+   "line": 233
+  },
+  {
+   "op": "reg",
+   "name": "bg_color",
+   "value": "#bb3d86"
+  },
+  {
+   "op": "wait_line",
+   "line": 234
+  },
+  {
+   "op": "reg",
+   "name": "bg_color",
+   "value": "#c74580"
+  },
+  {
+   "op": "wait_line",
+   "line": 235
+  },
+  {
+   "op": "reg",
+   "name": "bg_color",
+   "value": "#d24d79"
+  },
+  {
+   "op": "wait_line",
+   "line": 236
+  },
+  {
+   "op": "reg",
+   "name": "bg_color",
+   "value": "#dc5573"
+  },
+  {
+   "op": "wait_line",
+   "line": 237
+  },
+  {
+   "op": "reg",
+   "name": "bg_color",
+   "value": "#e55e6d"
+  },
+  {
+   "op": "wait_line",
+   "line": 238
+  },
+  {
+   "op": "reg",
+   "name": "bg_color",
+   "value": "#ec6766"
+  },
+  {
+   "op": "wait_line",
+   "line": 239
+  },
+  {
+   "op": "reg",
+   "name": "bg_color",
+   "value": "#f36f60"
+  },
+  {
+   "op": "check_marked"
+  },
+  {
+   "op": "wait_vblank",
+   "mark": true
+  },
+  {
+   "op": "reg",
+   "name": "bg_color",
+   "value": "#202080"
+  },
+  {
+   "op": "reg",
+   "name": "layer_ctrl",
+   "value": 3
+  },
+  {
+   "op": "reg",
+   "name": "bitmap_key",
+   "value": "#ff00ff"
+  },
+  {
+   "op": "wait_line",
+   "line": 60
+  },
+  {
+   "op": "reg",
+   "name": "layer_ctrl",
+   "value": 0
+  },
+  {
+   "op": "reg",
+   "name": "bg_color",
+   "value": "#804020"
+  },
+  {
+   "op": "wait_line",
+   "line": 120
+  },
+  {
+   "op": "reg",
+   "name": "layer_ctrl",
+   "value": 3
+  },
+  {
+   "op": "reg",
+   "name": "bitmap_key",
+   "value": "#ffffff"
+  },
+  {
+   "op": "reg",
+   "name": "bg_color",
+   "value": "#808080"
+  },
+  {
+   "op": "wait_line",
+   "line": 180
+  },
+  {
+   "op": "reg",
+   "name": "layer_ctrl",
+   "value": 1
+  },
+  {
+   "op": "wait_line",
+   "line": 239
+  },
+  {
+   "op": "reg",
+   "name": "layer_ctrl",
+   "value": 3
+  },
+  {
+   "op": "reg",
+   "name": "bitmap_key",
+   "value": "#ff00ff"
+  },
+  {
+   "op": "reg",
+   "name": "bg_color",
+   "value": "#ff0000"
+  },
+  {
+   "op": "check_marked"
+  },
+  {
+   "op": "check"
+  }
+ ]
+}

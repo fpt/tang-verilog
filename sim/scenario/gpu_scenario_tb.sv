@@ -2,9 +2,10 @@
 //   gpu + sdram_arb + sdram_ctrl + SDRAM の振る舞いモデル + fb_scanout + vdp_video + frame_crc。SPI は通さず、レジスタバスを直接叩く。
 //   入力 (gpu_model.py export が作る):
 //     +cmds=<file>    1 行 1 ワード (16 進) のコマンド列
-//     +checks=<file>  1 行 1 つ、check の位置 (そこまでに送るワード数、10 進)
+//     +checks=<file>  1 行 1 つ、「check の位置 (そこまでに送るワード数、10 進) 種類 (0 = 普通、1 = 印を付けたフレーム)」
 //     +out=<dir>      check ごとに crc_<i>.txt (FRAME_CRC、CRC_FRAME、UNDERFLOW、表示の読み出しの最大待ち) と frame_<i>.ppm を書く
-//   check では、GPU が空になったあと 2 フレーム待ち、その次のフレームの CRC を記録する (実機の harness.py scenario と同じ)。
+//   普通の check では、GPU が空になったあと 2 フレーム待ち、その次のフレームの CRC を記録する (実機の harness.py scenario と同じ)。
+//   印の check では、そこまでを送ったあと、印を付けたフレーム (WAIT_VBLANK、印付き) が終わるのを待ち、そのフレームを記録する。
 //   実行は make scenario (Verilator) だけ。640x480 のフレームを何枚も回すので Icarus では遅すぎる。
 `timescale 1ns/1ps
 module gpu_scenario_tb;
@@ -28,10 +29,12 @@ module gpu_scenario_tb;
         .r, .g, .b, .de, .hsync, .vsync, .vblank, .frame_start
     );
 
-    logic [31:0] crc;
+    logic [31:0] crc, held_crc;
     logic [15:0] crc_frame;
-    logic        crc_toggle;
-    frame_crc u_crc (.clk(clk_pix), .rst, .de, .r, .g, .b, .vblank, .crc, .frame(crc_frame), .crc_toggle);
+    logic [7:0]  mark_count;
+    logic        crc_toggle, mark_toggle;
+    frame_crc u_crc (.clk(clk_pix), .rst, .de, .r, .g, .b, .vblank, .crc, .frame(crc_frame), .crc_toggle,
+                     .mark_toggle_async(mark_toggle), .held_crc, .mark_count);
 
     // --- SDRAM まわり ---
     logic [12:0] fb_base;
@@ -52,18 +55,25 @@ module gpu_scenario_tb;
     logic [3:0]  m_wmask;
     logic [8:0]  m_len;
 
-    fb_scanout u_fb (
+    logic [15:0] bg_color, bitmap_key;
+    logic [1:0]  layer_ctrl;
+    logic        mark_req, line_start, gpu_ready;
+    logic [7:0]  line_num;
+
+    line_compositor u_comp (
         .clk_sys, .rst_sys(rst), .fb_base, .base_latched,
+        .bg_color, .layer_ctrl, .bitmap_key, .mark_req, .mark_toggle, .line_start, .line_num,
         .mem_req(fb_req), .mem_addr(fb_addr), .mem_len(fb_len), .mem_ack(fb_ack),
         .mem_rvalid(fb_rvalid), .mem_rdata(m_rdata), .underflow_count,
-        .clk_pix, .rst_pix(rst), .enable(1'b1), .x(vx), .y(vy), .rgb(fb_rgb)
+        .clk_pix, .rst_pix(rst), .x(vx), .y(vy), .rgb(fb_rgb)
     );
 
     gpu u_gpu (
         .clk(clk_sys), .rst, .addr, .wdata, .we, .re, .rdata,
         .mem_req(g_req), .mem_we(g_we), .mem_addr(g_addr), .mem_wdata(g_wdata), .mem_wmask(g_wmask),
         .mem_len(g_len), .mem_ack(g_ack), .mem_wnext(g_wnext), .mem_rvalid(g_rvalid), .mem_rdata(m_rdata),
-        .fb_base, .base_latched
+        .fb_base, .base_latched,
+        .bg_color, .layer_ctrl, .bitmap_key, .mark_req, .line_start, .line_num, .ready(gpu_ready)
     );
 
     sdram_arb u_arb (
@@ -157,8 +167,41 @@ module gpu_scenario_tb;
         $fclose(fd);
     endtask
 
+    // 印を付けたフレーム: frame_crc の armed が立ったフレームの画素を集め、mark_count が変わったら CRC を記録する
+    logic [7:0] marked_buf [0:640*480*3-1];
+    logic [31:0] marked_crc;
+    int   marks_done = 0, mcap_n = 0;
+    bit   mcap_on = 0, armed_d = 0;
+    logic [7:0] mc_d = 0;
+    always @(posedge clk_pix) begin
+        if (u_crc.armed && !armed_d) begin
+            mcap_on = 1;
+            mcap_n = 0;
+        end
+        if (mcap_on && de && mcap_n < 640 * 480) begin
+            marked_buf[3 * mcap_n] = r; marked_buf[3 * mcap_n + 1] = g; marked_buf[3 * mcap_n + 2] = b;
+            mcap_n++;
+        end
+        armed_d <= u_crc.armed;
+        if (mark_count != mc_d) begin
+            marked_crc = held_crc;
+            marks_done++;
+            mcap_on = 0;
+        end
+        mc_d <= mark_count;
+    end
+
+    task automatic write_ppm(input string path, input bit marked);
+        int fd;
+        fd = $fopen(path, "wb");
+        $fwrite(fd, "P6\n640 480\n255\n");
+        for (int i = 0; i < 640 * 480 * 3; i++) $fwrite(fd, "%c", marked ? marked_buf[i] : frame_buf[i]);
+        $fclose(fd);
+    endtask
+
     logic [31:0] cmds [0:1048575];
     int          checks [0:255];
+    int          kinds [0:255];
 
     initial begin
         string cmds_path, checks_path, out;
@@ -175,7 +218,7 @@ module gpu_scenario_tb;
         $fclose(fd);
         fd = $fopen(checks_path, "r");
         code = $fscanf(fd, "%d\n", n_checks);
-        for (i = 0; i < n_checks; i++) code = $fscanf(fd, "%d\n", checks[i]);
+        for (i = 0; i < n_checks; i++) code = $fscanf(fd, "%d %d\n", checks[i], kinds[i]);
         $fclose(fd);
 
         repeat (4) @(posedge clk_sys);
@@ -184,19 +227,30 @@ module gpu_scenario_tb;
 
         sent = 0;
         for (k = 0; k < n_checks; k++) begin
+            int marks0;
+            logic [31:0] got;
+            marks0 = marks_done;
             while (sent < checks[k]) begin
                 send_word(cmds[sent]);
                 sent++;
             end
             wait_idle();
-            wait_crc(); wait_crc();
-            capture_frame($sformatf("%s/frame_%0d.ppm", out, k));
-            wait_crc();    // capture_frame で集めたフレームの CRC
+            if (kinds[k] == 1) begin
+                // 印を付けたフレームが終わるのを待つ
+                wait (marks_done > marks0);
+                got = marked_crc;
+                write_ppm($sformatf("%s/frame_%0d.ppm", out, k), 1'b1);
+            end else begin
+                wait_crc(); wait_crc();
+                capture_frame($sformatf("%s/frame_%0d.ppm", out, k));
+                wait_crc();    // capture_frame で集めたフレームの CRC
+                got = crc;
+            end
             fd = $fopen($sformatf("%s/crc_%0d.txt", out, k), "w");
-            $fwrite(fd, "%08h %0d %0d %0d\n", crc, crc_frame, underflow_count, max_fetch_cycles);
+            $fwrite(fd, "%08h %0d %0d %0d\n", got, crc_frame, underflow_count, max_fetch_cycles);
             $fclose(fd);
-            $display("check %0d: crc %08h frame %0d underflow %0d max_fetch_cycles %0d", k, crc, crc_frame,
-                     underflow_count, max_fetch_cycles);
+            $display("check %0d (%s): crc %08h frame %0d underflow %0d max_fetch_cycles %0d", k,
+                     kinds[k] == 1 ? "marked" : "normal", got, crc_frame, underflow_count, max_fetch_cycles);
         end
         if (model.violations != 0) $display("FAIL: SDRAM model timing violations: %0d", model.violations);
         $display("DONE: gpu_scenario_tb");

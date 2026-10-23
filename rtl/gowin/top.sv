@@ -130,9 +130,13 @@ module top (
     logic [31:0] frame_crc_value;
     logic        frame_crc_toggle;
     logic [15:0] frame_crc_frame;
+    logic [31:0] held_crc;
+    logic [7:0]  mark_count;
+    logic        mark_toggle;        // line_compositor (clk_sys) -> frame_crc
     frame_crc u_crc (
         .clk(clk_pix), .rst, .de, .r, .g, .b, .vblank,
-        .crc(frame_crc_value), .frame(frame_crc_frame), .crc_toggle(frame_crc_toggle)
+        .crc(frame_crc_value), .frame(frame_crc_frame), .crc_toggle(frame_crc_toggle),
+        .mark_toggle_async(mark_toggle), .held_crc, .mark_count
     );
 
     dvi_tx u_dvi (
@@ -154,9 +158,13 @@ module top (
     logic [7:0] reg_wdata, reg_rdata, vdp_rdata, mem_rdata, gpu_rdata;
     logic       reg_we, reg_re, spi_frame_error;
 
-    logic [12:0] fb_base;            // gpu -> fb_scanout
-    logic        base_latched;       // fb_scanout -> gpu
-    logic [7:0]  underflow_count;    // fb_scanout -> vdp_regs
+    logic [12:0] fb_base;            // gpu -> line_compositor
+    logic        base_latched;       // line_compositor -> gpu
+    logic [7:0]  underflow_count;    // line_compositor -> vdp_regs
+
+    // IRQ ピン: 既定は VBLANK (CONTROL.IRQ_EN)、CONTROL bit4 で READY (GPU の FIFO が半分以上空いている)
+    logic irq_vblank, gpu_ready;
+    assign vdp_irq = control[4] ? gpu_ready : irq_vblank;
 
     // 0x10..0x2F は SDRAM のテスト (mem_test)、0x30..0x4F は GPU、それ以外は vdp_regs
     logic sel_mem, sel_gpu;
@@ -177,9 +185,10 @@ module top (
         .rdata(vdp_rdata),
         .vblank_async(vblank), .frame_toggle_async(heartbeat),
         .crc_async(frame_crc_value), .crc_frame_async(frame_crc_frame), .crc_toggle_async(frame_crc_toggle),
+        .held_crc_async(held_crc), .mark_count_async(mark_count),
         .error_event(spi_frame_error),
         .underflow_count,
-        .control, .irq(vdp_irq), .error(error_out)
+        .control, .irq(irq_vblank), .error(error_out)
     );
 
     // --- パッケージ内 SDRAM ---
@@ -207,11 +216,18 @@ module top (
     logic [3:0]  t_wmask;
     logic [8:0]  t_len;
 
-    fb_scanout u_fb (
+    // 合成のレジスタと、ラインの合成の開始 (WAIT_LINE 用)・フレームの印
+    logic [15:0] bg_color, bitmap_key;
+    logic [1:0]  layer_ctrl;
+    logic        mark_req, line_start;
+    logic [7:0]  line_num;
+
+    line_compositor u_comp (
         .clk_sys, .rst_sys, .fb_base, .base_latched,
+        .bg_color, .layer_ctrl, .bitmap_key, .mark_req, .mark_toggle, .line_start, .line_num,
         .mem_req(fb_req), .mem_addr(fb_addr), .mem_len(fb_len), .mem_ack(fb_ack),
         .mem_rvalid(fb_rvalid), .mem_rdata(mem_rdata32), .underflow_count,
-        .clk_pix, .rst_pix(rst), .enable(fb_en_s[1]), .x(vx), .y(vy), .rgb(fb_rgb)
+        .clk_pix, .rst_pix(rst), .x(vx), .y(vy), .rgb(fb_rgb)
     );
 
     gpu u_gpu (
@@ -219,7 +235,8 @@ module top (
         .addr(reg_addr), .wdata(reg_wdata), .we(reg_we && sel_gpu), .re(reg_re && sel_gpu), .rdata(gpu_rdata),
         .mem_req(g_req), .mem_we(g_we), .mem_addr(g_addr), .mem_wdata(g_wdata), .mem_wmask(g_wmask),
         .mem_len(g_len), .mem_ack(g_ack), .mem_wnext(g_wnext), .mem_rvalid(g_rvalid), .mem_rdata(mem_rdata32),
-        .fb_base, .base_latched
+        .fb_base, .base_latched,
+        .bg_color, .layer_ctrl, .bitmap_key, .mark_req, .line_start, .line_num, .ready(gpu_ready)
     );
 
     mem_test u_mem_test (
