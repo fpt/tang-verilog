@@ -1,6 +1,7 @@
 // コマンド GPU: SDRAM の振る舞いモデル相手に、CLEAR (64 ワードずつのバースト)、奇数の端の FILL_RECT (バイトマスク)、
 // はみ出しの切り取り、UPLOAD、SWAP (表示が取り込むまで待つ)、知らないコマンド、FIFO の空きとあふれ、
-// DRAW_LINE (8 方向・水平・垂直・1 点・画面の外から)、POINT、CLIP (CLEAR には効かない) を確認
+// DRAW_LINE (8 方向・水平・垂直・1 点・画面の外から)、POINT、CLIP (CLEAR には効かない)、
+// BLIT (偶数 / 奇数の位置、左右・上下反転、透過、画面の外、クリップ、SDRAM の行をまたぐソース) を確認
 `timescale 1ns/1ps
 module tb_gpu;
     localparam int SRC_W = 320, SRC_H = 16, FIFO_WORDS = 16;
@@ -12,7 +13,7 @@ module tb_gpu;
     logic        base_latched = 0;
     logic [12:0] fb_base;
 
-    logic        mem_req, mem_we, mem_ack, mem_wnext, init_done;
+    logic        mem_req, mem_we, mem_ack, mem_wnext, mem_rvalid, init_done;
     logic [20:0] mem_addr;
     logic [31:0] mem_wdata, rdata32;
     logic [3:0]  mem_wmask;
@@ -28,13 +29,14 @@ module tb_gpu;
 
     gpu #(.SRC_W(SRC_W), .SRC_H(SRC_H), .FIFO_WORDS(FIFO_WORDS)) dut (
         .clk, .rst, .addr, .wdata, .we, .re, .rdata,
-        .mem_req, .mem_we, .mem_addr, .mem_wdata, .mem_wmask, .mem_len, .mem_ack, .mem_wnext,
+        .mem_req, .mem_we, .mem_addr, .mem_wdata, .mem_wmask, .mem_len, .mem_ack, .mem_wnext, .mem_rvalid,
+        .mem_rdata(rdata32),
         .fb_base, .base_latched
     );
 
     sdram_ctrl #(.CLK_HZ(63_000_000), .INIT_US(2)) u_ctrl (
         .clk, .rst, .req(mem_req), .we(mem_we), .addr(mem_addr), .wdata(mem_wdata), .wmask(mem_wmask),
-        .len(mem_len), .wnext(mem_wnext), .ack(mem_ack), .rvalid(), .rdata(rdata32), .init_done, .rd_sample(3'd4),
+        .len(mem_len), .wnext(mem_wnext), .ack(mem_ack), .rvalid(mem_rvalid), .rdata(rdata32), .init_done, .rd_sample(3'd4),
         .sdram_cke(cke), .sdram_cs_n(cs_n), .sdram_ras_n(ras_n), .sdram_cas_n(cas_n), .sdram_we_n(we_n),
         .sdram_ba(ba), .sdram_addr(sa), .sdram_dqm(dqm), .sdram_dq_out(dq_out), .sdram_dq_oe(dq_oe),
         .sdram_dq_in(dq)
@@ -154,6 +156,37 @@ module tb_gpu;
         ecy1 = (y1 > SRC_H - 1) ? SRC_H - 1 : y1;
     endtask
 
+    // ---- BLIT 用: ソース画像 2 つ (7x5 と 34x3) ----
+    localparam logic [15:0] KEY = 16'hF81F;
+    function automatic logic [15:0] src_px(input int which, input int i, input int j);
+        logic [15:0] p;
+        p = (which == 0) ? 16'(16'h1000 + j * 16 + i) : 16'(16'h2000 + j * 64 + i);
+        if (which == 0 && (i + j) % 4 == 0) p = KEY;         // 透過色を混ぜる
+        return p;
+    endfunction
+
+    task automatic upload_src(input int which, input logic [20:0] a, input int stride, input int w, input int h);
+        cmd({8'h04, 24'(stride * h)}); cmd({11'b0, a});
+        for (int j = 0; j < h; j++)
+            for (int k = 0; k < stride; k++)
+                cmd({(2 * k + 1 < w) ? src_px(which, 2 * k + 1, j) : 16'h0, (2 * k < w) ? src_px(which, 2 * k, j) : 16'h0});
+    endtask
+
+    task automatic blit(input int which, input logic [20:0] a, input int stride, input int w, input int h,
+                        input int bx, input int by, input logic [2:0] fl);
+        logic [15:0] p;
+        int si, sj;
+        cmd({8'h08, 5'b0, fl, KEY}); cmd({11'b0, a}); cmd({16'(h), 16'(w)}); cmd({16'(by), 16'(bx)}); cmd(32'(stride));
+        for (int j = 0; j < h; j++)
+            for (int i = 0; i < w; i++) begin
+                si = fl[1] ? w - 1 - i : i;
+                sj = fl[2] ? h - 1 - j : j;
+                p = src_px(which, si, sj);
+                if (!(fl[0] && p == KEY) && bx + i >= 0 && bx + i < SRC_W && by + j >= 0 && by + j < SRC_H)
+                    exp_plot(bx + i, by + j, p);
+            end
+    endtask
+
     task automatic check_all(input string name);
         int bad;
         bad = 0;
@@ -166,9 +199,27 @@ module tb_gpu;
         if (bad != 0) begin $display("  %s: %0d pixels differ", name, bad); errors++; end
     endtask
 
+    // +trace で GPU の BLIT の動きを表示する (調べもの用)
+    bit trace = 0;
+    bit blit_phase = 0;
+    initial trace = $test$plusargs("trace");
+    int trace_n = 0;
+    logic [3:0] prev_state = 0;
+    always @(posedge clk) if (trace && blit_phase && dut.state != prev_state && trace_n < 100000) begin
+        $display("  [trace] t=%0t state %0d -> %0d op %02h word %08h arg_idx %0d", $time, prev_state, dut.state, dut.op, dut.word, dut.arg_idx);
+        trace_n++;
+    end
+    always @(posedge clk) prev_state <= dut.state;
+    always @(posedge clk) if (trace && dut.op == 8'h08 && dut.state != 0) begin
+        if (dut.state == 11)
+            $display("  [trace] SETUP b_w %0d b_h %0d dx %0d dy %0d bxs %0d bxe %0d bys %0d bye %0d src %h stride %0d flags %b",
+                     dut.b_w, dut.b_h, dut.b_dx, dut.b_dy, dut.bxs, dut.bxe, dut.bys, dut.bye, dut.b_src, dut.b_stride, dut.flags);
+        if (mem_req && mem_ack) $display("  [trace] state %0d ack addr %h len %0d we %b", dut.state, mem_addr, mem_len, mem_we);
+    end
+
     // 止まったときのための見張り (シミュレーション時間 20ms)
     initial begin
-        #20_000_000;
+        #40_000_000;
         $display("FAIL: tb_gpu (timeout: GPU state %0d, lx %0d ly %0d, ex %0d ey %0d, FIFO count %0d)",
                  dut.state, dut.lx, dut.ly, dut.ex, dut.ey, dut.count);
         $finish;
@@ -260,6 +311,44 @@ module tb_gpu;
         point(1, 1, 16'h0018);
         wait_idle();
         check_all("empty clip");
+
+        // ---- BLIT (M7) ----
+        // ソース: 7x5 (stride 4 ワード) と、SDRAM の行の境目 (0x20100) をまたぐ 34x3 (stride 17 ワード)。
+        // どちらも描く面 (DRAW_BASE 256 = ワードアドレス 0x10000 から) とは別の場所に置く
+        blit_phase = 1;
+        upload_src(0, 21'h30000, 4, 7, 5);
+        upload_src(1, 21'h200FA, 17, 34, 3);
+        cmd(32'h0100_0421);
+        exp_clear(16'h0421);
+        blit(0, 21'h30000, 4, 7, 5, 10, 2, 3'b000);    // 偶数の位置
+        wait_idle(); check_all("BLIT 0, 21'h30000, 4, 7, 5, 10, 2, 3'b000");
+        blit(0, 21'h30000, 4, 7, 5, 21, 2, 3'b000);    // 奇数の位置
+        wait_idle(); check_all("BLIT 0, 21'h30000, 4, 7, 5, 21, 2, 3'b000");
+        blit(0, 21'h30000, 4, 7, 5, 40, 2, 3'b010);    // 左右反転
+        wait_idle(); check_all("BLIT 0, 21'h30000, 4, 7, 5, 40, 2, 3'b010");
+        blit(0, 21'h30000, 4, 7, 5, 60, 2, 3'b100);    // 上下反転
+        wait_idle(); check_all("BLIT 0, 21'h30000, 4, 7, 5, 60, 2, 3'b100");
+        blit(0, 21'h30000, 4, 7, 5, 81, 3, 3'b110);    // 両方、奇数の位置
+        wait_idle(); check_all("BLIT 0, 21'h30000, 4, 7, 5, 81, 3, 3'b110");
+        blit(0, 21'h30000, 4, 7, 5, 101, 9, 3'b001);   // 透過
+        wait_idle(); check_all("BLIT 0, 21'h30000, 4, 7, 5, 101, 9, 3'b001");
+        blit(0, 21'h30000, 4, 7, 5, 111, 9, 3'b111);   // 透過 + 両方
+        wait_idle(); check_all("BLIT 0, 21'h30000, 4, 7, 5, 111, 9, 3'b111");
+        blit(0, 21'h30000, 4, 7, 5, -3, -2, 3'b000);   // 左上にはみ出す
+        wait_idle(); check_all("BLIT 0, 21'h30000, 4, 7, 5, -3, -2, 3'b000");
+        blit(0, 21'h30000, 4, 7, 5, 316, 13, 3'b011);  // 右下にはみ出す
+        wait_idle(); check_all("BLIT 0, 21'h30000, 4, 7, 5, 316, 13, 3'b011");
+        blit(1, 21'h200FA, 17, 34, 3, 150, 1, 3'b000); // 行をまたぐソース
+        wait_idle(); check_all("BLIT 1, 21'h200FA, 17, 34, 3, 150, 1, 3'b000");
+        blit(1, 21'h200FA, 17, 34, 3, 191, 6, 3'b010);
+        wait_idle(); check_all("BLIT 1, 21'h200FA, 17, 34, 3, 191, 6, 3'b010");
+        // クリップ: (200,0)-(206,15) の中だけ
+        clip(200, 0, 206, 15);
+        blit(0, 21'h30000, 4, 7, 5, 197, 4, 3'b000);
+        blit(1, 21'h200FA, 17, 34, 3, 190, 11, 3'b110);
+        clip(0, 0, 319, 239);
+        wait_idle();
+        check_all("BLIT with clip");
 
         // SWAP: 入れ替えて、fb_scanout が取り込むまで (base_latched) 実行中のまま
         cmd(32'h0300_0000);

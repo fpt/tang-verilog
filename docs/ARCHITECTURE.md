@@ -17,8 +17,9 @@ Tang Nano 20K を VDP (小さな GPU) 本体、RP2 (RP2350 / RP2040) をホス�
 RP2 ──SPI──► spi_slave ──► register bus ──┬─► vdp_regs   (ID, STATUS, CONTROL, FRAME_COUNT, FRAME_CRC, SCRATCH)  ✅ M1, M2
                                           ├─► mem_test   (SDRAM の BIST、1 ワード読み書き、クロックの位相)        ✅ M3
                                           └─► gpu        (コマンド FIFO → CLEAR / FILL_RECT / SWAP / UPLOAD     ✅ M5
-                                                │                 / POINT / DRAW_LINE / CLIP)           ✅ M6
-                                                │                                       (BLIT / TILEMAP は M7〜)
+                                                │                 / POINT / DRAW_LINE / CLIP            ✅ M6
+                                                │                 / BLIT)                               ✅ M7
+                                                │                                       (TILEMAP は M8)
                        sdram_ctrl ◄── sdram_arb ◄┴── fb_scanout (line buffer → 320x240 を 640x480 で表示)       ✅ M4
                           │           (表示 > GPU > メモリテスト)
                  パッケージ内 SDRAM 8MiB
@@ -72,7 +73,7 @@ SPI のトランザクションの形式 (同期バイト `0xA5`、アドレス�
 | `0x44`〜`0x45` | `FB_BASE` | 表示する面の先頭 (1KiB 単位、13bit)。`fb_scanout` がフレームの先頭で 1 回だけ取り込む | `gpu` |
 | `0x46`〜`0x47` | `DRAW_BASE` | 描く面の先頭 (同じ単位、既定 256)。`SWAP` で `FB_BASE` と入れ替わる | `gpu` |
 
-GPU のコマンド (`CLEAR` `FILL_RECT` `SWAP` `UPLOAD` `POINT` `DRAW_LINE` `CLIP`) の形式は [`gpu.sv`](../rtl/vdp/gpu.sv) の先頭にあります。
+GPU のコマンド (`CLEAR` `FILL_RECT` `SWAP` `UPLOAD` `POINT` `DRAW_LINE` `CLIP` `BLIT`) の形式は [`gpu.sv`](../rtl/vdp/gpu.sv) の先頭にあります。
 | `0x7D` | `SCRATCH` | 書いた値がそのまま読める | `vdp_regs` |
 | `0x7E` | `ID` | `0x5A` | `vdp_regs` |
 | `0x7F` | `VERSION` | RTL の版 | `vdp_regs` |
