@@ -20,8 +20,9 @@ RP2 ──SPI──► spi_slave ──► register bus ──┬─► vdp_regs
                                                 │                 / POINT / DRAW_LINE / CLIP            ✅ M6
                                                 │                 / BLIT)                               ✅ M7
                                                 │                                       (TILEMAP は M8)
-                       sdram_ctrl ◄── sdram_arb ◄┴── line_compositor (ラインごとに背景色 + ビットマップ レイヤを合成 →
-                                                         320x240 を 640x480 で表示)                         ✅ M4, E1
+                       sdram_ctrl ◄── sdram_arb ◄┴── line_compositor (ラインごとに背景色 + ビットマップ レイヤ        ✅ M4, E1
+                                                         + タイル レイヤ (VRAM 64KiB・パレット 512 色、BSRAM) ✅ E2
+                                                         を合成 → 320x240 を 640x480 で表示)
                           │           (表示 > GPU > メモリテスト)
                  パッケージ内 SDRAM 8MiB
 ```
@@ -76,10 +77,12 @@ SPI のトランザクションの形式 (同期バイト `0xA5`、アドレス�
 | `0x44`〜`0x45` | `FB_BASE` | 表示する面の先頭 (1KiB 単位、13bit)。`line_compositor` がフレームの先頭で 1 回だけ取り込む | `gpu` |
 | `0x46`〜`0x47` | `DRAW_BASE` | 描く面の先頭 (同じ単位、既定 256)。`SWAP` で `FB_BASE` と入れ替わる | `gpu` |
 | `0x48`〜`0x49` | `BG_COLOR` | 合成の背景色 (RGB565)。ラインごとに取り込まれる | `gpu` |
-| `0x4A` | `LAYER_CTRL` | bit0: ビットマップ レイヤ有効 (既定 1), bit1: ビットマップの透過色を有効 | `gpu` |
+| `0x4A` | `LAYER_CTRL` | bit0: ビットマップ レイヤ有効 (既定 1), bit1: ビットマップの透過色を有効, bit2: タイル レイヤ有効 | `gpu` |
 | `0x4C`〜`0x4D` | `BITMAP_KEY` | ビットマップの透過色 | `gpu` |
 
-GPU のコマンド (`CLEAR` `FILL_RECT` `SWAP` `UPLOAD` `POINT` `DRAW_LINE` `CLIP` `BLIT` `REG_WRITE` `WAIT_LINE` `WAIT_VBLANK`) の形式は [`gpu.sv`](../rtl/vdp/gpu.sv) の先頭にあります。
+GPU のコマンド (`CLEAR` `FILL_RECT` `SWAP` `UPLOAD` `POINT` `DRAW_LINE` `CLIP` `BLIT` `REG_WRITE` `WAIT_LINE` `WAIT_VBLANK`
+`VRAM_WRITE` `PAL_WRITE`) の形式は [`gpu.sv`](../rtl/vdp/gpu.sv) の先頭にあります。タイル レイヤのレジスタ (スクロール・マップ・タイルの場所・
+マップの大きさ・パレットのバンク) は `REG_WRITE` でだけ書け、VRAM とタイルの形式は [`tile_layer.sv`](../rtl/vdp/tile_layer.sv) の先頭にあります。
 | `0x7D` | `SCRATCH` | 書いた値がそのまま読める | `vdp_regs` |
 | `0x7E` | `ID` | `0x5A` | `vdp_regs` |
 | `0x7F` | `VERSION` | RTL の版 | `vdp_regs` |

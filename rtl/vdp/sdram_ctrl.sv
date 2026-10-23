@@ -7,6 +7,7 @@
 //   - CAS レイテンシ 2、バースト長 1
 //   - SDRAM のクロックはこのモジュールのクロックの逆相 (180°) を想定。トップが ODDR で出す
 //   - 読み出しデータを取り込む位置は rd_sample (半周期単位) で実行時に変えられる。
+//     読み出しの途中で変わると受け取ったワードの数がずれて ack が出なくなるので、待機中 (S_IDLE) にだけ取り込む。
 //     READ を出したクロックの立ち上がりを 0 として、偶数 h は立ち上がり h/2、奇数 h は立ち下がり (h-1)/2 で取り込む。
 //     180° の SDRAM クロックで CL2 なら、データは立ち下がり 1 の tAC 後から立ち下がり 2 の tOH 後まで有効。
 //     実機 (Tang Nano 20K, 63MHz) では往復の遅れでこれより遅く、バースト読み出しで正しく読めるのは h = 5 だけ
@@ -83,7 +84,8 @@ module sdram_ctrl #(
     logic        ref_due;
     logic [7:0]  col;            // 次に READ する列
     logic [8:0]  issued, received;
-    logic [3:0]  rd_pipe;        // READ を出してからの経過 (rd_sample[2:1] 番目で取り込む)
+    logic [3:0]  rd_pipe;        // READ を出してからの経過 (rs[2:1] 番目で取り込む)
+    logic [2:0]  rs;             // 使っている取り込み位置 (rd_sample を S_IDLE で取り込んだもの)
     logic        rd_push;
 
     assign {sdram_cs_n, sdram_ras_n, sdram_cas_n, sdram_we_n} = cmd;
@@ -124,8 +126,9 @@ module sdram_ctrl #(
         if (timer != 0) timer <= timer - 16'd1;
 
         rd_pipe <= rst ? '0 : {rd_pipe[2:0], rd_push && !rst};
-        if (!rst && rd_pipe[rd_sample[2:1]]) begin
-            rdata    <= rd_sample[0] ? dq_neg : dq_pos;
+        if (rst || state == S_IDLE) rs <= rd_sample;
+        if (!rst && rd_pipe[rs[2:1]]) begin
+            rdata    <= rs[0] ? dq_neg : dq_pos;
             rvalid   <= 1'b1;
             received <= received + 9'd1;
         end

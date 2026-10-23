@@ -520,9 +520,9 @@ def scenario(bridge, path, do_capture, out_dir):
         gpu.status()
         vdp.write(REGS["FB_BASE"], gpu_model.FB_BASE_RESET.to_bytes(2, "little"))
         vdp.write(REGS["DRAW_BASE"], gpu_model.DRAW_BASE_RESET.to_bytes(2, "little"))
-        vdp.write(REGS["BG_COLOR"], gpu_model.LAYER_RESET["bg_color"].to_bytes(2, "little"))
-        vdp.write(REGS["LAYER_CTRL"], [gpu_model.LAYER_RESET["layer_ctrl"]])
-        vdp.write(REGS["BITMAP_KEY"], gpu_model.LAYER_RESET["bitmap_key"].to_bytes(2, "little"))
+        # 合成のレジスタ (タイル レイヤのものはホストから直接書けないので REG_WRITE で)
+        gpu.send(gpu_model.layer_reset_words())
+        gpu.wait_idle()
         vdp.write(REGS["CONTROL"], [control | CONTROL_FB])
         under0 = vdp.read1(REGS["UNDERFLOW"])
         sent = 0

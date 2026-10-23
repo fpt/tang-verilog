@@ -10,7 +10,7 @@
 //   0x44 FB_BASE    RW 表示するフレームバッファの先頭 (256 ワード = 1KiB 単位、13bit、0x44..0x45)。既定 0
 //   0x46 DRAW_BASE  RW 描くフレームバッファの先頭 (同じ単位、0x46..0x47)。既定 256 (= 0x040000 バイト)
 //   0x48 BG_COLOR   RW 背景色 (RGB565、0x48..0x49)。既定 0。line_compositor がラインごとに取り込む
-//   0x4A LAYER_CTRL RW bit0: ビットマップ レイヤ有効 (既定 1), bit1: ビットマップの透過色を有効 (既定 0)
+//   0x4A LAYER_CTRL RW bit0: ビットマップ レイヤ有効 (既定 1), bit1: ビットマップの透過色を有効 (既定 0), bit2: タイル レイヤ有効 (既定 0)
 //   0x4C BITMAP_KEY RW ビットマップの透過色 (RGB565、0x4C..0x4D)。既定 0
 //
 // コマンド (先頭ワードの [31:24] がコマンド番号。座標の組は {y[15:0], x[15:0]}):
@@ -28,10 +28,15 @@
 //                   次のワードにソースのワードアドレス、次のワード {h, w} (w は 512 まで)、次のワード {y, x} (描く位置、符号付き)、
 //                   次のワードにソースの 1 行のワード数 (stride)。ソースは SDRAM の RGB565 の画像で、各行はワードの先頭 (偶数のピクセル) から始まる。
 //                   透過のときは透過色のピクセルを書かない。クリップ矩形の外は描かない
-//   0x09 REG_WRITE  [23:16] レジスタ番号 (0: BG_COLOR, 1: LAYER_CTRL, 2: BITMAP_KEY)、[15:0] 値。合成のレジスタを書く
+//   0x09 REG_WRITE  [23:16] レジスタ番号、[15:0] 値。合成のレジスタを書く (タイル レイヤの意味は tile_layer.sv)。
+//                   0: BG_COLOR, 1: LAYER_CTRL, 2: BITMAP_KEY, 3: TILE_SCROLL_X (10bit), 4: TILE_SCROLL_Y (10bit),
+//                   5: TILE_MAP_BASE (VRAM のワードアドレス, 14bit), 6: TILE_PAT_BASE (同じ), 7: TILE_CTRL (7bit)。どれも既定 0 (LAYER_CTRL は 1)
 //   0x0A WAIT_LINE  [7:0] ライン n。以降の REG_WRITE がライン n から効くところ (ライン n-1 の合成が始まったところ) まで待つ
 //   0x0B WAIT_VBLANK  WAIT_LINE 0 と同じ (以降の REG_WRITE が次のフレームのライン 0 から効く)。
 //                   [0] = 1 なら、次のフレーム (このあとライン 0 から合成するフレーム) に印を付け、その CRC を MARK_CRC に残す
+//   0x0C VRAM_WRITE [23:0] ワード数 n、次のワードに VRAM のワードアドレス、そのあとに n ワードのデータ (VRAM は 16K ワードで折り返す)
+//   0x0D PAL_WRITE  [23:0] 色の数 n、次のワードに最初のパレットの番号 (0..511)、そのあとに (n + 1) / 2 ワード。
+//                   1 ワードに 2 色 (下位 16bit が先)。n が奇数なら最後のワードの上位は使わない
 //   それ以外        エラーを立て、1 ワードのコマンドとして読み飛ばす
 //
 // WAIT_LINE のあとの REG_WRITE は、FIFO にすでに入っていれば数クロックで実行されるので、次のラインの合成 (約 63us 後) に間に合う。
@@ -71,8 +76,20 @@ module gpu #(
     input  logic        base_latched,    // line_compositor が fb_base を取り込んだとき 1 クロック
     // 合成のレジスタ (line_compositor がラインごとに取り込む)
     output logic [15:0] bg_color,
-    output logic [1:0]  layer_ctrl,
+    output logic [2:0]  layer_ctrl,
     output logic [15:0] bitmap_key,
+    output logic [9:0]  tile_scroll_x,
+    output logic [9:0]  tile_scroll_y,
+    output logic [13:0] tile_map_base,
+    output logic [13:0] tile_pat_base,
+    output logic [6:0]  tile_ctrl,
+    // VRAM とパレットの書き込み (line_compositor の tile_layer へ)
+    output logic        vram_we,
+    output logic [13:0] vram_waddr,
+    output logic [31:0] vram_wdata,
+    output logic        pal_we,
+    output logic [8:0]  pal_waddr,
+    output logic [15:0] pal_wdata,
     output logic        mark_req,        // WAIT_VBLANK (印付き) が終わったとき 1 クロック
     input  logic        line_start,      // line_compositor がラインの合成を始めたとき 1 クロック
     input  logic [7:0]  line_num,
@@ -85,7 +102,8 @@ module gpu #(
 
     localparam logic [7:0] OP_NOP = 8'h00, OP_CLEAR = 8'h01, OP_FILL_RECT = 8'h02, OP_SWAP = 8'h03, OP_UPLOAD = 8'h04,
                            OP_POINT = 8'h05, OP_DRAW_LINE = 8'h06, OP_CLIP = 8'h07, OP_BLIT = 8'h08,
-                           OP_REG_WRITE = 8'h09, OP_WAIT_LINE = 8'h0A, OP_WAIT_VBLANK = 8'h0B;
+                           OP_REG_WRITE = 8'h09, OP_WAIT_LINE = 8'h0A, OP_WAIT_VBLANK = 8'h0B,
+                           OP_VRAM_WRITE = 8'h0C, OP_PAL_WRITE = 8'h0D;
     localparam int BLIT_MAX_W = 512;      // ライン バッファ (256 ワード) に入る幅
 
     // ================================================================ コマンド FIFO
@@ -106,10 +124,11 @@ module gpu #(
     end
 
     // ================================================================ 実行
-    typedef enum logic [3:0] {
+    typedef enum logic [4:0] {
         S_FETCH, S_FETCH_WAIT, S_DECODE, S_ARG, S_EXEC, S_RECT_BURST, S_SWAP_WAIT,
         S_UPLOAD_WRITE, S_LINE_STEP, S_LINE_PLOT, S_LINE_ADV,
-        S_BLIT_SETUP, S_BLIT_SKIP, S_BLIT_READ, S_BLIT_WRITE, S_WAIT_LINE
+        S_BLIT_SETUP, S_BLIT_SKIP, S_BLIT_READ, S_BLIT_WRITE, S_WAIT_LINE,
+        S_VRAM_WRITE, S_PAL_WRITE, S_PAL_HI
     } state_t;
     state_t state, after_fetch;
 
@@ -249,7 +268,7 @@ module gpu #(
         unique case (o)
             OP_BLIT:                             return 3'd4;
             OP_FILL_RECT, OP_DRAW_LINE, OP_CLIP: return 3'd2;
-            OP_UPLOAD, OP_POINT:                 return 3'd1;
+            OP_UPLOAD, OP_POINT, OP_VRAM_WRITE, OP_PAL_WRITE: return 3'd1;
             default:                             return 3'd0;
         endcase
     endfunction
@@ -269,11 +288,20 @@ module gpu #(
             cx0 <= 9'd0; cx1 <= 9'(SRC_W - 1);
             cy0 <= 8'd0; cy1 <= 8'(SRC_H - 1);
             bg_color    <= 16'h0000;
-            layer_ctrl  <= 2'b01;
+            layer_ctrl  <= 3'b001;
             bitmap_key  <= 16'h0000;
+            tile_scroll_x <= '0;
+            tile_scroll_y <= '0;
+            tile_map_base <= '0;
+            tile_pat_base <= '0;
+            tile_ctrl     <= '0;
             mark_req    <= 1'b0;
+            vram_we     <= 1'b0;
+            pal_we      <= 1'b0;
         end else begin
             mark_req <= 1'b0;
+            vram_we  <= 1'b0;
+            pal_we   <= 1'b0;
             if (flush) rd_ptr <= wr_ptr;
             if (re && addr == A_STATUS) error <= 1'b0;
 
@@ -286,7 +314,7 @@ module gpu #(
                     7'h47: draw_base[12:8] <= wdata[4:0];
                     7'h48: bg_color[7:0]   <= wdata;
                     7'h49: bg_color[15:8]  <= wdata;
-                    7'h4A: layer_ctrl      <= wdata[1:0];
+                    7'h4A: layer_ctrl      <= wdata[2:0];
                     7'h4C: bitmap_key[7:0] <= wdata;
                     7'h4D: bitmap_key[15:8] <= wdata;
                     default: ;
@@ -401,10 +429,23 @@ module gpu #(
                         OP_REG_WRITE: begin
                             unique case (flags_raw)
                                 8'd0: bg_color   <= color;
-                                8'd1: layer_ctrl <= color[1:0];
+                                8'd1: layer_ctrl <= color[2:0];
                                 8'd2: bitmap_key <= color;
+                                8'd3: tile_scroll_x <= color[9:0];
+                                8'd4: tile_scroll_y <= color[9:0];
+                                8'd5: tile_map_base <= color[13:0];
+                                8'd6: tile_pat_base <= color[13:0];
+                                8'd7: tile_ctrl     <= color[6:0];
                                 default: error <= 1'b1;
                             endcase
+                        end
+                        OP_VRAM_WRITE: begin
+                            vram_waddr <= arg0[13:0] - 14'd1;      // S_VRAM_WRITE が先に 1 進める
+                            if (up_left != 0) after_fetch <= S_VRAM_WRITE;
+                        end
+                        OP_PAL_WRITE: begin
+                            pal_waddr <= arg0[8:0] - 9'd1;
+                            if (up_left != 0) after_fetch <= S_PAL_WRITE;
                         end
                         OP_WAIT_LINE, OP_WAIT_VBLANK: begin
                             // ライン n-1 の合成が始まるのを待つ (n = 0 / WAIT_VBLANK なら最後のライン)
@@ -417,6 +458,30 @@ module gpu #(
                         end
                         default: error <= 1'b1;
                     endcase
+                end
+
+                // VRAM_WRITE / PAL_WRITE: FIFO から読んだワードを 1 クロックで書く (PAL_WRITE は 1 ワードに 2 色)
+                S_VRAM_WRITE: begin
+                    vram_we    <= 1'b1;
+                    vram_waddr <= vram_waddr + 14'd1;
+                    vram_wdata <= word;
+                    up_left    <= up_left - 24'd1;
+                    state      <= S_FETCH;
+                    if (up_left == 24'd1) after_fetch <= S_DECODE;
+                end
+                S_PAL_WRITE, S_PAL_HI: begin
+                    pal_we    <= 1'b1;
+                    pal_waddr <= pal_waddr + 9'd1;
+                    pal_wdata <= (state == S_PAL_HI) ? word[31:16] : word[15:0];
+                    up_left   <= up_left - 24'd1;
+                    if (up_left == 24'd1) begin
+                        after_fetch <= S_DECODE;
+                        state       <= S_FETCH;
+                    end else if (state == S_PAL_HI) begin
+                        state <= S_FETCH;
+                    end else begin
+                        state <= S_PAL_HI;
+                    end
                 end
 
                 // 同じクロックの line_start は数えない (入る前に始まったラインなので)
@@ -652,7 +717,7 @@ module gpu #(
             7'h47:    rdata = {3'b0, draw_base[12:8]};
             7'h48:    rdata = bg_color[7:0];
             7'h49:    rdata = bg_color[15:8];
-            7'h4A:    rdata = {6'b0, layer_ctrl};
+            7'h4A:    rdata = {5'b0, layer_ctrl};
             7'h4C:    rdata = bitmap_key[7:0];
             7'h4D:    rdata = bitmap_key[15:8];
             default:  rdata = 8'h00;
