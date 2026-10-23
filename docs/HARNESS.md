@@ -423,7 +423,7 @@ python3 tools/harness/harness.py prog hdmi       # make prog TARGET=hdmi (pinche
 | `reg write <reg> <hex>` | レジスタに書く |
 | `selftest [--iterations N]` | 下記 |
 | `frametest [--ref-dir DIR] [--no-capture] [--out DIR]` | アニメーションを止め、`FRAME_CRC` を参照 (`make render FREEZE=1`) と比べ、HDMI キャプチャも比べる。キャプチャと差分画像を `build/hw/` に保存 |
-| `memtest [--size N] [--samples 2,..,7] [--seed S]` | SDRAM の BIST を読み出しの取り込み位置ごとに実行 (`--size 21` で 8MiB 全域、1 回 1.2 秒) |
+| `memtest [--size N] [--samples 2,..,7] [--seed S] [--phases 0-15]` | SDRAM の BIST を読み出しの取り込み位置ごとに実行 (`--size 21` で 8MiB 全域、1 回 0.6 秒)。`--phases` で SDRAM クロックの位相も変え、位相 x 取り込み位置の合否表を出す |
 | `mem read <addr> [n]` / `mem write <addr> <hex32>...` | SDRAM を 1 ワードずつ読み書き |
 | `fb upload [<png>] [--slot N]` / `fb show` / `fb off` | 320x240 の画像 (省略時はテスト画像) をフレームバッファへ / 表示の切り替え |
 | `fbtest [<png>] [--slot N] [--keep] [--no-capture]` | アップロードして表示し、`FRAME_CRC`・`UNDERFLOW`・キャプチャを参照モデル (`fbmodel.py`) と比べる |
@@ -459,7 +459,7 @@ python3 tools/harness/harness.py wiretest
 
 **実装済み (M1)**: `python3 tools/harness/harness.py selftest [--iterations N]`。FPGA に設計 (今は `hdmi`) が入っている前提で、
 ブリッジの ping → ready → HEARTBEAT 30Hz・VSYNC 60Hz (ブリッジの時計で測る) → `ID` → `FRAME_COUNT` →
-`SCRATCH` の往復 (1 / 4 / 8MHz、各 N 回) → IRQ → RESET の順に確かめます。`--iterations 10000` で 26 秒ほど。
+`SCRATCH` の往復 (1 / 4 / 8MHz、各 N 回) → IRQ → RESET → SDRAM クロックの位相の余裕 (前後 2 段以上) の順に確かめます。`--iterations 10000` で 26 秒ほど。
 書き込み (`prog`) と UART のバナーはまだ含みません。下の表は最終的な形です。
 
 | # | 項目 | 担当 | 失敗したときの意味 |

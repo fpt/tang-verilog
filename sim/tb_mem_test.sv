@@ -23,7 +23,7 @@ module tb_mem_test;
 
     mem_test dut (
         .clk, .rst, .addr, .wdata, .we, .rdata,
-        .mem_req, .mem_we, .mem_addr, .mem_wdata, .mem_len, .mem_ack, .mem_rvalid, .mem_rdata, .mem_init_done(init_done), .rd_sample
+        .mem_req, .mem_we, .mem_addr, .mem_wdata, .mem_len, .mem_ack, .mem_rvalid, .mem_rdata, .mem_init_done(init_done), .rd_sample, .clk_phase(), .clk_duty()
     );
 
     sdram_ctrl #(.CLK_HZ(63_000_000), .INIT_US(2)) u_ctrl (

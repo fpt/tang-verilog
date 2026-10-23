@@ -10,6 +10,10 @@
 //                          bit3: BIST 合格, bit4: アップロードのあふれ (MEM_ADDR の 0x28 を書くとクリア)
 //   0x13 BIST_SIZE      RW テストするワード数の log2 (1..21、既定 21 = 全 8MiB)
 //   0x14 BIST_SEED      RW パターンの種
+//   0x15 MEM_CLK        RW [3:0] SDRAM のクロックの位相 (1/16 周期 = 約 1ns 単位、既定 0)。トップが PLL の動的位相調整 (PSDA) に渡す。
+//                          PLL のデューティ入力 (DUTYDA) は立ち下がりの絶対位置なので、clk_duty = 位相 + 8 にしてデューティを 50% に保つ
+//                          (DUTYDA を 8 に固定すると立ち上がりだけが動いてデューティが変わり、位相 8, 9 でクロックが潰れる。M5 の前に確認)。
+//                          変えた瞬間はクロックが乱れるので、BIST や表示をしていないときに変える
 //   0x18 BIST_ERRORS    R  32bit 不一致の数
 //   0x1C BIST_FAIL_ADDR R  32bit 最初に不一致だったワードアドレス
 //   0x20 BIST_FAIL_EXP  R  32bit そのときの期待値
@@ -44,13 +48,18 @@ module mem_test (
     input  logic        mem_rvalid,     // バースト読み出しの 1 ワードごと
     input  logic [31:0] mem_rdata,
     input  logic        mem_init_done,
-    output logic [2:0]  rd_sample
+    output logic [2:0]  rd_sample,
+    output logic [3:0]  clk_phase,
+    output logic [3:0]  clk_duty
 );
     localparam logic [6:0] A_CMD    = 7'h10;
     localparam logic [6:0] A_CFG    = 7'h11;
     localparam logic [6:0] A_STATUS = 7'h12;
     localparam logic [6:0] A_SIZE   = 7'h13;
     localparam logic [6:0] A_SEED   = 7'h14;
+    localparam logic [6:0] A_CLK    = 7'h15;
+
+    assign clk_duty = clk_phase + 4'd8;    // 立ち下がりを立ち上がりの半周期後に (デューティ 50%)
     localparam logic [6:0] A_PORT   = 7'h30;
     // 0x18..0x2F の 32bit レジスタは下の casez でバイト単位に読み書きする
 
@@ -96,6 +105,7 @@ module mem_test (
         if (rst) begin
             state     <= S_IDLE;
             rd_sample <= 3'd5;
+            clk_phase <= 4'd0;
             mem_len   <= 9'd1;
             bist_rdone <= 1'b0;
             bist_size <= 5'd21;
@@ -138,6 +148,7 @@ module mem_test (
                     A_CFG:  rd_sample <= wdata[2:0];
                     A_SIZE: bist_size <= wdata[4:0];
                     A_SEED: bist_seed <= wdata;
+                    A_CLK:  clk_phase <= wdata[3:0];
                     7'h28: reg_addr[7:0]   <= wdata;
                     7'h29: reg_addr[15:8]  <= wdata;
                     7'h2A: reg_addr[23:16] <= wdata;
@@ -263,6 +274,7 @@ module mem_test (
                                 state != S_IDLE || port_pending, mem_init_done};
             A_SIZE:    rdata = {3'b0, bist_size};
             A_SEED:    rdata = bist_seed;
+            A_CLK:     rdata = {4'b0, clk_phase};
             7'b001_10??: rdata = byte_of(errors, addr[1:0]);      // 0x18..0x1B
             7'b001_11??: rdata = byte_of(fail_addr, addr[1:0]);   // 0x1C..0x1F
             7'b010_00??: rdata = byte_of(fail_exp, addr[1:0]);    // 0x20..0x23

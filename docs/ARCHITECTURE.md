@@ -32,8 +32,8 @@ RP2 ──SPI──► spi_slave ──► register bus ──┬─► vdp_regs
 | --- | --- | --- | --- |
 | `clk_ser` | 126MHz | rPLL | DVI のシリアライザ (OSER10) |
 | `clk_pix` | 25.2MHz | CLKDIV /5 | 表示タイミング、テストパターン、DVI |
-| `clk_sys` | 63MHz | rPLL の CLKOUTD /2 | SPI スレーブ、レジスタ、SDRAM コントローラ (GPU もここ) |
-| SDRAM クロック | 63MHz | `clk_sys` の逆相 (ODDR) | パッケージ内 SDRAM |
+| `clk_sys` | 63MHz | 2 つ目の rPLL (27MHz x 7/3) | SPI スレーブ、レジスタ、SDRAM コントローラ (GPU もここ) |
+| SDRAM クロック | 63MHz | 同じ rPLL の `CLKOUTP` を ODDR で反転 | パッケージ内 SDRAM。位相は `MEM_CLK` で約 1ns 刻みに変えられる (既定 0 = 逆相) |
 
 `clk_pix` と `clk_sys` の間は非同期として扱い、同期化 (2 段の FF、トグル) だけでまたぎます。
 
@@ -79,7 +79,8 @@ GW2AR-18 のパッケージ内 SDRAM (64Mbit、2M ワード x 32bit、4 バン�
 - パッケージのピンではないので、cst の `IO_LOC` には apicula の [doc/sdram.md](https://github.com/YosysHQ/apicula/blob/master/doc/sdram.md) にある内部 I/O の名前 (`IOR11B` など) を書く。nextpnr-himbaechel と gowin_pack はこれでそのまま通る
 - コントローラ ([`sdram_ctrl.sv`](../rtl/vdp/sdram_ctrl.sv)): CL2。書き込みは 1 ワードずつ、読み出しは同じ行の中のバースト (最大 256 ワード)。
   利用者は [`sdram_arb.sv`](../rtl/vdp/sdram_arb.sv) で調停する (表示が優先)
-- 読み出しデータを取り込む位置は半周期単位で変えられる (`MEM_CFG`)。実機のバースト読み出しで正しいのは 5 だけで、既定は 5
+- 読み出しデータを取り込む位置は半周期単位で変えられる (`MEM_CFG`、既定 5)。SDRAM クロックの位相も約 1ns 刻みで変えられ (`MEM_CLK`、既定 0)、
+  既定のまま前後に 3〜4ns の余裕がある (GPU_PLAN.md の「M5 の前に: SDRAM クロックの位相」)
   (1 ワードずつなら 6, 7 でも読めてしまうが、浮いたバスが値を保っているだけ)
 - ワードアドレスは `{行, バンク, 列}`。1 ライン (320 ピクセル x 16bit = 160 ワード) を 1 行 (256 ワード) に置くと、隣のラインは別のバンクになる
 

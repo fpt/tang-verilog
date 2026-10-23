@@ -1,8 +1,10 @@
 // Tang Nano 20K トップ
 //   27MHz -> rPLL 126MHz (シリアル) -> CLKDIV /5 -> 25.2MHz (ピクセル)
-//                                   -> rPLL CLKOUTD /2 -> 63MHz (システム: SPI スレーブとレジスタ)
+//   27MHz -> 2 つ目の rPLL 63MHz (システム: SPI スレーブ・レジスタ・SDRAM)
+//                              + CLKOUTP (同じ 63MHz を位相だけずらしたもの) -> SDRAM のクロック
 //   ハーネス (docs/HARNESS.md, harness/pins.json) の線もここで出す
-//   パッケージ内 SDRAM は 63MHz で動かし、SDRAM のクロックは逆相 (ODDR) で出す
+//   パッケージ内 SDRAM は 63MHz で動かし、SDRAM のクロックは CLKOUTP を ODDR で反転して出す。
+//   位相 (PSDA、1/16 周期 = 約 1ns 刻み) は MEM_CLK レジスタで実行時に変えられる。PSDA = 0 で以前と同じ逆相 (180°)
 module top (
     input  logic       clk,          // 27MHz
     input  logic       btn_s1,       // リセット (押下で 1)
@@ -35,24 +37,44 @@ module top (
     inout  wire  [31:0] IO_sdram_dq
 );
     // --- クロック生成 ---
-    logic clk_ser, clk_pix, clk_sys, pll_lock;
+    logic clk_ser, clk_pix, clk_sys, clk_sdram, pll_lock, pll_sys_lock;
+    logic [3:0] sdram_psda, sdram_dutyda;   // mem_test の MEM_CLK から
 
     rPLL #(
         .FCLKIN("27"),
         .IDIV_SEL(2),     // /3
         .FBDIV_SEL(13),   // x14  -> 126MHz
         .ODIV_SEL(4),     // VCO = 504MHz
-        .DYN_SDIV_SEL(2), // CLKOUTD = 126MHz / 2 = 63MHz
         .DEVICE("GW2AR-18C")
     ) u_pll (
         .CLKIN(clk),
         .CLKOUT(clk_ser),
         .LOCK(pll_lock),
-        .CLKOUTP(), .CLKOUTD(clk_sys), .CLKOUTD3(),
+        .CLKOUTP(), .CLKOUTD(), .CLKOUTD3(),
         .RESET(1'b0), .RESET_P(1'b0),
         .CLKFB(1'b0),
         .FBDSEL(6'b0), .IDSEL(6'b0), .ODSEL(6'b0),
         .PSDA(4'b0), .DUTYDA(4'b0), .FDLY(4'b0)
+    );
+
+    // システムクロックと SDRAM のクロック (位相を実行時に変える)
+    rPLL #(
+        .FCLKIN("27"),
+        .IDIV_SEL(2),     // /3
+        .FBDIV_SEL(6),    // x7  -> 63MHz
+        .ODIV_SEL(8),     // VCO = 504MHz
+        .DYN_DA_EN("true"),
+        .DEVICE("GW2AR-18C")
+    ) u_pll_sys (
+        .CLKIN(clk),
+        .CLKOUT(clk_sys),
+        .CLKOUTP(clk_sdram),
+        .LOCK(pll_sys_lock),
+        .CLKOUTD(), .CLKOUTD3(),
+        .RESET(1'b0), .RESET_P(1'b0),
+        .CLKFB(1'b0),
+        .FBDSEL(6'b0), .IDSEL(6'b0), .ODSEL(6'b0),
+        .PSDA(sdram_psda), .DUTYDA(sdram_dutyda), .FDLY(4'b0)
     );
 
     CLKDIV #(.DIV_MODE("5")) u_clkdiv (
@@ -75,8 +97,8 @@ module top (
     assign rst = rst_sync[3];
 
     logic [3:0] rst_sys_sync = '1;
-    always_ff @(posedge clk_sys or negedge pll_lock) begin
-        if (!pll_lock) rst_sys_sync <= '1;
+    always_ff @(posedge clk_sys or negedge pll_sys_lock) begin
+        if (!pll_sys_lock) rst_sys_sync <= '1;
         else           rst_sys_sync <= {rst_sys_sync[2:0], rst_req};
     end
     logic rst_sys;
@@ -184,7 +206,8 @@ module top (
         .clk(clk_sys), .rst(rst_sys),
         .addr(reg_addr), .wdata(reg_wdata), .we(reg_we && sel_mem), .rdata(mem_rdata),
         .mem_req(t_req), .mem_we(t_we), .mem_addr(t_addr), .mem_wdata(t_wdata), .mem_len(t_len),
-        .mem_ack(t_ack), .mem_rvalid(t_rvalid), .mem_rdata(mem_rdata32), .mem_init_done, .rd_sample
+        .mem_ack(t_ack), .mem_rvalid(t_rvalid), .mem_rdata(mem_rdata32), .mem_init_done, .rd_sample,
+        .clk_phase(sdram_psda), .clk_duty(sdram_dutyda)
     );
 
     sdram_arb u_arb (
@@ -211,7 +234,7 @@ module top (
 
     // SDRAM のクロック: 立ち上がりで 0、立ち下がりで 1 を出す = clk_sys の逆相
     ODDR u_sdram_clk (
-        .D0(1'b0), .D1(1'b1), .TX(1'b0), .CLK(clk_sys), .Q0(O_sdram_clk), .Q1()
+        .D0(1'b0), .D1(1'b1), .TX(1'b0), .CLK(clk_sdram), .Q0(O_sdram_clk), .Q1()
     );
 
     // --- 動作確認用 LED (約 1.5Hz で流れる) ---
