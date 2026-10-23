@@ -14,7 +14,7 @@ module tb_gpu;
     logic        base_latched = 0;
     logic [12:0] fb_base;
     logic [15:0] bg_color, bitmap_key;
-    logic [2:0]  layer_ctrl;
+    logic [2:0]  layer_ctrl, bitmap_rank;
     logic [9:0]  tile_scroll_x, tile_scroll_y;
     logic [13:0] tile_map_base, tile_pat_base, vram_waddr;
     logic [6:0]  tile_ctrl;
@@ -44,7 +44,7 @@ module tb_gpu;
         .clk, .rst, .addr, .wdata, .we, .re, .rdata,
         .mem_req, .mem_we, .mem_addr, .mem_wdata, .mem_wmask, .mem_len, .mem_ack, .mem_wnext, .mem_rvalid,
         .mem_rdata(rdata32),
-        .fb_base, .base_latched, .bg_color, .layer_ctrl, .bitmap_key,
+        .fb_base, .base_latched, .bg_color, .layer_ctrl, .bitmap_key, .bitmap_rank,
         .tile_scroll_x, .tile_scroll_y, .tile_map_base, .tile_pat_base, .tile_ctrl,
         .vram_we, .vram_waddr, .vram_wdata, .pal_we, .pal_waddr, .pal_wdata,
         .mark_req, .line_start, .line_num, .ready
@@ -438,7 +438,8 @@ module tb_gpu;
         wait_idle();
 
         // ---- タイル レイヤのレジスタ、VRAM_WRITE / PAL_WRITE (E2) ----
-        if (tile_scroll_x !== 0 || tile_scroll_y !== 0 || tile_map_base !== 0 || tile_pat_base !== 0 || tile_ctrl !== 0) begin
+        if (tile_scroll_x !== 0 || tile_scroll_y !== 0 || tile_map_base !== 0 || tile_pat_base !== 0 || tile_ctrl !== 0 ||
+            bitmap_rank !== 3'd1) begin
             $display("  tile registers after reset"); errors++;
         end
         // 値は各レジスタの幅に切る
@@ -452,6 +453,10 @@ module tb_gpu;
         end
         rd(7'h4A, f0);
         if (f0 != 8'h07) begin $display("  LAYER_CTRL read back: %h", f0); errors++; end
+        cmd(32'h0908_FFFE);
+        wait_idle();
+        if (bitmap_rank !== 3'd6) begin $display("  BITMAP_RANK: %0d", bitmap_rank); errors++; end
+        cmd(32'h0908_0001);
         cmd(32'h0901_0001);
         // VRAM_WRITE 3 ワードを 0x3FFF から (0x0000 に折り返す)、0 ワード、PAL_WRITE 3 色を 510 から (0 に折り返す)
         vram_writes = 0; pal_writes = 0;

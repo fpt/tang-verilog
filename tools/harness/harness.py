@@ -616,6 +616,7 @@ def fb_show(vdp, slot, on):
 def fbtest(bridge, png, slot, keep, do_capture, out_dir):
     """アップロード -> 表示 -> FRAME_CRC / UNDERFLOW / キャプチャを参照モデルと比べる"""
     import fbmodel
+    import gpu_model
     import imgcmp
     vdp = Vdp(bridge)
     img565, _ = load_fb_image(png)
@@ -624,6 +625,10 @@ def fbtest(bridge, png, slot, keep, do_capture, out_dir):
     result = {"image": png or "test_image", "slot": slot, "expected_crc": expect_crc}
 
     control = vdp.read1(REGS["CONTROL"])
+    # 前のシナリオが残したタイル レイヤや BITMAP_RANK を既定に戻す
+    gpu = Gpu(vdp)
+    gpu.send(gpu_model.layer_reset_words())
+    gpu.wait_idle()
     result["upload_seconds"] = fb_upload(bridge, img565, slot)
     under0 = vdp.read1(REGS["UNDERFLOW"])
     try:
