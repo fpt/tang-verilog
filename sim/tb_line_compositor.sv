@@ -4,6 +4,8 @@
 //   - レジスタはラインの合成を始めるときに取り込む (line_start ごとに背景色を変えると、ラインごとに違う色になる)
 //   - line_start / line_num が毎フレーム 0..H-1 の順に出る。mark_req で次のライン 0 のときだけ mark_toggle が変わる
 //   - タイル レイヤ: 不透明なタイルのピクセルがビットマップ / 背景色の上に出て、値 0 のところは下が見える
+//   - 順位: ビットマップの順位をタイル (低) より上にするとビットマップが上 (透過色のところからタイルが見える)、
+//     タイルの優先度ビットが立つとタイルが上。ビットマップの順位 0 は何も書かない
 //   - メモリが遅すぎると UNDERFLOW を数える
 `timescale 1ns/1ps
 module tb_line_compositor;
@@ -30,6 +32,7 @@ module tb_line_compositor;
     logic        base_latched;
     logic [15:0] bg_color = 16'h0000, bitmap_key = 16'h0000;
     logic [2:0]  layer_ctrl = 3'b001;
+    logic [2:0]  bitmap_rank = 3'd1;
     logic        vram_we = 0, pal_we = 0;
     logic [13:0] vram_waddr = '0;
     logic [31:0] vram_wdata = '0;
@@ -46,7 +49,7 @@ module tb_line_compositor;
     logic [23:0] rgb;
 
     line_compositor #(.SRC_W(SRC_W), .SRC_H(SRC_H), .V_TOTAL(V_TOTAL), .VRAM_WORDS(1024)) dut (
-        .clk_sys, .rst_sys(rst), .fb_base, .base_latched, .bg_color, .layer_ctrl, .bitmap_key,
+        .clk_sys, .rst_sys(rst), .fb_base, .base_latched, .bg_color, .layer_ctrl, .bitmap_key, .bitmap_rank,
         .tile_scroll_x(10'd0), .tile_scroll_y(10'd0), .tile_map_base(14'd0), .tile_pat_base(PAT), .tile_ctrl(7'd0),
         .vram_we, .vram_waddr, .vram_wdata, .pal_we, .pal_waddr, .pal_wdata,
         .mark_req, .mark_toggle, .line_start, .line_num,
@@ -131,7 +134,7 @@ module tb_line_compositor;
     end
 
     // 出力は x, y の 1 クロック後。mode: 0 = ビットマップ、1 = 背景色だけ (ラインごと)、2 = 透過色あり、
-    // 3 = タイル + ビットマップ、4 = タイル + 背景色
+    // 3 = タイル + ビットマップ、4 = タイル + 背景色、5 = ビットマップ (透過色あり) が上でタイルが下
     logic [10:0] x_d;
     logic [9:0]  y_d;
     logic        de_d;
@@ -149,7 +152,9 @@ module tb_line_compositor;
                 1: e = line_color(sy);
                 2: e = (pixel(sx, sy) == key_px) ? 16'hABCD : pixel(sx, sy);
                 3: e = (tile_nib(sx, sy) != 0) ? 16'h7C00 + 16'(tile_nib(sx, sy)) : pixel(sx, sy);
-                default: e = (tile_nib(sx, sy) != 0) ? 16'h7C00 + 16'(tile_nib(sx, sy)) : 16'h0123;
+                4: e = (tile_nib(sx, sy) != 0) ? 16'h7C00 + 16'(tile_nib(sx, sy)) : 16'h0123;
+                default: e = (pixel(sx, sy) != key_px) ? pixel(sx, sy) :
+                             (tile_nib(sx, sy) != 0) ? 16'h7C00 + 16'(tile_nib(sx, sy)) : 16'h0123;
             endcase
             checked++;
             if (rgb !== expand(e)) begin
@@ -225,6 +230,23 @@ module tb_line_compositor;
         bg_color = 16'h0123;
         layer_ctrl = 3'b100;
         check_frames(4, 2);
+
+        // 順位: ビットマップ 3 > タイル (低) 2。透過色のところだけタイル (またはその下の背景色) が見える
+        bitmap_rank = 3'd3;
+        layer_ctrl = 3'b111;
+        check_frames(5, 2);
+        // ビットマップの順位 0 は書かない: タイル + 背景色と同じ
+        bitmap_rank = 3'd0;
+        check_frames(4, 2);
+        // マップの優先度ビットを立てる (タイル 5 > ビットマップ 3): タイルが上
+        bitmap_rank = 3'd3;
+        for (int i = 0; i < 16; i++) begin
+            @(negedge clk_sys); vram_we = 1; vram_waddr = 14'(i); vram_wdata = 32'h8000_8000;
+        end
+        @(negedge clk_sys); vram_we = 0;
+        layer_ctrl = 3'b101;
+        check_frames(3, 2);
+        bitmap_rank = 3'd1;
         layer_ctrl = 3'b001;
 
         // line_start の順番と、印 (次のライン 0 で 1 回だけ)

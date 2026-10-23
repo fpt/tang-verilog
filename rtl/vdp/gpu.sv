@@ -30,7 +30,8 @@
 //                   透過のときは透過色のピクセルを書かない。クリップ矩形の外は描かない
 //   0x09 REG_WRITE  [23:16] レジスタ番号、[15:0] 値。合成のレジスタを書く (タイル レイヤの意味は tile_layer.sv)。
 //                   0: BG_COLOR, 1: LAYER_CTRL, 2: BITMAP_KEY, 3: TILE_SCROLL_X (10bit), 4: TILE_SCROLL_Y (10bit),
-//                   5: TILE_MAP_BASE (VRAM のワードアドレス, 14bit), 6: TILE_PAT_BASE (同じ), 7: TILE_CTRL (7bit)。どれも既定 0 (LAYER_CTRL は 1)
+//                   5: TILE_MAP_BASE (VRAM のワードアドレス, 14bit), 6: TILE_PAT_BASE (同じ), 7: TILE_CTRL (7bit),
+//                   8: BITMAP_RANK (3bit、合成の順位。line_compositor.sv)。どれも既定 0 (LAYER_CTRL と BITMAP_RANK は 1)
 //   0x0A WAIT_LINE  [7:0] ライン n。以降の REG_WRITE がライン n から効くところ (ライン n-1 の合成が始まったところ) まで待つ
 //   0x0B WAIT_VBLANK  WAIT_LINE 0 と同じ (以降の REG_WRITE が次のフレームのライン 0 から効く)。
 //                   [0] = 1 なら、次のフレーム (このあとライン 0 から合成するフレーム) に印を付け、その CRC を MARK_CRC に残す
@@ -78,6 +79,7 @@ module gpu #(
     output logic [15:0] bg_color,
     output logic [2:0]  layer_ctrl,
     output logic [15:0] bitmap_key,
+    output logic [2:0]  bitmap_rank,
     output logic [9:0]  tile_scroll_x,
     output logic [9:0]  tile_scroll_y,
     output logic [13:0] tile_map_base,
@@ -290,6 +292,7 @@ module gpu #(
             bg_color    <= 16'h0000;
             layer_ctrl  <= 3'b001;
             bitmap_key  <= 16'h0000;
+            bitmap_rank <= 3'd1;
             tile_scroll_x <= '0;
             tile_scroll_y <= '0;
             tile_map_base <= '0;
@@ -436,6 +439,7 @@ module gpu #(
                                 8'd5: tile_map_base <= color[13:0];
                                 8'd6: tile_pat_base <= color[13:0];
                                 8'd7: tile_ctrl     <= color[6:0];
+                                8'd8: bitmap_rank   <= color[2:0];
                                 default: error <= 1'b1;
                             endcase
                         end

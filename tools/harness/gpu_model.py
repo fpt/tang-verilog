@@ -42,11 +42,13 @@ OP_REG_WRITE, OP_WAIT_LINE, OP_WAIT_VBLANK = 0x09, 0x0A, 0x0B
 OP_VRAM_WRITE, OP_PAL_WRITE = 0x0C, 0x0D
 # 合成のレジスタ: 名前 -> (REG_WRITE の番号, ビットの幅のマスク)
 LAYER_REGS = {"bg_color": 0, "layer_ctrl": 1, "bitmap_key": 2, "tile_scroll_x": 3, "tile_scroll_y": 4,
-              "tile_map_base": 5, "tile_pat_base": 6, "tile_ctrl": 7}
+              "tile_map_base": 5, "tile_pat_base": 6, "tile_ctrl": 7, "bitmap_rank": 8}
 LAYER_MASK = {"bg_color": 0xFFFF, "layer_ctrl": 0x7, "bitmap_key": 0xFFFF, "tile_scroll_x": 0x3FF, "tile_scroll_y": 0x3FF,
-              "tile_map_base": 0x3FFF, "tile_pat_base": 0x3FFF, "tile_ctrl": 0x7F}
+              "tile_map_base": 0x3FFF, "tile_pat_base": 0x3FFF, "tile_ctrl": 0x7F, "bitmap_rank": 0x7}
 LAYER_RESET = {"bg_color": 0x0000, "layer_ctrl": 0x01, "bitmap_key": 0x0000, "tile_scroll_x": 0, "tile_scroll_y": 0,
-               "tile_map_base": 0, "tile_pat_base": 0, "tile_ctrl": 0}
+               "tile_map_base": 0, "tile_pat_base": 0, "tile_ctrl": 0, "bitmap_rank": 1}
+# 合成の順位 (line_compositor.sv): 0 背景色、面 A のタイルは優先度ビットで 2 か 5、ビットマップは bitmap_rank
+RANK_A_LO, RANK_A_HI = 2, 5
 VRAM_WORDS = 16384
 BLIT_MAX_W = 512
 SPRITE_KEY = 0xF81F      # sprite_pixels が透過色に使う色 (#ff00ff)
@@ -441,7 +443,7 @@ class Model:
         return w
 
     def tile_line(self, y, regs):
-        """tile_layer.sv と同じ: ライン y のタイル レイヤ。透明なピクセルは None"""
+        """tile_layer.sv と同じ: ライン y のタイル レイヤ。(色, 優先度) のリスト、透明なピクセルは None"""
         ctrl = regs["tile_ctrl"]
         mw = 32 << min(ctrl & 3, 2)
         rows = 28 if (ctrl >> 2) & 3 == 3 else 32 << ((ctrl >> 2) & 3)
@@ -465,25 +467,30 @@ class Model:
             pi = bank << 6 | (e >> 13 & 3) << 4 | nib
             if pi not in self.pal:
                 raise ValueError(f"tile layer uses unwritten palette entry {pi}")
-            out.append(self.pal[pi])
+            out.append((self.pal[pi], e >> 15 & 1))
         return out
 
     def compose_line(self, base, y, regs):
-        """line_compositor.sv と同じ: ビットマップ (透過色は背景色に置き換え) か背景色の上に、タイルの不透明なピクセル"""
+        """line_compositor.sv と同じ: 順位の付いた作業ラインに、タイル → ビットマップの順に「順位が今より大きいときだけ」書く。
+        順位 0 (誰も書かなかった) は背景色"""
         bg, ctrl, key = regs["bg_color"], regs["layer_ctrl"], regs["bitmap_key"]
-        if not ctrl & 1:
-            out = [bg] * SRC_W
-        else:
-            out = []
+        line = [(0, bg)] * SRC_W                  # (順位, 色)
+        if ctrl & 4:
+            for x, t in enumerate(self.tile_line(y, regs)):
+                if t is not None:
+                    rank = RANK_A_HI if t[1] else RANK_A_LO
+                    if rank > line[x][0]:
+                        line[x] = (rank, t[0])
+        if ctrl & 1:
+            rank = regs["bitmap_rank"]
             for x in range(SRC_W // 2):
                 w = self.mem.get((base + y) * 256 + x)
                 if w is None:
                     raise ValueError(f"displayed plane {base} has unwritten pixels at ({2 * x},{y})")
-                for p in (w & 0xFFFF, w >> 16):
-                    out.append(bg if ctrl & 2 and p == key else p)
-        if ctrl & 4:
-            out = [b if t is None else t for b, t in zip(out, self.tile_line(y, regs))]
-        return out
+                for k, p in enumerate((w & 0xFFFF, w >> 16)):
+                    if not (ctrl & 2 and p == key) and rank > line[2 * x + k][0]:
+                        line[2 * x + k] = (rank, p)
+        return [bg if r == 0 else c for r, c in line]
 
     def displayed565(self):
         """今表示されている画面 (レジスタは今の値が全ラインに効いている) の 320x240 RGB565"""

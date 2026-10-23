@@ -1,0 +1,184 @@
+{
+ "name": "e2_ranks",
+ "description": "順位付きの作業ライン (E2.5): ビットマップ (透過色あり) の順位をタイルの低/高優先度の間・一番上・帯ごとに 0〜7 と変える",
+ "steps": [
+  {
+   "op": "palette",
+   "kind": "demo",
+   "index": 0,
+   "count": 64
+  },
+  {
+   "op": "tiles",
+   "kind": "demo",
+   "addr": 0
+  },
+  {
+   "op": "tilemap",
+   "kind": "scene",
+   "addr": 14336,
+   "w": 32,
+   "h": 28
+  },
+  {
+   "op": "clear",
+   "color": "#ff00ff"
+  },
+  {
+   "op": "fill_rect",
+   "x": 0,
+   "y": 0,
+   "w": 320,
+   "h": 110,
+   "color": "#e0e0e0"
+  },
+  {
+   "op": "fill_rect",
+   "x": 40,
+   "y": 130,
+   "w": 240,
+   "h": 90,
+   "color": "#203060"
+  },
+  {
+   "op": "fill_rect",
+   "x": 120,
+   "y": 20,
+   "w": 80,
+   "h": 180,
+   "color": "#ff00ff"
+  },
+  {
+   "op": "line",
+   "x0": 0,
+   "y0": 0,
+   "x1": 319,
+   "y1": 239,
+   "color": "#ffff00"
+  },
+  {
+   "op": "swap"
+  },
+  {
+   "op": "reg",
+   "name": "bg_color",
+   "value": "#000000"
+  },
+  {
+   "op": "reg",
+   "name": "tile_map_base",
+   "value": 14336
+  },
+  {
+   "op": "reg",
+   "name": "tile_pat_base",
+   "value": 0
+  },
+  {
+   "op": "reg",
+   "name": "tile_ctrl",
+   "value": 12
+  },
+  {
+   "op": "reg",
+   "name": "bitmap_key",
+   "value": "#ff00ff"
+  },
+  {
+   "op": "reg",
+   "name": "bitmap_rank",
+   "value": 3
+  },
+  {
+   "op": "reg",
+   "name": "layer_ctrl",
+   "value": 7
+  },
+  {
+   "op": "check"
+  },
+  {
+   "op": "reg",
+   "name": "bitmap_rank",
+   "value": 6
+  },
+  {
+   "op": "check"
+  },
+  {
+   "op": "wait_vblank",
+   "mark": true
+  },
+  {
+   "op": "reg",
+   "name": "bitmap_rank",
+   "value": 0
+  },
+  {
+   "op": "wait_line",
+   "line": 34
+  },
+  {
+   "op": "reg",
+   "name": "bitmap_rank",
+   "value": 1
+  },
+  {
+   "op": "wait_line",
+   "line": 68
+  },
+  {
+   "op": "reg",
+   "name": "bitmap_rank",
+   "value": 2
+  },
+  {
+   "op": "wait_line",
+   "line": 102
+  },
+  {
+   "op": "reg",
+   "name": "bitmap_rank",
+   "value": 3
+  },
+  {
+   "op": "wait_line",
+   "line": 136
+  },
+  {
+   "op": "reg",
+   "name": "bitmap_rank",
+   "value": 4
+  },
+  {
+   "op": "wait_line",
+   "line": 170
+  },
+  {
+   "op": "reg",
+   "name": "bitmap_rank",
+   "value": 5
+  },
+  {
+   "op": "wait_line",
+   "line": 204
+  },
+  {
+   "op": "reg",
+   "name": "bitmap_rank",
+   "value": 6
+  },
+  {
+   "op": "wait_line",
+   "line": 238
+  },
+  {
+   "op": "reg",
+   "name": "bitmap_rank",
+   "value": 7
+  },
+  {
+   "op": "check_marked"
+  }
+ ]
+}

@@ -1,11 +1,15 @@
 // ラインごとの合成 (docs/EMU_GPU_PLAN.md の E1。M4 の fb_scanout を置き換えた)
 //   論理画面 SRC_W x SRC_H を、ライン単位で合成して縦横 2 倍で出す。
 //
-//   合成: ラインを始めるときにレイヤのレジスタ (背景色・レイヤの有効・ビットマップの透過色・タイル レイヤの設定) を取り込み、
-//         1. タイル レイヤが有効なら、tile_layer にそのラインを合成させる (タイル ライン バッファへ、約 450 クロック)
-//         2. ビットマップ レイヤが有効なら、SDRAM のフレームバッファの行をバーストで読み、透過色のピクセル (透過色が有効なとき) を背景色に
-//            置き換えて書く。無効なら背景色で埋める。どちらも、タイルの不透明なピクセルがあればそれで置き換える
-//         重なりは下から 背景色 < ビットマップ < タイル。スプライトは E3 で合成のパスを足す。
+//   合成: ラインを始めるときにレイヤのレジスタ (背景色・レイヤの有効・ビットマップの透過色と順位・タイル レイヤの設定) を取り込み、
+//         順位の付いた作業ライン (ピクセルごとに {順位, 色}) に、レイヤごとのパスで書く。各パスは「不透明で、順位が今の値より
+//         大きいピクセルだけ」書くので、パスの順番によらず順位の高いものが残る (同じ順位なら先のパス)。
+//         1. タイル レイヤ (有効なら): tile_layer が出すピクセル。順位はタイルの優先度ビットで RANK_A_LO / RANK_A_HI
+//         2. ビットマップ レイヤ (有効なら): SDRAM のフレームバッファの行をバーストで読む。順位は bitmap_rank (既定 1)。
+//            透過色が有効なら、透過色のピクセルは書かない
+//         3. 出力: 作業ラインをライン バッファに写し (順位 0 = どのレイヤも書かなかったところは背景色)、作業ラインを空に戻す
+//         順位 (3bit): 0 背景色、1 面 B (低)、2 面 A (低)、3 スプライト (低)、4 面 B (高)、5 面 A (高)、6 スプライト (高)。
+//         今のタイル レイヤは面 A。面 B は E4、スプライトは E3 でパスを足す。
 //   レジスタはラインの合成を始めるときに取り込むので、GPU の WAIT_LINE n のあとの REG_WRITE はライン n から効く。
 //   そのために、合成を始めるたびに line_start とライン番号 line_num を出す。
 //
@@ -35,6 +39,7 @@ module line_compositor #(
     input  logic [15:0] bg_color,         // 背景色 (RGB565)
     input  logic [2:0]  layer_ctrl,       // bit0: ビットマップ レイヤ有効, bit1: ビットマップの透過色を有効, bit2: タイル レイヤ有効
     input  logic [15:0] bitmap_key,       // ビットマップの透過色
+    input  logic [2:0]  bitmap_rank,      // ビットマップ レイヤの順位 (既定 1)
     input  logic [9:0]  tile_scroll_x,    // タイル レイヤ (tile_layer.sv)
     input  logic [9:0]  tile_scroll_y,
     input  logic [13:0] tile_map_base,
@@ -65,6 +70,7 @@ module line_compositor #(
     output logic [23:0] rgb               // x, y の 1 クロック後に有効
 );
     localparam int WORDS = SRC_W / 2;
+    localparam logic [2:0] RANK_A_LO = 3'd2, RANK_A_HI = 3'd5;
 
     // --- ライン バッファ (2 ライン x 256 ワード)。書き込みは clk_sys、読み出しは clk_pix ---
     logic [31:0] line_buf [0:511];
@@ -108,57 +114,109 @@ module line_compositor #(
     assign rgb = {p[15:11], p[15:13], p[10:5], p[10:9], p[4:0], p[4:2]};
 
     // ================================================================ システム側
+    // 作業ライン: ピクセルごとに {順位 3bit, 色 16bit}。偶数の x と奇数の x を別の BSRAM に置き、1 クロックに 2 ピクセル読み書きできる。
+    // 書き込みは「不透明で、順位が今の値より大きいときだけ」。今の値は 1 クロック前に読んでおく (rd_addr を先に出す)
+    logic [18:0] wl_even [0:255];
+    logic [18:0] wl_odd  [0:255];
+    logic [7:0]  wl_rd_addr;
+    logic [18:0] wl_q_even, wl_q_odd;
+    logic        wl_we_even, wl_we_odd;
+    logic [7:0]  wl_wa_even, wl_wa_odd;
+    logic [18:0] wl_wd_even, wl_wd_odd;
+
+    always_ff @(posedge clk_sys) begin
+        if (wl_we_even) wl_even[wl_wa_even] <= wl_wd_even;
+        if (wl_we_odd)  wl_odd[wl_wa_odd]   <= wl_wd_odd;
+        wl_q_even <= wl_even[wl_rd_addr];
+        wl_q_odd  <= wl_odd[wl_rd_addr];
+    end
+
+    typedef enum logic [2:0] {P_IDLE, P_TILE, P_ISSUE, P_BITMAP, P_OUT_PRE, P_OUT} phase_t;
+    phase_t phase;
+
     logic [2:0]  req_s;
-    logic        busy, pending, filling, mark_pending;
+    logic        busy, pending, mark_pending;
     logic        line_bank;      // 合成しているラインを書くバッファ (ライン番号の偶奇)
     logic [12:0] frame_base;     // このフレームで使う fb_base
-    logic [7:0]  widx;
+    logic [7:0]  widx;           // ビットマップのパスで書くワード
+    logic [7:0]  oidx;           // 出力のパスで書くワード
     // このラインのレジスタ (合成を始めるときに取り込む)
     logic [15:0] l_bg, l_key;
-    logic        l_key_en, l_bm_en, l_tile_en;
+    logic        l_key_en, l_bm_en;
+    logic [2:0]  l_bm_rank;
     logic [9:0]  l_sx, l_sy;
     logic [13:0] l_map, l_pat;
     logic [6:0]  l_tctrl;
     logic [20:0] l_addr;         // ビットマップの行のアドレス
-    logic        issue;          // ビットマップ (または背景色) のパスを始める
-    logic        t_start, t_wait, t_busy;
-    logic [33:0] t_rd;           // タイル ライン バッファの widx のワード: {不透明, 色 (奇数), 不透明, 色 (偶数)}
-    logic [7:0]  t_rd_addr;
+    logic        t_start, t_busy;
+    logic        t_valid, t_opaque, t_pri;
+    logic [7:0]  t_next;
+    logic [8:0]  t_x;
+    logic [15:0] t_color;
+
+    assign busy = phase != P_IDLE;
 
     tile_layer #(.SRC_W(SRC_W), .VRAM_WORDS(VRAM_WORDS)) u_tile (
         .clk(clk_sys), .rst(rst_sys),
         .vram_we, .vram_waddr, .vram_wdata, .pal_we, .pal_waddr, .pal_wdata,
         .start(t_start), .line(line_num), .scroll_x(l_sx), .scroll_y(l_sy), .map_base(l_map), .pat_base(l_pat),
-        .ctrl(l_tctrl), .busy(t_busy), .rd_addr(t_rd_addr), .rd_data(t_rd)
+        .ctrl(l_tctrl), .busy(t_busy), .next_word(t_next),
+        .px_valid(t_valid), .px_x(t_x), .px_opaque(t_opaque), .px_pri(t_pri), .px_color(t_color)
     );
 
     always_ff @(posedge clk_sys) req_s <= {req_s[1:0], req_toggle};
 
-    // ビットマップのピクセルを、透過色なら背景色に置き換える
-    function automatic logic [15:0] pick(input logic [15:0] px, input logic [15:0] bg, input logic [15:0] key,
-                                         input logic key_en);
-        return (key_en && px == key) ? bg : px;
-    endfunction
+    // 作業ラインの読み出しアドレス: そのパスで次のクロックに書くところ
+    always_comb begin
+        unique case (phase)
+            P_TILE:   wl_rd_addr = t_next;
+            P_BITMAP: wl_rd_addr = mem_rvalid ? widx + 8'd1 : widx;
+            P_OUT:    wl_rd_addr = oidx + 8'd1;
+            default:  wl_rd_addr = 8'd0;
+        endcase
+    end
 
-    // BSRAM にするため、書き込みはリセットのない別のブロックで
-    logic        wr_en;
-    logic [31:0] wr_data;
-    logic [15:0] base_lo, base_hi;
-    assign wr_en   = filling || (busy && mem_rvalid);
-    assign base_lo = filling ? l_bg : pick(mem_rdata[15:0], l_bg, l_key, l_key_en);
-    assign base_hi = filling ? l_bg : pick(mem_rdata[31:16], l_bg, l_key, l_key_en);
-    assign wr_data = {(l_tile_en && t_rd[33]) ? t_rd[32:17] : base_hi, (l_tile_en && t_rd[16]) ? t_rd[15:0] : base_lo};
-    // タイル ライン バッファは 1 クロック遅れで読めるので、次に書くワードを先に読んでおく
-    assign t_rd_addr = (filling || mem_rvalid) ? widx + 8'd1 : widx;
-    always_ff @(posedge clk_sys) if (wr_en) line_buf[{line_bank, widx}] <= wr_data;
+    // 作業ラインへの書き込み
+    logic [2:0] t_rank;
+    logic       bm_lo_ok, bm_hi_ok;
+    assign t_rank   = t_pri ? RANK_A_HI : RANK_A_LO;
+    assign bm_lo_ok = !(l_key_en && mem_rdata[15:0] == l_key) && l_bm_rank > wl_q_even[18:16];
+    assign bm_hi_ok = !(l_key_en && mem_rdata[31:16] == l_key) && l_bm_rank > wl_q_odd[18:16];
+    always_comb begin
+        wl_we_even = 1'b0; wl_wa_even = widx; wl_wd_even = {l_bm_rank, mem_rdata[15:0]};
+        wl_we_odd  = 1'b0; wl_wa_odd  = widx; wl_wd_odd  = {l_bm_rank, mem_rdata[31:16]};
+        unique case (phase)
+            P_TILE: begin
+                wl_wa_even = t_x[8:1];  wl_wd_even = {t_rank, t_color};
+                wl_wa_odd  = t_x[8:1];  wl_wd_odd  = {t_rank, t_color};
+                wl_we_even = t_valid && !t_x[0] && t_opaque && t_rank > wl_q_even[18:16];
+                wl_we_odd  = t_valid &&  t_x[0] && t_opaque && t_rank > wl_q_odd[18:16];
+            end
+            P_BITMAP: begin
+                wl_we_even = mem_rvalid && bm_lo_ok;
+                wl_we_odd  = mem_rvalid && bm_hi_ok;
+            end
+            P_OUT: begin
+                // 写したところを空 (順位 0) に戻して、次のラインに備える
+                wl_wa_even = oidx; wl_wd_even = '0; wl_we_even = 1'b1;
+                wl_wa_odd  = oidx; wl_wd_odd  = '0; wl_we_odd  = 1'b1;
+            end
+            default: ;
+        endcase
+    end
+
+    // 出力のパス: 作業ラインをライン バッファに写す。順位 0 (どのレイヤも書かなかった) は背景色
+    logic [31:0] out_word;
+    assign out_word = {(wl_q_odd[18:16] == 3'd0) ? l_bg : wl_q_odd[15:0],
+                       (wl_q_even[18:16] == 3'd0) ? l_bg : wl_q_even[15:0]};
+    always_ff @(posedge clk_sys) if (phase == P_OUT) line_buf[{line_bank, oidx}] <= out_word;
 
     assign mem_len = 9'(WORDS);
 
     always_ff @(posedge clk_sys) begin
         if (rst_sys) begin
-            busy            <= 1'b0;
+            phase           <= P_IDLE;
             pending         <= 1'b0;
-            filling         <= 1'b0;
             mem_req         <= 1'b0;
             underflow_count <= '0;
             frame_base      <= '0;
@@ -167,14 +225,11 @@ module line_compositor #(
             line_num        <= '0;
             mark_pending    <= 1'b0;
             mark_toggle     <= 1'b0;
-            issue           <= 1'b0;
             t_start         <= 1'b0;
-            t_wait          <= 1'b0;
         end else begin
             base_latched <= 1'b0;
             line_start   <= 1'b0;
             t_start      <= 1'b0;
-            issue        <= 1'b0;
             if (mark_req) mark_pending <= 1'b1;
 
             // 新しい依頼が来たときにまだ合成していたら、表示に間に合っていない
@@ -183,69 +238,68 @@ module line_compositor #(
                 pending <= 1'b1;
             end
 
-            if (!busy && (pending || req_s[2] != req_s[1])) begin
-                pending    <= 1'b0;
-                busy       <= 1'b1;
-                line_bank  <= req_line[0];
-                line_start <= 1'b1;
-                line_num   <= 8'(req_line);
-                l_bg       <= bg_color;
-                l_key      <= bitmap_key;
-                l_key_en   <= layer_ctrl[1];
-                l_bm_en    <= layer_ctrl[0];
-                l_tile_en  <= layer_ctrl[2];
-                l_sx       <= tile_scroll_x;
-                l_sy       <= tile_scroll_y;
-                l_map      <= tile_map_base;
-                l_pat      <= tile_pat_base;
-                l_tctrl    <= tile_ctrl;
-                l_addr     <= (req_line == 9'd0) ? {fb_base, 8'b0} : {frame_base + 13'(req_line), 8'b0};
-                widx       <= '0;
-                if (req_line == 9'd0) begin
-                    frame_base   <= fb_base;
-                    base_latched <= 1'b1;
-                    if (mark_pending || mark_req) begin
-                        mark_toggle  <= ~mark_toggle;
-                        mark_pending <= 1'b0;
+            unique case (phase)
+                P_IDLE: if (pending || req_s[2] != req_s[1]) begin
+                    pending    <= 1'b0;
+                    line_bank  <= req_line[0];
+                    line_start <= 1'b1;
+                    line_num   <= 8'(req_line);
+                    l_bg       <= bg_color;
+                    l_key      <= bitmap_key;
+                    l_key_en   <= layer_ctrl[1];
+                    l_bm_en    <= layer_ctrl[0];
+                    l_bm_rank  <= bitmap_rank;
+                    l_sx       <= tile_scroll_x;
+                    l_sy       <= tile_scroll_y;
+                    l_map      <= tile_map_base;
+                    l_pat      <= tile_pat_base;
+                    l_tctrl    <= tile_ctrl;
+                    l_addr     <= (req_line == 9'd0) ? {fb_base, 8'b0} : {frame_base + 13'(req_line), 8'b0};
+                    widx       <= '0;
+                    if (req_line == 9'd0) begin
+                        frame_base   <= fb_base;
+                        base_latched <= 1'b1;
+                        if (mark_pending || mark_req) begin
+                            mark_toggle  <= ~mark_toggle;
+                            mark_pending <= 1'b0;
+                        end
+                    end
+                    if (layer_ctrl[2]) begin
+                        t_start <= 1'b1;
+                        phase   <= P_TILE;
+                    end else begin
+                        phase <= P_ISSUE;
                     end
                 end
-                // タイル レイヤが有効なら先にタイルのパス、終わったらビットマップ (または背景色) のパス
-                if (layer_ctrl[2]) begin
-                    t_start <= 1'b1;
-                    t_wait  <= 1'b1;
-                end else begin
-                    issue <= 1'b1;
+                // t_start のクロックの t_busy はまだ 0 (tile_layer は次のクロックから busy)
+                P_TILE: if (!t_start && !t_busy) phase <= P_ISSUE;
+                P_ISSUE: begin
+                    if (l_bm_en) begin
+                        mem_req  <= 1'b1;
+                        mem_addr <= l_addr;
+                        phase    <= P_BITMAP;
+                    end else begin
+                        phase <= P_OUT_PRE;
+                    end
                 end
-            end
-
-            // t_start のクロックの t_busy はまだ 0 (tile_layer は次のクロックから busy)
-            if (t_wait && !t_start && !t_busy) begin
-                t_wait <= 1'b0;
-                issue  <= 1'b1;
-            end
-            if (issue) begin
-                if (l_bm_en) begin
-                    mem_req  <= 1'b1;
-                    mem_addr <= l_addr;
-                end else begin
-                    filling <= 1'b1;
+                P_BITMAP: begin
+                    if (mem_rvalid) widx <= widx + 8'd1;
+                    if (mem_ack) begin
+                        mem_req <= 1'b0;
+                        phase   <= P_OUT_PRE;
+                    end
                 end
-            end
-
-            // 背景色で埋める (ビットマップ レイヤが無効のとき)
-            if (filling) begin
-                widx <= widx + 8'd1;
-                if (widx == 8'(WORDS - 1)) begin
-                    filling <= 1'b0;
-                    busy    <= 1'b0;
+                // 作業ラインのワード 0 を読むための 1 クロック
+                P_OUT_PRE: begin
+                    oidx  <= '0;
+                    phase <= P_OUT;
                 end
-            end
-
-            if (mem_rvalid) widx <= widx + 8'd1;
-            if (mem_ack) begin
-                mem_req <= 1'b0;
-                busy    <= 1'b0;
-            end
+                P_OUT: begin
+                    oidx <= oidx + 8'd1;
+                    if (oidx == 8'(WORDS - 1)) phase <= P_IDLE;
+                end
+                default: phase <= P_IDLE;
+            endcase
         end
     end
 endmodule

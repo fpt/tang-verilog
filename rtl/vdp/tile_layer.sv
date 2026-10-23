@@ -4,17 +4,18 @@
 //   パレット: 512 x RGB565 の BSRAM。GPU の PAL_WRITE が書く
 //   タイル:   8x8 ピクセル、4bpp。1 行が 1 ワードで、ピクセル i (左から) は [31-4i -: 4]。タイル t の行 r は pat_base + t*8 + r
 //   マップ:   1 エントリ 16bit、1 ワードに 2 つ (下位が偶数の列)。列 c、行 r のエントリは map_base + (r * 幅 + c) / 2。
-//             [10:0] タイル番号、[11] 左右反転、[12] 上下反転、[14:13] パレット、[15] 優先度 (E2 では使わない)
+//             [10:0] タイル番号、[11] 左右反転、[12] 上下反転、[14:13] パレット、[15] 優先度 (px_pri に出す)
 //   色:       ピクセルの値 0 は透明 (下のレイヤが見える)。それ以外はパレットの {ctrl[6:4], エントリのパレット, 値}
 //   ctrl:     [1:0] マップの幅 (0: 32, 1: 64, 2: 128 タイル)、[3:2] 高さ (0: 32, 1: 64, 2: 128, 3: 28 タイル = SMS)、
 //             [6:4] パレットのバンク
 //   スクロール: 画面のピクセル (x, line) は、マップのピクセル ((x + scroll_x) mod 幅, (line + scroll_y) mod 高さ)。
 //             高さ 28 タイル (224 ピクセル) のときは scroll_y < 224 にする
 //
-//   動き方: start で、line の 1 ライン分 (SRC_W ピクセル) をタイル ライン バッファに書く。1 タイルごとに
-//           マップを読む (1 クロック) -> タイルの行を読む (1 クロック) -> 8 ピクセルを 1 クロックに 1 つ、パレットを引いて書く。
+//   動き方: start で、line の 1 ライン分 (SRC_W ピクセル) を x の順に 1 クロックに 1 つ出す。1 タイルごとに
+//           マップを読む (1 クロック) -> タイルの行を読む (1 クロック) -> 8 ピクセルを 1 クロックに 1 つ、パレットを引いて出す。
 //           1 ラインは約 (3 + 8) x 41 = 450 クロック。終わるまで busy
-//   読み出し: rd_addr (ワード = 2 ピクセル) の 1 クロック後に rd_data = {不透明, 色 (奇数の x), 不透明, 色 (偶数の x)}
+//   出力:   px_valid のクロックに、画面の x = px_x のピクセル {px_opaque, px_pri, px_color}。
+//           その 1 クロック前に next_word = x / 2 を出す (受け側が作業ラインの今の値を先に読んでおけるように)
 //
 //   スクロールなどの入力は start から busy が落ちるまで変えないこと (line_compositor がラインの開始で取り込んだ値を渡す)。
 module tile_layer #(
@@ -39,17 +40,19 @@ module tile_layer #(
     input  logic [13:0] pat_base,
     input  logic [6:0]  ctrl,
     output logic        busy,
-    // タイル ライン バッファの読み出し
-    input  logic [7:0]  rd_addr,
-    output logic [33:0] rd_data
+    // ピクセルの出力
+    output logic [7:0]  next_word,
+    output logic        px_valid,
+    output logic [8:0]  px_x,
+    output logic        px_opaque,
+    output logic        px_pri,
+    output logic [15:0] px_color
 );
     localparam int VA_W = $clog2(VRAM_WORDS);
 
     // ================================================================ メモリ
     logic [31:0] vram [0:VRAM_WORDS-1];
     logic [15:0] pal  [0:511];
-    logic [16:0] tbuf_even [0:255];      // {不透明, 色}。偶数の x
-    logic [16:0] tbuf_odd  [0:255];
 
     logic [13:0] vram_raddr;
     logic [31:0] vram_q;
@@ -65,14 +68,14 @@ module tile_layer #(
         pal_q <= pal[pal_raddr];
     end
 
-    // 書き込みはパレットを引いた次のクロック
-    logic        p_valid, p_opaque;
+    // 出力はパレットを引いた次のクロック
+    logic        p_valid, p_opaque, p_pri;
     logic [8:0]  p_x;
-    always_ff @(posedge clk) begin
-        if (p_valid && !p_x[0]) tbuf_even[p_x[8:1]] <= {p_opaque, pal_q};
-        if (p_valid &&  p_x[0]) tbuf_odd[p_x[8:1]]  <= {p_opaque, pal_q};
-    end
-    always_ff @(posedge clk) rd_data <= {tbuf_odd[rd_addr], tbuf_even[rd_addr]};
+    assign px_valid  = p_valid;
+    assign px_x      = p_x;
+    assign px_opaque = p_opaque;
+    assign px_pri    = p_pri;
+    assign px_color  = pal_q;
 
     // ================================================================ ラインの合成
     typedef enum logic [1:0] {T_IDLE, T_MAP, T_PAT, T_EMIT} tstate_t;
@@ -86,6 +89,7 @@ module tile_layer #(
     logic [31:0] pat;             // タイルの今の行
     logic        hflip;
     logic [1:0]  pal_sel;
+    logic        pri;
     logic        col_odd;         // 読んだマップのワードのどちらのエントリか
     logic        first;           // T_MAP の 1 クロック目
 
@@ -125,8 +129,8 @@ module tile_layer #(
         endcase
     end
 
-    logic [14:0] entry;           // 優先度 ([15]) は E2 では使わない
-    assign entry = col_odd ? vram_q[30:16] : vram_q[14:0];
+    logic [15:0] entry;
+    assign entry = col_odd ? vram_q[31:16] : vram_q[15:0];
 
     logic [2:0] pi;               // 反転したあとのタイルの中の x
     logic [3:0] nib;
@@ -140,7 +144,8 @@ module tile_layer #(
         pal_raddr = {ctrl[6:4], pal_sel, nib};
     end
 
-    assign busy = state != T_IDLE || p_valid;
+    assign busy   = state != T_IDLE || p_valid;
+    assign next_word = x[8:1];
 
     // T_IDLE --start--> (マップを読む) T_MAP -> (タイルの行を読む) T_PAT -> T_EMIT x 8 -> T_MAP ...
     // T_MAP は 2 クロック: 1 クロック目 (first) にマップのアドレスを出し、2 クロック目に届いたエントリからタイルの行のアドレスを出す
@@ -168,6 +173,7 @@ module tile_layer #(
                     end else begin
                         hflip   <= entry[11];
                         pal_sel <= entry[14:13];
+                        pri     <= entry[15];
                         state   <= T_PAT;
                     end
                 end
@@ -178,6 +184,7 @@ module tile_layer #(
                 T_EMIT: begin
                     p_valid  <= 1'b1;
                     p_opaque <= nib != 4'd0;
+                    p_pri    <= pri;
                     p_x      <= x;
                     x        <= x + 9'd1;
                     px       <= px + 3'd1;
