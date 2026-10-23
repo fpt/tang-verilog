@@ -16,7 +16,11 @@ rtl/vdp/gpu.sv と同じ規則でコマンドを解釈し、表示される面�
       {"op": "upload_sprite", "kind": "arrow", "addr": 196608, "w": 16, "h": 16, "stride": 8},   # 下の sprite_pixels
       {"op": "blit", "src": 196608, "stride": 8, "w": 16, "h": 16, "x": 10, "y": 20,
        "transparent": true, "hflip": false, "vflip": false, "key": "#ff00ff"},
-      {"op": "check"}                            # ここで表示されている画面を比べる
+      {"op": "reg", "name": "bg_color", "value": "#rrggbb"},   # 合成のレジスタ (bg_color / layer_ctrl / bitmap_key)
+      {"op": "wait_line", "line": 100},          # 以降の reg がライン 100 から効く
+      {"op": "wait_vblank", "mark": true},       # 以降の reg が次のフレームのライン 0 から効く。mark なら次のフレームに印
+      {"op": "check"},                           # ここで表示されている画面を比べる (レジスタは最後の値が全ラインに効いている前提)
+      {"op": "check_marked"}                     # 印を付けたフレーム (ラインごとのレジスタの変化込み) を比べる
   ]}
 色は "#rrggbb" (RGB565 に丸める) か、RGB565 の整数。
 """
@@ -27,6 +31,9 @@ import fbmodel
 SRC_W, SRC_H = fbmodel.SRC_W, fbmodel.SRC_H
 OP_NOP, OP_CLEAR, OP_FILL_RECT, OP_SWAP, OP_UPLOAD = 0x00, 0x01, 0x02, 0x03, 0x04
 OP_POINT, OP_DRAW_LINE, OP_CLIP, OP_BLIT = 0x05, 0x06, 0x07, 0x08
+OP_REG_WRITE, OP_WAIT_LINE, OP_WAIT_VBLANK = 0x09, 0x0A, 0x0B
+LAYER_REGS = {"bg_color": 0, "layer_ctrl": 1, "bitmap_key": 2}
+LAYER_RESET = {"bg_color": 0x0000, "layer_ctrl": 0x01, "bitmap_key": 0x0000}
 BLIT_MAX_W = 512
 SPRITE_KEY = 0xF81F      # sprite_pixels が透過色に使う色 (#ff00ff)
 FB_BASE_RESET, DRAW_BASE_RESET = 0, 256
@@ -69,7 +76,15 @@ def encode(step):
     if op == "upload_sprite":
         px = sprite_pixels(step["kind"], step["w"], step["h"])
         return image_words(px, step["w"], step["h"], step["stride"], step["addr"])
-    if op == "check":
+    if op == "reg":
+        v = step["value"]
+        v = color565(v) if isinstance(v, str) else v & 0xFFFF
+        return [OP_REG_WRITE << 24 | LAYER_REGS[step["name"]] << 16 | v]
+    if op == "wait_line":
+        return [OP_WAIT_LINE << 24 | (step["line"] & 0xFF)]
+    if op == "wait_vblank":
+        return [OP_WAIT_VBLANK << 24 | (1 if step.get("mark") else 0)]
+    if op in ("check", "check_marked"):
         return []
     raise ValueError(f"unknown op {op!r}")
 
@@ -153,6 +168,11 @@ class Model:
         self.fb_base = FB_BASE_RESET
         self.draw_base = DRAW_BASE_RESET
         self.clip = (0, 0, SRC_W - 1, SRC_H - 1)     # (x0, y0, x1, y1) 両端を含む
+        self.regs = dict(LAYER_RESET)                 # 合成のレジスタ (今の値)
+        # 印を付けたフレーム: {"line_regs": {ライン: レジスタ}, "fb_base": ..} と、記録中かどうか・今のライン
+        self.marked = None
+        self.recording = False
+        self.cursor = 0
 
     def put_pixel(self, base, x, y, c):
         a = (base + y) * 256 + x // 2
@@ -223,6 +243,27 @@ class Model:
                 self.blit(src & 0x1FFFFF, stride & 0xFFFF, hw & 0xFFFF, hw >> 16, s16(a2), s16(a2 >> 16),
                           (w >> 16) & 7, w & 0xFFFF)
                 i += 5
+            elif op == OP_REG_WRITE:
+                name = {v: k for k, v in LAYER_REGS.items()}.get((w >> 16) & 0xFF)
+                if name:
+                    self.regs[name] = w & (0x3 if name == "layer_ctrl" else 0xFFFF)
+                    if self.recording:
+                        self.marked["line_regs"][self.cursor] = dict(self.regs)
+                i += 1
+            elif op in (OP_WAIT_LINE, OP_WAIT_VBLANK):
+                n = 0 if op == OP_WAIT_VBLANK else w & 0xFF
+                if self.recording and (n == 0 or n <= self.cursor):
+                    self.recording = False             # 印を付けたフレームが終わった
+                if self.recording:
+                    if self.cursor == 0:
+                        self.marked["fb_base"] = self.fb_base    # ライン 0 は (最初の WAIT_LINE までに) この面
+                    self.cursor = n
+                    self.marked["line_regs"][n] = dict(self.regs)
+                if op == OP_WAIT_VBLANK and w & 1:
+                    self.marked = {"line_regs": {0: dict(self.regs)}, "fb_base": None}
+                    self.recording = True
+                    self.cursor = 0
+                i += 1
             elif op == OP_CLIP:
                 a0, a1 = words[i + 1], words[i + 2]
                 self.set_clip(a0 & 0xFFFF, a0 >> 16, a1 & 0xFFFF, a1 >> 16)
@@ -238,15 +279,38 @@ class Model:
             else:          # NOP と知らないコマンドは 1 ワード
                 i += 1
 
+    def compose_line(self, base, y, regs):
+        """line_compositor.sv と同じ: ビットマップ (透過色は背景色に置き換え) か、背景色だけ"""
+        bg, ctrl, key = regs["bg_color"], regs["layer_ctrl"], regs["bitmap_key"]
+        if not ctrl & 1:
+            return [bg] * SRC_W
+        out = []
+        for x in range(SRC_W // 2):
+            w = self.mem.get((base + y) * 256 + x)
+            if w is None:
+                raise ValueError(f"displayed plane {base} has unwritten pixels at ({2 * x},{y})")
+            for p in (w & 0xFFFF, w >> 16):
+                out.append(bg if ctrl & 2 and p == key else p)
+        return out
+
     def displayed565(self):
-        """表示されている面 (fb_base) の 320x240 RGB565"""
+        """今表示されている画面 (レジスタは今の値が全ラインに効いている) の 320x240 RGB565"""
         img = []
         for y in range(SRC_H):
-            for x in range(SRC_W // 2):
-                w = self.mem.get((self.fb_base + y) * 256 + x)
-                if w is None:
-                    raise ValueError(f"displayed plane {self.fb_base} has unwritten pixels at ({2 * x},{y})")
-                img += [w & 0xFFFF, w >> 16]
+            img += self.compose_line(self.fb_base, y, self.regs)
+        return img
+
+    def marked565(self):
+        """印を付けたフレーム: ラインごとに、そのラインで効いていたレジスタで合成する"""
+        if self.marked is None:
+            raise ValueError("check_marked without a preceding wait_vblank mark")
+        base = self.marked["fb_base"] if self.marked["fb_base"] is not None else self.fb_base
+        starts = sorted(self.marked["line_regs"])
+        img, k = [], 0
+        for y in range(SRC_H):
+            while k + 1 < len(starts) and starts[k + 1] <= y:
+                k += 1
+            img += self.compose_line(base, y, self.marked["line_regs"][starts[k]])
         return img
 
 
@@ -255,14 +319,17 @@ def load(path):
         return json.load(f)
 
 
-def expected(scenario):
-    """シナリオを最初から走らせ、check ごとに (そこまでのワード数, 画像 565, CRC) を返す"""
+def expected(scenario, kinds=None):
+    """シナリオを最初から走らせ、check ごとに (そこまでのワード数, 画像 565, CRC) を返す。
+    kinds にリストを渡すと、check の種類 ("check" / "check_marked") を入れる"""
     m = Model()
     words, checks = [], []
     for step in scenario["steps"]:
-        if step["op"] == "check":
-            img = m.displayed565()
+        if step["op"] in ("check", "check_marked"):
+            img = m.displayed565() if step["op"] == "check" else m.marked565()
             checks.append((len(words), img, fbmodel.expected_crc(img)))
+            if kinds is not None:
+                kinds.append(step["op"])
         else:
             w = encode(step)
             m.run(w)
@@ -274,12 +341,14 @@ def export(path, out_dir):
     """Verilator のシナリオ実行 (sim/scenario/gpu_scenario_tb.sv) の入力を書く"""
     import os
     sc = load(path)
-    words, checks = expected(sc)
+    kinds = []
+    words, checks = expected(sc, kinds)
     os.makedirs(out_dir, exist_ok=True)
     with open(os.path.join(out_dir, "cmds.hex"), "w") as f:
         f.write(f"{len(words)}\n" + "".join(f"{w:08x}\n" for w in words))
     with open(os.path.join(out_dir, "checks.txt"), "w") as f:
-        f.write(f"{len(checks)}\n" + "".join(f"{n}\n" for n, _, _ in checks))
+        # 1 行に「ワード数 種類」(種類 0 = 普通の check、1 = 印を付けたフレーム)
+        f.write(f"{len(checks)}\n" + "".join(f"{n} {int(k == 'check_marked')}\n" for (n, _, _), k in zip(checks, kinds)))
     with open(os.path.join(out_dir, "expected.json"), "w") as f:
         json.dump([{"words": n, "crc": f"0x{c:08x}"} for n, _, c in checks], f, indent=1)
     print(f"{sc['name']}: {len(words)} words, {len(checks)} checks -> {out_dir}")

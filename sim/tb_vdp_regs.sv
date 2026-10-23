@@ -10,6 +10,8 @@ module tb_vdp_regs;
     logic       crc_toggle_async = 0;
     logic [7:0] underflow_count = 8'd7;
     logic [15:0] crc_frame_async = '0;
+    logic [31:0] held_crc_async = '0;
+    logic [7:0]  mark_count_async = '0;
     logic       irq, error;
 
     vdp_regs #(.VERSION(8'h01)) dut (.*);
@@ -115,6 +117,14 @@ module tb_vdp_regs;
         rd_re(7'h05, d); check("FRAME_CRC[7:0] (next frame)", d, 8'hDD);
         rd(7'h08, d); check("FRAME_CRC[31:24] (next frame)", d, 8'hAA);
         rd(7'h0A, d); check("CRC_FRAME[7:0] (next frame)", d, 8'h03);
+
+        // 印の CRC: mark_count が変わったら取り込む
+        held_crc_async = 32'hDEAD_BEEF;
+        #50 mark_count_async = 8'd1;
+        #100;
+        rd(7'h02, d); check("MARK_COUNT", d, 8'd1);
+        rd(7'h0C, d); check("MARK_CRC[7:0]", d, 8'hEF);
+        rd(7'h0F, d); check("MARK_CRC[31:24]", d, 8'hDE);
 
         // UNDERFLOW はそのまま読める
         rd(7'h09, d); check("UNDERFLOW", d, 8'd7);

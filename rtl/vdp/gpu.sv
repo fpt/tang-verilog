@@ -1,4 +1,4 @@
-// コマンド GPU (docs/GPU_PLAN.md の M5〜M7)。コマンド FIFO から 32bit ワードのコマンドを読み、SDRAM のフレームバッファに描く
+// コマンド GPU (docs/GPU_PLAN.md の M5〜M7、docs/EMU_GPU_PLAN.md の E1)。コマンド FIFO から 32bit ワードのコマンドを読み、SDRAM のフレームバッファに描く
 //
 // レジスタ (0x30..0x4F。複数バイトの値はリトルエンディアン):
 //   0x30 CMD        W  コマンドのポート。書いたバイトを 4 つずつ (リトルエンディアン) 1 ワードにして FIFO に入れる。
@@ -9,6 +9,9 @@
 //   0x41 GPU_FREE   R  FIFO の空き (ワード数、16bit、0x41..0x42)。ホストはこの数 x 4 バイトまで送ってよい
 //   0x44 FB_BASE    RW 表示するフレームバッファの先頭 (256 ワード = 1KiB 単位、13bit、0x44..0x45)。既定 0
 //   0x46 DRAW_BASE  RW 描くフレームバッファの先頭 (同じ単位、0x46..0x47)。既定 256 (= 0x040000 バイト)
+//   0x48 BG_COLOR   RW 背景色 (RGB565、0x48..0x49)。既定 0。line_compositor がラインごとに取り込む
+//   0x4A LAYER_CTRL RW bit0: ビットマップ レイヤ有効 (既定 1), bit1: ビットマップの透過色を有効 (既定 0)
+//   0x4C BITMAP_KEY RW ビットマップの透過色 (RGB565、0x4C..0x4D)。既定 0
 //
 // コマンド (先頭ワードの [31:24] がコマンド番号。座標の組は {y[15:0], x[15:0]}):
 //   0x00 NOP
@@ -25,7 +28,14 @@
 //                   次のワードにソースのワードアドレス、次のワード {h, w} (w は 512 まで)、次のワード {y, x} (描く位置、符号付き)、
 //                   次のワードにソースの 1 行のワード数 (stride)。ソースは SDRAM の RGB565 の画像で、各行はワードの先頭 (偶数のピクセル) から始まる。
 //                   透過のときは透過色のピクセルを書かない。クリップ矩形の外は描かない
+//   0x09 REG_WRITE  [23:16] レジスタ番号 (0: BG_COLOR, 1: LAYER_CTRL, 2: BITMAP_KEY)、[15:0] 値。合成のレジスタを書く
+//   0x0A WAIT_LINE  [7:0] ライン n。以降の REG_WRITE がライン n から効くところ (ライン n-1 の合成が始まったところ) まで待つ
+//   0x0B WAIT_VBLANK  WAIT_LINE 0 と同じ (以降の REG_WRITE が次のフレームのライン 0 から効く)。
+//                   [0] = 1 なら、次のフレーム (このあとライン 0 から合成するフレーム) に印を付け、その CRC を MARK_CRC に残す
 //   それ以外        エラーを立て、1 ワードのコマンドとして読み飛ばす
+//
+// WAIT_LINE のあとの REG_WRITE は、FIFO にすでに入っていれば数クロックで実行されるので、次のラインの合成 (約 63us 後) に間に合う。
+// ホストは 1 フレームぶんのコマンドを先に送っておく (FIFO が空になって遅れると、効くラインがずれる)。
 //
 // 1 ワードに 2 ピクセル (下位 16bit が偶数の x)。矩形の端が奇数の x で始まる / 終わるとき、線と点の 1 ピクセル、BLIT の透過色は、
 // SDRAM のバイトマスク (DQM) で片方のピクセルだけを書く (読み‐修正‐書きはしない)。矩形と BLIT の書き込みは 1 行の中で 64 ワードずつのバースト。
@@ -58,7 +68,15 @@ module gpu #(
     input  logic [31:0] mem_rdata,
     // 表示
     output logic [12:0] fb_base,
-    input  logic        base_latched     // fb_scanout が fb_base を取り込んだとき 1 クロック
+    input  logic        base_latched,    // line_compositor が fb_base を取り込んだとき 1 クロック
+    // 合成のレジスタ (line_compositor がラインごとに取り込む)
+    output logic [15:0] bg_color,
+    output logic [1:0]  layer_ctrl,
+    output logic [15:0] bitmap_key,
+    output logic        mark_req,        // WAIT_VBLANK (印付き) が終わったとき 1 クロック
+    input  logic        line_start,      // line_compositor がラインの合成を始めたとき 1 クロック
+    input  logic [7:0]  line_num,
+    output logic        ready            // FIFO が半分以上空いている (READY の線)
 );
     localparam int PTR_W = $clog2(FIFO_WORDS);
     localparam int MAX_BURST = 64;
@@ -66,7 +84,8 @@ module gpu #(
     localparam logic [6:0] A_STATUS = 7'h40;
 
     localparam logic [7:0] OP_NOP = 8'h00, OP_CLEAR = 8'h01, OP_FILL_RECT = 8'h02, OP_SWAP = 8'h03, OP_UPLOAD = 8'h04,
-                           OP_POINT = 8'h05, OP_DRAW_LINE = 8'h06, OP_CLIP = 8'h07, OP_BLIT = 8'h08;
+                           OP_POINT = 8'h05, OP_DRAW_LINE = 8'h06, OP_CLIP = 8'h07, OP_BLIT = 8'h08,
+                           OP_REG_WRITE = 8'h09, OP_WAIT_LINE = 8'h0A, OP_WAIT_VBLANK = 8'h0B;
     localparam int BLIT_MAX_W = 512;      // ライン バッファ (256 ワード) に入る幅
 
     // ================================================================ コマンド FIFO
@@ -90,7 +109,7 @@ module gpu #(
     typedef enum logic [3:0] {
         S_FETCH, S_FETCH_WAIT, S_DECODE, S_ARG, S_EXEC, S_RECT_BURST, S_SWAP_WAIT,
         S_UPLOAD_WRITE, S_LINE_STEP, S_LINE_PLOT, S_LINE_ADV,
-        S_BLIT_SETUP, S_BLIT_SKIP, S_BLIT_READ, S_BLIT_WRITE
+        S_BLIT_SETUP, S_BLIT_SKIP, S_BLIT_READ, S_BLIT_WRITE, S_WAIT_LINE
     } state_t;
     state_t state, after_fetch;
 
@@ -100,7 +119,10 @@ module gpu #(
     logic [15:0] arg3;                     // BLIT の stride (下位 16bit だけ使う)
     logic [1:0]  arg_idx, arg_last;        // 何個目の引数を読んでいるか、最後の引数の番号
     logic [2:0]  flags;                    // 先頭ワードの [18:16] (BLIT: bit0 透過, bit1 左右反転, bit2 上下反転)
+    logic [7:0]  flags_raw;                // 先頭ワードの [23:16] (REG_WRITE のレジスタ番号)
     logic        error, overflow, swap_seen;
+    logic [7:0]  wait_target;              // WAIT_LINE: このラインの合成が始まるのを待つ
+    logic        wait_armed, wait_mark;
     logic [12:0] draw_base;
     logic [15:0] color;
     logic [23:0] up_left;
@@ -246,7 +268,12 @@ module gpu #(
             swap_seen   <= 1'b0;
             cx0 <= 9'd0; cx1 <= 9'(SRC_W - 1);
             cy0 <= 8'd0; cy1 <= 8'(SRC_H - 1);
+            bg_color    <= 16'h0000;
+            layer_ctrl  <= 2'b01;
+            bitmap_key  <= 16'h0000;
+            mark_req    <= 1'b0;
         end else begin
+            mark_req <= 1'b0;
             if (flush) rd_ptr <= wr_ptr;
             if (re && addr == A_STATUS) error <= 1'b0;
 
@@ -257,6 +284,11 @@ module gpu #(
                     7'h45: fb_base[12:8]   <= wdata[4:0];
                     7'h46: draw_base[7:0]  <= wdata;
                     7'h47: draw_base[12:8] <= wdata[4:0];
+                    7'h48: bg_color[7:0]   <= wdata;
+                    7'h49: bg_color[15:8]  <= wdata;
+                    7'h4A: layer_ctrl      <= wdata[1:0];
+                    7'h4C: bitmap_key[7:0] <= wdata;
+                    7'h4D: bitmap_key[15:8] <= wdata;
                     default: ;
                 endcase
             end
@@ -276,6 +308,7 @@ module gpu #(
                 S_DECODE: begin
                     op      <= word[31:24];
                     flags   <= word[18:16];
+                    flags_raw <= word[23:16];
                     color   <= word[15:0];
                     up_left <= word[23:0];
                     arg_idx <= 2'd0;
@@ -365,8 +398,34 @@ module gpu #(
                             if (arg1[15:0] > 16'(BLIT_MAX_W)) error <= 1'b1;
                             else                             state <= S_BLIT_SETUP;
                         end
+                        OP_REG_WRITE: begin
+                            unique case (flags_raw)
+                                8'd0: bg_color   <= color;
+                                8'd1: layer_ctrl <= color[1:0];
+                                8'd2: bitmap_key <= color;
+                                default: error <= 1'b1;
+                            endcase
+                        end
+                        OP_WAIT_LINE, OP_WAIT_VBLANK: begin
+                            // ライン n-1 の合成が始まるのを待つ (n = 0 / WAIT_VBLANK なら最後のライン)
+                            logic [7:0] n;
+                            n = (op == OP_WAIT_VBLANK) ? 8'd0 : color[7:0];
+                            wait_target <= (n == 8'd0) ? 8'(SRC_H - 1) : n - 8'd1;
+                            wait_mark   <= op == OP_WAIT_VBLANK && color[0];
+                            wait_armed  <= 1'b0;
+                            state       <= S_WAIT_LINE;
+                        end
                         default: error <= 1'b1;
                     endcase
+                end
+
+                // 同じクロックの line_start は数えない (入る前に始まったラインなので)
+                S_WAIT_LINE: begin
+                    wait_armed <= 1'b1;
+                    if (wait_armed && line_start && line_num == wait_target) begin
+                        mark_req <= wait_mark;
+                        state    <= S_FETCH;
+                    end
                 end
 
                 // ---- BLIT ----
@@ -579,7 +638,8 @@ module gpu #(
     assign free_words = 16'(FIFO_WORDS) - 16'(count);
 
     logic busy;
-    assign busy = count != 0 || !(state == S_FETCH && after_fetch == S_DECODE);
+    assign busy  = count != 0 || !(state == S_FETCH && after_fetch == S_DECODE);
+    assign ready = free_words >= 16'(FIFO_WORDS / 2);
 
     always_comb begin
         unique case (addr)
@@ -590,6 +650,11 @@ module gpu #(
             7'h45:    rdata = {3'b0, fb_base[12:8]};
             7'h46:    rdata = draw_base[7:0];
             7'h47:    rdata = {3'b0, draw_base[12:8]};
+            7'h48:    rdata = bg_color[7:0];
+            7'h49:    rdata = bg_color[15:8];
+            7'h4A:    rdata = {6'b0, layer_ctrl};
+            7'h4C:    rdata = bitmap_key[7:0];
+            7'h4D:    rdata = bitmap_key[15:8];
             default:  rdata = 8'h00;
         endcase
     end
