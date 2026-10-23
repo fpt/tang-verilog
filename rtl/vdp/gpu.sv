@@ -1,4 +1,4 @@
-// コマンド GPU (docs/GPU_PLAN.md の M5)。コマンド FIFO から 32bit ワードのコマンドを読み、SDRAM のフレームバッファに描く
+// コマンド GPU (docs/GPU_PLAN.md の M5, M6)。コマンド FIFO から 32bit ワードのコマンドを読み、SDRAM のフレームバッファに描く
 //
 // レジスタ (0x30..0x4F。複数バイトの値はリトルエンディアン):
 //   0x30 CMD        W  コマンドのポート。書いたバイトを 4 つずつ (リトルエンディアン) 1 ワードにして FIFO に入れる。
@@ -10,16 +10,21 @@
 //   0x44 FB_BASE    RW 表示するフレームバッファの先頭 (256 ワード = 1KiB 単位、13bit、0x44..0x45)。既定 0
 //   0x46 DRAW_BASE  RW 描くフレームバッファの先頭 (同じ単位、0x46..0x47)。既定 256 (= 0x040000 バイト)
 //
-// コマンド (先頭ワードの [31:24] がコマンド番号):
+// コマンド (先頭ワードの [31:24] がコマンド番号。座標の組は {y[15:0], x[15:0]}):
 //   0x00 NOP
-//   0x01 CLEAR      [15:0] 色 (RGB565)。描く面の全体 (320x240) を塗る
-//   0x02 FILL_RECT  [15:0] 色、次のワード {y[15:0], x[15:0]}、次のワード {h[15:0], w[15:0]}。画面からはみ出す部分は切る
+//   0x01 CLEAR      [15:0] 色 (RGB565)。描く面の全体 (320x240) を塗る。クリップ矩形は無視する
+//   0x02 FILL_RECT  [15:0] 色、次のワード {y, x} (符号なし)、次のワード {h, w}。クリップ矩形の外は描かない
 //   0x03 SWAP       FB_BASE と DRAW_BASE を入れ替え、表示が新しい面を取り込む (次のフレームの先頭) まで後続を待たせる
 //   0x04 UPLOAD     [23:0] ワード数 n、次のワードに SDRAM のワードアドレス、そのあとに n ワードのデータ。1 ワードずつ書く
+//   0x05 POINT      [15:0] 色、次のワード {y, x} (符号付き)。クリップ矩形の中なら 1 ピクセル描く
+//   0x06 DRAW_LINE  [15:0] 色、次のワード {y0, x0}、次のワード {y1, x1} (符号付き)。ブレゼンハムで両端を含めて描き、
+//                   クリップ矩形の外のピクセルは飛ばす (画面の外から始まる線もよい)
+//   0x07 CLIP       次のワード {y0, x0}、次のワード {y1, x1} (符号なし、両端を含む)。以降の FILL_RECT / POINT / DRAW_LINE を
+//                   この矩形の中だけにする。画面の外は画面の端に丸める。x0 > x1 などなら何も描かなくなる。既定は画面全体
 //   それ以外        エラーを立て、1 ワードのコマンドとして読み飛ばす
 //
-// 1 ワードに 2 ピクセル (下位 16bit が偶数の x)。矩形の端が奇数の x で始まる / 終わるときは、SDRAM のバイトマスク (DQM) で
-// 片方のピクセルだけを書く (読み‐修正‐書きはしない)。描画の書き込みは 1 行の中で 64 ワードずつのバースト。
+// 1 ワードに 2 ピクセル (下位 16bit が偶数の x)。矩形の端が奇数の x で始まる / 終わるときや、線と点の 1 ピクセルは、
+// SDRAM のバイトマスク (DQM) で片方のピクセルだけを書く (読み‐修正‐書きはしない)。矩形の書き込みは 1 行の中で 64 ワードずつのバースト。
 module gpu #(
     parameter int SRC_W = 320,
     parameter int SRC_H = 240,
@@ -51,7 +56,8 @@ module gpu #(
     localparam logic [6:0] A_CMD    = 7'h30;
     localparam logic [6:0] A_STATUS = 7'h40;
 
-    localparam logic [7:0] OP_NOP = 8'h00, OP_CLEAR = 8'h01, OP_FILL_RECT = 8'h02, OP_SWAP = 8'h03, OP_UPLOAD = 8'h04;
+    localparam logic [7:0] OP_NOP = 8'h00, OP_CLEAR = 8'h01, OP_FILL_RECT = 8'h02, OP_SWAP = 8'h03, OP_UPLOAD = 8'h04,
+                           OP_POINT = 8'h05, OP_DRAW_LINE = 8'h06, OP_CLIP = 8'h07;
 
     // ================================================================ コマンド FIFO
     logic [31:0]     fifo [0:FIFO_WORDS-1];
@@ -72,29 +78,43 @@ module gpu #(
 
     // ================================================================ 実行
     typedef enum logic [3:0] {
-        S_FETCH, S_FETCH_WAIT, S_DECODE, S_ARG, S_RECT_ROW, S_RECT_BURST, S_SWAP_WAIT, S_UPLOAD_ADDR,
-        S_UPLOAD_DATA, S_UPLOAD_WRITE
+        S_FETCH, S_FETCH_WAIT, S_DECODE, S_ARG, S_EXEC, S_RECT_BURST, S_SWAP_WAIT,
+        S_UPLOAD_WRITE, S_LINE_STEP, S_LINE_PLOT, S_LINE_ADV
     } state_t;
     state_t state, after_fetch;
 
     logic [31:0] word;
-    logic        arg_second;          // FILL_RECT の 2 つ目の引数を待っている
+    logic [7:0]  op;
+    logic [31:0] arg0, arg1;
+    logic        arg_idx, last_arg;        // 何個目の引数を読んでいるか、それが最後か
     logic        error, overflow, swap_seen;
     logic [12:0] draw_base;
     logic [15:0] color;
-    logic [15:0] rx, ry, rw, rh;       // 矩形 (FILL_RECT の引数)
-    logic        x0_odd, x1_odd;       // 矩形の最初 / 最後 (含む) のピクセルの x が奇数か
-    logic [7:0]  y_cur, y_last;
-    logic [7:0]  w_first, w_last, w_cur;   // ワード単位
     logic [23:0] up_left;
     logic [20:0] up_addr;
 
-    // 矩形を画面で切る (はみ出す部分を落とす)。空なら何もしない
+    // クリップ矩形 (両端を含む)。FILL_RECT / POINT / DRAW_LINE に効く
+    logic [8:0]  cx0, cx1;
+    logic [7:0]  cy0, cy1;
+
+    // --- 矩形 (FILL_RECT と CLEAR) ---
+    // 矩形 {rx, ry, rw, rh} と範囲 {bx0..bx1, by0..by1} (クリップ矩形か画面全体) の重なりを塗る
+    logic [15:0] rx, ry, rw, rh;
+    logic [8:0]  bx0, bx1;
+    logic [7:0]  by0, by1;
+    logic [16:0] rx_end, ry_end, xs, xe, ys, ye;
     logic        rect_empty;
-    logic [16:0] rx_end, ry_end;
     assign rx_end     = 17'(rx) + 17'(rw) - 17'd1;
     assign ry_end     = 17'(ry) + 17'(rh) - 17'd1;
-    assign rect_empty = rw == 0 || rh == 0 || rx >= 16'(SRC_W) || ry >= 16'(SRC_H);
+    assign xs         = (17'(rx) > 17'(bx0)) ? 17'(rx) : 17'(bx0);
+    assign xe         = (rx_end < 17'(bx1)) ? rx_end : 17'(bx1);
+    assign ys         = (17'(ry) > 17'(by0)) ? 17'(ry) : 17'(by0);
+    assign ye         = (ry_end < 17'(by1)) ? ry_end : 17'(by1);
+    assign rect_empty = rw == 0 || rh == 0 || xs > xe || ys > ye;
+
+    logic        x0_odd, x1_odd;           // 塗る範囲の最初 / 最後 (含む) のピクセルの x が奇数か
+    logic [7:0]  y_cur, y_last;
+    logic [7:0]  w_first, w_last, w_cur;   // ワード単位
 
     // バーストの中の今のワードのマスク: 最初のワードは x0 が奇数なら上位 (奇数のピクセル) だけ、最後のワードは x1 が偶数なら下位だけ
     logic [3:0] cur_mask;
@@ -107,23 +127,45 @@ module gpu #(
     logic [8:0] burst_len;
     assign burst_len = (9'(w_last) - 9'(w_cur) + 9'd1 > 9'(MAX_BURST)) ? 9'(MAX_BURST) : 9'(w_last) - 9'(w_cur) + 9'd1;
 
-    assign mem_wmask = (state == S_RECT_BURST) ? cur_mask : 4'hF;
-    assign mem_wdata = (state == S_RECT_BURST) ? {color, color} : word;
+    // --- 線 (DRAW_LINE と POINT)。ブレゼンハム: err = dx + dy (dy は負)、e2 = 2 err ---
+    logic signed [17:0] lx, ly, ex, ey;
+    logic signed [18:0] ldx, ldy;           // ldx = |x1 - x0| (正), ldy = -|y1 - y0| (負または 0)
+    logic signed [19:0] err, e2;
+    logic               lsx, lsy;           // 1 なら -1 方向
+    logic               in_clip;
+    assign e2     = err <<< 1;
+    assign in_clip = lx >= $signed({9'b0, cx0}) && lx <= $signed({9'b0, cx1}) &&
+                    ly >= $signed({10'b0, cy0}) && ly <= $signed({10'b0, cy1});
+
+    assign mem_wmask = (state == S_RECT_BURST) ? cur_mask :
+                       (state == S_LINE_PLOT)  ? (lx[0] ? 4'b1100 : 4'b0011) : 4'hF;
+    assign mem_wdata = (state == S_RECT_BURST || state == S_LINE_PLOT) ? {color, color} : word;
 
     assign pop = (state == S_FETCH && count != 0 && !flush);
+
+    // 引数の数 (先頭ワードのあとに続くワード。UPLOAD は先頭のアドレスだけ数え、データは S_UPLOAD_WRITE で読む)
+    function automatic logic [1:0] nargs(input logic [7:0] o);
+        unique case (o)
+            OP_FILL_RECT, OP_DRAW_LINE, OP_CLIP: return 2'd2;
+            OP_UPLOAD, OP_POINT:                 return 2'd1;
+            default:                             return 2'd0;
+        endcase
+    endfunction
 
     always_ff @(posedge clk) begin
         if (rst) begin
             state       <= S_FETCH;
             after_fetch <= S_DECODE;
             rd_ptr      <= '0;
-            mem_req   <= 1'b0;
-            mem_we    <= 1'b1;
-            mem_len   <= 9'd1;
-            error     <= 1'b0;
-            fb_base   <= 13'd0;
-            draw_base <= 13'd256;
-            swap_seen <= 1'b0;
+            mem_req     <= 1'b0;
+            mem_we      <= 1'b1;
+            mem_len     <= 9'd1;
+            error       <= 1'b0;
+            fb_base     <= 13'd0;
+            draw_base   <= 13'd256;
+            swap_seen   <= 1'b0;
+            cx0 <= 9'd0; cx1 <= 9'(SRC_W - 1);
+            cy0 <= 8'd0; cy1 <= 8'(SRC_H - 1);
         end else begin
             if (flush) rd_ptr <= wr_ptr;
             if (re && addr == A_STATUS) error <= 1'b0;
@@ -150,19 +192,47 @@ module gpu #(
                     state <= after_fetch;
                 end
 
+                // 先頭ワード: 引数があれば読んでから S_EXEC、なければすぐ実行
                 S_DECODE: begin
-                    unique case (word[31:24])
-                        OP_NOP: state <= S_FETCH;
+                    op      <= word[31:24];
+                    color   <= word[15:0];
+                    up_left <= word[23:0];
+                    arg_idx <= 1'b0;
+                    if (nargs(word[31:24]) != 2'd0) begin
+                        last_arg    <= nargs(word[31:24]) == 2'd1;
+                        state       <= S_FETCH;
+                        after_fetch <= S_ARG;
+                    end else begin
+                        state <= S_EXEC;
+                    end
+                end
+                S_ARG: begin
+                    if (!arg_idx) arg0 <= word;
+                    else          arg1 <= word;
+                    arg_idx <= 1'b1;
+                    if (last_arg) begin
+                        state       <= S_EXEC;
+                        after_fetch <= S_DECODE;
+                    end else begin
+                        last_arg <= 1'b1;
+                        state    <= S_FETCH;
+                    end
+                end
+
+                S_EXEC: begin
+                    state <= S_FETCH;          // 下で上書きしなければ次のコマンドへ
+                    unique case (op)
+                        OP_NOP: ;
                         OP_CLEAR: begin
-                            color <= word[15:0];
                             rx <= 16'd0; ry <= 16'd0; rw <= 16'(SRC_W); rh <= 16'(SRC_H);
-                            state <= S_RECT_ROW;
+                            bx0 <= 9'd0; bx1 <= 9'(SRC_W - 1); by0 <= 8'd0; by1 <= 8'(SRC_H - 1);
+                            state <= S_RECT_BURST;
                         end
                         OP_FILL_RECT: begin
-                            color   <= word[15:0];
-                            arg_second <= 1'b0;
-                            state   <= S_FETCH;
-                            after_fetch <= S_ARG;
+                            {ry, rx} <= arg0;
+                            {rh, rw} <= arg1;
+                            bx0 <= cx0; bx1 <= cx1; by0 <= cy0; by1 <= cy1;
+                            state <= S_RECT_BURST;
                         end
                         OP_SWAP: begin
                             fb_base   <= draw_base;
@@ -171,53 +241,65 @@ module gpu #(
                             state     <= S_SWAP_WAIT;
                         end
                         OP_UPLOAD: begin
-                            up_left     <= word[23:0];
-                            state       <= S_FETCH;
-                            after_fetch <= S_UPLOAD_ADDR;
+                            up_addr <= arg0[20:0];
+                            if (up_left != 0) after_fetch <= S_UPLOAD_WRITE;
                         end
-                        default: begin
-                            error <= 1'b1;
-                            state <= S_FETCH;
+                        OP_POINT, OP_DRAW_LINE: begin
+                            // POINT は (x, y) から (x, y) への線
+                            logic signed [17:0] x0, y0, x1, y1;
+                            x0 = 18'(signed'(arg0[15:0]));
+                            y0 = 18'(signed'(arg0[31:16]));
+                            x1 = (op == OP_POINT) ? x0 : 18'(signed'(arg1[15:0]));
+                            y1 = (op == OP_POINT) ? y0 : 18'(signed'(arg1[31:16]));
+                            lx  <= x0;  ly <= y0;
+                            ex  <= x1;  ey <= y1;
+                            lsx <= x1 < x0;
+                            lsy <= y1 < y0;
+                            ldx <= (x1 < x0) ? 19'(x0 - x1) : 19'(x1 - x0);
+                            ldy <= (y1 < y0) ? 19'(y1 - y0) : 19'(y0 - y1);
+                            err <= ((x1 < x0) ? 20'(x0 - x1) : 20'(x1 - x0)) + ((y1 < y0) ? 20'(y1 - y0) : 20'(y0 - y1));
+                            state <= S_LINE_STEP;
                         end
+                        OP_CLIP: begin
+                            // 画面の外は画面の端に丸める (x0 > x1 なら空のまま)
+                            cx0 <= (arg0[15:0] > 16'(SRC_W - 1)) ? 9'(SRC_W - 1) : 9'(arg0[15:0]);
+                            cy0 <= (arg0[31:16] > 16'(SRC_H - 1)) ? 8'(SRC_H - 1) : 8'(arg0[31:16]);
+                            cx1 <= (arg1[15:0] > 16'(SRC_W - 1)) ? 9'(SRC_W - 1) : 9'(arg1[15:0]);
+                            cy1 <= (arg1[31:16] > 16'(SRC_H - 1)) ? 8'(SRC_H - 1) : 8'(arg1[31:16]);
+                            // x0 / y0 が画面の外 (丸めても x1 以上) で x1 が画面の端なら、丸めると 1 列だけ残ってしまうので空にする
+                            if (arg0[15:0] > 16'(SRC_W - 1)) cx1 <= 9'd0;
+                            if (arg0[31:16] > 16'(SRC_H - 1)) cy1 <= 8'd0;
+                            if (arg0[15:0] > 16'(SRC_W - 1)) cx0 <= 9'd1;
+                            if (arg0[31:16] > 16'(SRC_H - 1)) cy0 <= 8'd1;
+                        end
+                        default: error <= 1'b1;
                     endcase
-                    if (word[31:24] != OP_FILL_RECT && word[31:24] != OP_UPLOAD) after_fetch <= S_DECODE;
                 end
 
-                S_ARG: begin
-                    if (!arg_second) begin
-                        {ry, rx}   <= word;
-                        arg_second <= 1'b1;
-                        state      <= S_FETCH;
-                    end else begin
-                        {rh, rw}    <= word;
-                        state       <= S_RECT_ROW;
-                        after_fetch <= S_DECODE;
-                    end
-                end
-
-                // 矩形を画面で切った範囲を計算して、行のループ (S_RECT_BURST) へ
-                S_RECT_ROW: begin
-                    if (rect_empty) begin
-                        state <= S_FETCH;
-                    end else begin
-                        x0_odd  <= rx[0];
-                        x1_odd  <= (rx_end >= 17'(SRC_W)) ? 1'((SRC_W - 1) & 1) : rx_end[0];
-                        y_cur   <= 8'(ry);
-                        y_last  <= (ry_end >= 17'(SRC_H)) ? 8'(SRC_H - 1) : 8'(ry_end);
-                        w_first <= 8'(rx >> 1);
-                        w_last  <= (rx_end >= 17'(SRC_W)) ? 8'((SRC_W - 1) >> 1) : 8'(rx_end >> 1);
-                        w_cur   <= 8'(rx >> 1);
-                        state   <= S_RECT_BURST;
-                    end
-                end
-
-                // 1 行の中を 64 ワードずつのバーストで書く
+                // 矩形: 最初に重なりを計算し、1 行の中を 64 ワードずつのバーストで書く
                 S_RECT_BURST: begin
                     if (!mem_req) begin
-                        mem_req  <= 1'b1;
-                        mem_we   <= 1'b1;
-                        mem_addr <= {draw_base + 13'(y_cur), w_cur};
-                        mem_len  <= burst_len;
+                        if (rw != 0 || rh != 0) begin
+                            // 1 回目: 範囲を決める (rw, rh を 0 にして 2 回目以降と区別する)
+                            if (rect_empty) begin
+                                state <= S_FETCH;
+                            end else begin
+                                x0_odd  <= xs[0];
+                                x1_odd  <= xe[0];
+                                y_cur   <= 8'(ys);
+                                y_last  <= 8'(ye);
+                                w_first <= 8'(xs >> 1);
+                                w_last  <= 8'(xe >> 1);
+                                w_cur   <= 8'(xs >> 1);
+                            end
+                            rw <= 16'd0;
+                            rh <= 16'd0;
+                        end else begin
+                            mem_req  <= 1'b1;
+                            mem_we   <= 1'b1;
+                            mem_addr <= {draw_base + 13'(y_cur), w_cur};
+                            mem_len  <= burst_len;
+                        end
                     end else begin
                         if (mem_wnext && w_cur != w_last) w_cur <= w_cur + 8'd1;
                         if (mem_ack) begin
@@ -240,16 +322,6 @@ module gpu #(
                     if (swap_seen && base_latched) state <= S_FETCH;
                 end
 
-                S_UPLOAD_ADDR: begin
-                    up_addr <= word[20:0];
-                    if (up_left == 0) begin
-                        state       <= S_FETCH;
-                        after_fetch <= S_DECODE;
-                    end else begin
-                        state       <= S_FETCH;
-                        after_fetch <= S_UPLOAD_WRITE;
-                    end
-                end
                 S_UPLOAD_WRITE: begin
                     if (!mem_req) begin
                         mem_req  <= 1'b1;
@@ -262,7 +334,41 @@ module gpu #(
                         up_left <= up_left - 24'd1;
                         state   <= S_FETCH;
                         if (up_left == 24'd1) after_fetch <= S_DECODE;
-                        else                  after_fetch <= S_UPLOAD_WRITE;
+                    end
+                end
+
+                // 線: 今のピクセルがクリップ矩形の中なら書き、端に着いたら終わり、でなければ 1 歩進む
+                S_LINE_STEP: begin
+                    if (in_clip) begin
+                        mem_req  <= 1'b1;
+                        mem_we   <= 1'b1;
+                        mem_addr <= {draw_base + 13'(ly[7:0]), lx[8:1]};
+                        mem_len  <= 9'd1;
+                        state    <= S_LINE_PLOT;
+                    end else begin
+                        state <= S_LINE_ADV;
+                    end
+                end
+                S_LINE_PLOT: if (mem_ack) begin
+                    mem_req <= 1'b0;
+                    state   <= S_LINE_ADV;
+                end
+                S_LINE_ADV: begin
+                    if (lx == ex && ly == ey) begin
+                        state <= S_FETCH;
+                    end else begin
+                        logic signed [19:0] nerr;
+                        nerr = err;
+                        if (e2 >= 20'(ldy)) begin
+                            nerr = nerr + 20'(ldy);
+                            lx   <= lsx ? lx - 18'sd1 : lx + 18'sd1;
+                        end
+                        if (e2 <= 20'(ldx)) begin
+                            nerr = nerr + 20'(ldx);
+                            ly   <= lsy ? ly - 18'sd1 : ly + 18'sd1;
+                        end
+                        err   <= nerr;
+                        state <= S_LINE_STEP;
                     end
                 end
                 default: state <= S_FETCH;

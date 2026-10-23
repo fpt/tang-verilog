@@ -10,6 +10,9 @@ rtl/vdp/gpu.sv と同じ規則でコマンドを解釈し、表示される面�
       {"op": "swap"},
       {"op": "upload", "addr": 1234, "words": ["deadbeef", ...]},
       {"op": "upload_image", "slot": 256},      # fbmodel.test_image() を slot の面へ
+      {"op": "point", "x": 10, "y": 20, "color": "#rrggbb"},                 # 座標は符号付き 16bit
+      {"op": "line", "x0": 0, "y0": 0, "x1": 319, "y1": 239, "color": "#rrggbb"},
+      {"op": "clip", "x0": 0, "y0": 0, "x1": 319, "y1": 239},               # 両端を含む。FILL_RECT / POINT / LINE に効く
       {"op": "check"}                            # ここで表示されている画面を比べる
   ]}
 色は "#rrggbb" (RGB565 に丸める) か、RGB565 の整数。
@@ -20,6 +23,7 @@ import fbmodel
 
 SRC_W, SRC_H = fbmodel.SRC_W, fbmodel.SRC_H
 OP_NOP, OP_CLEAR, OP_FILL_RECT, OP_SWAP, OP_UPLOAD = 0x00, 0x01, 0x02, 0x03, 0x04
+OP_POINT, OP_DRAW_LINE, OP_CLIP = 0x05, 0x06, 0x07
 FB_BASE_RESET, DRAW_BASE_RESET = 0, 256
 
 
@@ -47,9 +51,42 @@ def encode(step):
     if op == "upload_image":
         img = fbmodel.rgb_to_565(fbmodel.test_image(), SRC_W, SRC_H)
         return upload_image_words(img, step["slot"])
+    if op == "point":
+        return [OP_POINT << 24 | color565(step["color"]), xy(step["x"], step["y"])]
+    if op == "line":
+        return [OP_DRAW_LINE << 24 | color565(step["color"]), xy(step["x0"], step["y0"]), xy(step["x1"], step["y1"])]
+    if op == "clip":
+        return [OP_CLIP << 24, xy(step["x0"], step["y0"]), xy(step["x1"], step["y1"])]
     if op == "check":
         return []
     raise ValueError(f"unknown op {op!r}")
+
+
+def xy(x, y):
+    return (y & 0xFFFF) << 16 | (x & 0xFFFF)
+
+
+def s16(v):
+    v &= 0xFFFF
+    return v - 0x10000 if v & 0x8000 else v
+
+
+def bresenham(x0, y0, x1, y1):
+    """rtl/vdp/gpu.sv と同じ: err = dx + dy (dy は負)、e2 = 2 err。両端を含む"""
+    dx, dy = abs(x1 - x0), -abs(y1 - y0)
+    sx, sy = (1 if x0 < x1 else -1), (1 if y0 < y1 else -1)
+    err = dx + dy
+    while True:
+        yield x0, y0
+        if x0 == x1 and y0 == y1:
+            return
+        e2 = 2 * err
+        if e2 >= dy:
+            err += dy
+            x0 += sx
+        if e2 <= dx:
+            err += dx
+            y0 += sy
 
 
 def upload_image_words(img565, slot):
@@ -69,6 +106,7 @@ class Model:
         self.mem = {}
         self.fb_base = FB_BASE_RESET
         self.draw_base = DRAW_BASE_RESET
+        self.clip = (0, 0, SRC_W - 1, SRC_H - 1)     # (x0, y0, x1, y1) 両端を含む
 
     def put_pixel(self, base, x, y, c):
         a = (base + y) * 256 + x // 2
@@ -76,12 +114,26 @@ class Model:
         w = (w & 0x0000FFFF) | c << 16 if x % 2 else (w & 0xFFFF0000) | c
         self.mem[a] = w
 
-    def fill(self, x, y, w, h, c):
-        if w == 0 or h == 0 or x >= SRC_W or y >= SRC_H:
+    def fill(self, x, y, w, h, c, clip=None):
+        """矩形と範囲 (clip、None なら画面全体) の重なりを塗る"""
+        bx0, by0, bx1, by1 = clip or (0, 0, SRC_W - 1, SRC_H - 1)
+        if w == 0 or h == 0:
             return
-        for yy in range(y, min(y + h, SRC_H)):
-            for xx in range(x, min(x + w, SRC_W)):
+        for yy in range(max(y, by0), min(y + h - 1, by1) + 1):
+            for xx in range(max(x, bx0), min(x + w - 1, bx1) + 1):
                 self.put_pixel(self.draw_base, xx, yy, c)
+
+    def plot(self, x, y, c):
+        cx0, cy0, cx1, cy1 = self.clip
+        if cx0 <= x <= cx1 and cy0 <= y <= cy1:
+            self.put_pixel(self.draw_base, x, y, c)
+
+    def set_clip(self, x0, y0, x1, y1):
+        """画面の外は画面の端に丸める。x0 / y0 が画面の外なら空 (gpu.sv と同じ)"""
+        if x0 > SRC_W - 1 or y0 > SRC_H - 1:
+            self.clip = (1, 1, 0, 0)
+        else:
+            self.clip = (x0, y0, min(x1, SRC_W - 1), min(y1, SRC_H - 1))
 
     def run(self, words):
         i = 0
@@ -92,8 +144,21 @@ class Model:
                 self.fill(0, 0, SRC_W, SRC_H, w & 0xFFFF)
                 i += 1
             elif op == OP_FILL_RECT:
-                xy, hw = words[i + 1], words[i + 2]
-                self.fill(xy & 0xFFFF, xy >> 16, hw & 0xFFFF, hw >> 16, w & 0xFFFF)
+                a0, a1 = words[i + 1], words[i + 2]
+                self.fill(a0 & 0xFFFF, a0 >> 16, a1 & 0xFFFF, a1 >> 16, w & 0xFFFF, self.clip)
+                i += 3
+            elif op == OP_POINT:
+                a0 = words[i + 1]
+                self.plot(s16(a0), s16(a0 >> 16), w & 0xFFFF)
+                i += 2
+            elif op == OP_DRAW_LINE:
+                a0, a1 = words[i + 1], words[i + 2]
+                for px, py in bresenham(s16(a0), s16(a0 >> 16), s16(a1), s16(a1 >> 16)):
+                    self.plot(px, py, w & 0xFFFF)
+                i += 3
+            elif op == OP_CLIP:
+                a0, a1 = words[i + 1], words[i + 2]
+                self.set_clip(a0 & 0xFFFF, a0 >> 16, a1 & 0xFFFF, a1 >> 16)
                 i += 3
             elif op == OP_SWAP:
                 self.fb_base, self.draw_base = self.draw_base, self.fb_base
