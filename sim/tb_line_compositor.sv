@@ -6,11 +6,14 @@
 //   - タイル レイヤ: 不透明なタイルのピクセルがビットマップ / 背景色の上に出て、値 0 のところは下が見える
 //   - 順位: ビットマップの順位をタイル (低) より上にするとビットマップが上 (透過色のところからタイルが見える)、
 //     タイルの優先度ビットが立つとタイルが上。ビットマップの順位 0 は何も書かない
+//   - スプライト: 低優先はタイル (低) の上、タイル (高) の下。高優先は一番上。スプライト同士は OAM の前が勝つ (優先度によらない)。
+//     負の x / y、2 タイル幅の左右反転、ラインの上限 (列の数)
 //   - メモリが遅すぎると UNDERFLOW を数える
 `timescale 1ns/1ps
 module tb_line_compositor;
     localparam int SRC_W = 8, SRC_H = 4;
-    localparam int H_ACTIVE = 2 * SRC_W, H_FP = 2, H_SYNC = 2, H_BP = 2;   // 1 ライン 22 クロック
+    // 1 ライン 40 クロック: 出力 2 ライン (1,600ns) = clk_sys 266 クロックに、スプライトの OAM の走査 (128) が入るように
+    localparam int H_ACTIVE = 2 * SRC_W, H_FP = 2, H_SYNC = 2, H_BP = 20;
     localparam int V_ACTIVE = 2 * SRC_H, V_FP = 1, V_SYNC = 1, V_BP = 1;   // 11 ライン
     localparam int V_TOTAL = V_ACTIVE + V_FP + V_SYNC + V_BP;
     localparam logic [12:0] BASE = 13'd3;
@@ -31,13 +34,15 @@ module tb_line_compositor;
     logic [12:0] fb_base = BASE;
     logic        base_latched;
     logic [15:0] bg_color = 16'h0000, bitmap_key = 16'h0000;
-    logic [2:0]  layer_ctrl = 3'b001;
+    logic [3:0]  layer_ctrl = 4'b0001;
     logic [2:0]  bitmap_rank = 3'd1;
     logic        vram_we = 0, pal_we = 0;
     logic [13:0] vram_waddr = '0;
     logic [31:0] vram_wdata = '0;
     logic [8:0]  pal_waddr = '0;
     logic [15:0] pal_wdata = '0;
+    logic        oam_we = 0;
+    logic [9:0]  spr_line_px = 10'd320;
     localparam logic [13:0] PAT = 14'd512;     // タイル 0 の模様 (マップは 0 番地から、全部 0 = タイル 0)
     logic        mark_req = 0, mark_toggle, line_start;
     logic [7:0]  line_num;
@@ -51,7 +56,8 @@ module tb_line_compositor;
     line_compositor #(.SRC_W(SRC_W), .SRC_H(SRC_H), .V_TOTAL(V_TOTAL), .VRAM_WORDS(1024)) dut (
         .clk_sys, .rst_sys(rst), .fb_base, .base_latched, .bg_color, .layer_ctrl, .bitmap_key, .bitmap_rank,
         .tile_scroll_x(10'd0), .tile_scroll_y(10'd0), .tile_map_base(14'd0), .tile_pat_base(PAT), .tile_ctrl(7'd0),
-        .vram_we, .vram_waddr, .vram_wdata, .pal_we, .pal_waddr, .pal_wdata,
+        .spr_pat_base(PAT), .spr_bank(3'd1), .spr_line_cols(spr_line_px[9:3]),
+        .vram_we, .vram_waddr, .vram_wdata, .pal_we, .pal_waddr, .pal_wdata, .oam_we,
         .mark_req, .mark_toggle, .line_start, .line_num,
         .mem_req, .mem_addr, .mem_len, .mem_ack, .mem_rvalid, .mem_rdata, .underflow_count,
         .clk_pix, .rst_pix(rst), .x, .y, .rgb
@@ -76,6 +82,64 @@ module tb_line_compositor;
         for (int i = 0; i < 8; i++) w[28 - 4 * i +: 4] = tile_nib(i, py);
         return w;
     endfunction
+
+    // スプライトのタイル 1 の模様: 行 r のピクセル i の値は (i + 2r) % 3。タイル 2 は全部 3。
+    // スプライトの色はパレットの {バンク 1, パレット p, 値 n} = 64 + 16p + n に 16'h0300 + 16p + n
+    function automatic logic [3:0] spr_nib(input int px, input int py);
+        return 4'((px + 2 * py) % 3);
+    endfunction
+    // OAM: エントリ 0 = (2, -2) 1x1 タイル 1 パレット 0 (優先度 s0_pri)、エントリ 1 = (-3, 0) 2x1 タイル 1 (列優先なので右の列が 2)、
+    // 左右反転、パレット 1、高優先。ほかは無効
+    localparam int S0_X = 2, S0_Y = -2, S1_X = -3;
+    bit s0_pri = 0, tile_hi = 0;
+    function automatic logic [31:0] oam_word(input int a);
+        unique case (a)
+            0: return {1'b1, 1'b0, 2'd0, 2'd0, 10'(S0_Y), 6'd0, 10'(S0_X)};
+            1: return {16'd0, s0_pri, 2'd0, 1'b0, 1'b0, 11'd1};
+            2: return {1'b1, 1'b0, 2'd0, 2'd1, 10'd0, 6'd0, 10'(S1_X)};
+            3: return {16'd0, 1'b1, 2'd1, 1'b0, 1'b1, 11'd1};
+            default: return 32'h0;
+        endcase
+    endfunction
+    // 期待する色: スプライト (先に作業ラインに入る) → タイル → ビットマップ (順位 1)、順位の一番高いもの
+    function automatic logic [15:0] mixed(input int sx, input int sy);
+        logic [15:0] c, sc;
+        int rank, srank, cols, nib;
+        bit found;
+        c = pixel(sx, sy);
+        rank = 1;
+        if (tile_nib(sx, sy) != 0 && (tile_hi ? 5 : 2) > rank) begin
+            c = 16'h7C00 + 16'(tile_nib(sx, sy));
+            rank = tile_hi ? 5 : 2;
+        end
+        cols = int'(spr_line_px) / 8;
+        found = 0;
+        if (cols >= 1 && sx >= S0_X && sx < S0_X + 8 && spr_nib(sx - S0_X, sy - S0_Y) != 0) begin
+            found = 1; sc = 16'h0300 + 16'(spr_nib(sx - S0_X, sy - S0_Y)); srank = s0_pri ? 6 : 3;
+        end
+        if (!found && cols >= 2 && sx >= S1_X && sx < S1_X + 8) begin          // 左の列 = タイル 2 (全部 3)
+            found = 1; sc = 16'h0310 + 16'd3; srank = 6;
+        end
+        if (!found && cols >= 3 && sx >= S1_X + 8 && sx < S1_X + 16) begin     // 右の列 = タイル 1 を左右反転
+            nib = int'(spr_nib(7 - (sx - S1_X - 8), sy));
+            if (nib != 0) begin found = 1; sc = 16'h0310 + 16'(nib); srank = 6; end
+        end
+        if (found && srank > rank) c = sc;
+        return c;
+    endfunction
+
+    task automatic write_oam();
+        for (int i = 0; i < 256; i++) begin
+            @(negedge clk_sys); oam_we = 1; vram_waddr = 14'(i); vram_wdata = oam_word(i);
+        end
+        @(negedge clk_sys); oam_we = 0;
+    endtask
+    task automatic write_map(input logic [31:0] w);
+        for (int i = 0; i < 16; i++) begin
+            @(negedge clk_sys); vram_we = 1; vram_waddr = 14'(i); vram_wdata = w;
+        end
+        @(negedge clk_sys); vram_we = 0;
+    endtask
 
     int errors = 0;
 
@@ -134,7 +198,8 @@ module tb_line_compositor;
     end
 
     // 出力は x, y の 1 クロック後。mode: 0 = ビットマップ、1 = 背景色だけ (ラインごと)、2 = 透過色あり、
-    // 3 = タイル + ビットマップ、4 = タイル + 背景色、5 = ビットマップ (透過色あり) が上でタイルが下
+    // 3 = タイル + ビットマップ、4 = タイル + 背景色、5 = ビットマップ (透過色あり) が上でタイルが下、
+    // 6 = スプライト + タイル + ビットマップ (mixed)
     logic [10:0] x_d;
     logic [9:0]  y_d;
     logic        de_d;
@@ -153,12 +218,14 @@ module tb_line_compositor;
                 2: e = (pixel(sx, sy) == key_px) ? 16'hABCD : pixel(sx, sy);
                 3: e = (tile_nib(sx, sy) != 0) ? 16'h7C00 + 16'(tile_nib(sx, sy)) : pixel(sx, sy);
                 4: e = (tile_nib(sx, sy) != 0) ? 16'h7C00 + 16'(tile_nib(sx, sy)) : 16'h0123;
+                6: e = mixed(sx, sy);
                 default: e = (pixel(sx, sy) != key_px) ? pixel(sx, sy) :
                              (tile_nib(sx, sy) != 0) ? 16'h7C00 + 16'(tile_nib(sx, sy)) : 16'h0123;
             endcase
             checked++;
             if (rgb !== expand(e)) begin
-                if (errors < 10) $display("  mode %0d (%0d,%0d): got %06h, expected %06h", mode, x_d, y_d, rgb, expand(e));
+                if (errors < 10) $display("  mode %0d (%0d,%0d): got %06h, expected %06h (sprite limit %0d, s0_pri %0d, tile_hi %0d)",
+                                          mode, x_d, y_d, rgb, expand(e), spr_line_px, s0_pri, tile_hi);
                 errors++;
             end
         end
@@ -249,6 +316,37 @@ module tb_line_compositor;
         bitmap_rank = 3'd1;
         layer_ctrl = 3'b001;
 
+        // スプライト: パレット (バンク 1)、タイル 1・2、OAM
+        for (int i = 0; i < 32; i++) begin
+            @(negedge clk_sys); pal_we = 1; pal_waddr = 9'(64 + i); pal_wdata = 16'h0300 + 16'(i);
+        end
+        @(negedge clk_sys); pal_we = 0;
+        for (int r = 0; r < 8; r++) begin
+            logic [31:0] w;
+            for (int i = 0; i < 8; i++) w[28 - 4 * i +: 4] = spr_nib(i, r);
+            @(negedge clk_sys); vram_we = 1; vram_waddr = PAT + 14'(8 + r); vram_wdata = w;
+            @(negedge clk_sys); vram_waddr = PAT + 14'(16 + r); vram_wdata = 32'h3333_3333;
+        end
+        @(negedge clk_sys); vram_we = 0;
+        write_oam();
+        write_map(32'h0);
+        layer_ctrl = 4'b1101;
+        check_frames(6, 2);           // スプライト 0 (低) はタイル (低) の上、スプライト 1 (高) より前
+        tile_hi = 1;
+        write_map(32'h8000_8000);
+        check_frames(6, 2);           // タイル (高) はスプライト 0 (低) の上、スプライト 1 (高) の下
+        s0_pri = 1;
+        write_oam();
+        check_frames(6, 2);           // スプライト 0 (高) が一番上
+        spr_line_px = 10'd23;
+        check_frames(6, 2);           // 上限 2 列: スプライト 1 の右の列は描かない
+        spr_line_px = 10'd8;
+        check_frames(6, 2);           // 上限 1 列: スプライト 0 だけ
+        spr_line_px = 10'd0;
+        check_frames(6, 2);           // 上限 0: スプライトなし
+        spr_line_px = 10'd320;
+        layer_ctrl = 4'b0001;
+
         // line_start の順番と、印 (次のライン 0 で 1 回だけ)
         if (line_order_errors != 0) begin $display("  line_start out of order: %0d", line_order_errors); errors++; end
         if (line_events < 8 * SRC_H) begin $display("  only %0d line_start", line_events); errors++; end
@@ -257,8 +355,10 @@ module tb_line_compositor;
         repeat (3) @(posedge frame_start);
         if (mark_flips - flips0 != 1) begin $display("  mark flips after one mark_req: %0d", mark_flips - flips0); errors++; end
 
-        // メモリが出力 2 ライン分 (22 x 2 x 20ns = 880ns) より遅いと間に合わず、UNDERFLOW が増える
-        latency = 200;
+        // ここまで (スプライトを含めて) 合成は毎ライン間に合っている
+        if (underflow_count != 0) begin $display("  underflow before the slow-memory test: %0d", underflow_count); errors++; end
+        // メモリが出力 2 ライン分 (40 x 2 x 20ns = 1,600ns) より遅いと間に合わず、UNDERFLOW が増える
+        latency = 400;
         @(posedge frame_start);
         @(posedge frame_start);
         if (underflow_count == 0) begin $display("  slow memory did not cause underflow"); errors++; end

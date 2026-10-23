@@ -508,6 +508,7 @@ def scenario(bridge, path, do_capture, out_dir):
     sc = gpu_model.load(path)
     kinds = []
     words, checks = gpu_model.expected(sc, kinds)
+    check_steps = [st for st in sc["steps"] if st["op"] in ("check", "check_marked")]
     vdp = Vdp(bridge)
     gpu = Gpu(vdp)
     control = vdp.read1(REGS["CONTROL"])
@@ -557,8 +558,10 @@ def scenario(bridge, path, do_capture, out_dir):
                 imgcmp.write_png(os.path.join(out_dir, f"{name}_capture.png"), w, h, cap)
                 imgcmp.write_png(os.path.join(out_dir, f"{name}_diff.png"), w, h, diff)
                 # 正しさは CRC で決める。キャプチャは「画面に出ているか」を見るだけなので 95% で合格にする
-                # (グラデーションの色変換の非線形や、細かいスプライトの縁の 4:2:2 のにじみで 99% を少し切ることがある)
-                r["capture"] = {"match_ratio": stats["match_ratio"], "ok": stats["match_ratio"] >= CAPTURE_OK}
+                # (グラデーションの色変換の非線形や、細かいスプライトの縁の 4:2:2 のにじみで 99% を少し切ることがある)。
+                # 1〜2 ピクセルの縞や市松で埋まった画面は、check の "capture_min" で下げる
+                need = check_steps[i].get("capture_min", CAPTURE_OK)
+                r["capture"] = {"match_ratio": stats["match_ratio"], "ok": stats["match_ratio"] >= need}
                 r["ok"] = r["ok"] and r["capture"]["ok"]
             results.append(r)
         under = (vdp.read1(REGS["UNDERFLOW"]) - under0) & 0xFF

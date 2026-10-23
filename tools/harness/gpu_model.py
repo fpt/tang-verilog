@@ -19,16 +19,20 @@ rtl/vdp/gpu.sv と同じ規則でコマンドを解釈し、表示される面�
       {"op": "reg", "name": "bg_color", "value": "#rrggbb"},   # 合成のレジスタ (LAYER_REGS の名前)
       {"op": "wait_line", "line": 100},          # 以降の reg がライン 100 から効く
       {"op": "wait_vblank", "mark": true},       # 以降の reg が次のフレームのライン 0 から効く。mark なら次のフレームに印
-      {"op": "check"},                           # ここで表示されている画面を比べる (レジスタは最後の値が全ラインに効いている前提)
+      {"op": "check"},                           # ここで表示されている画面を比べる (レジスタは最後の値が全ラインに効いている前提)。
+                                                 # "capture_min": 0.85 で実機のキャプチャの合格線を下げる (細かい模様の画面)
       {"op": "check_marked"},                    # 印を付けたフレーム (ラインごとのレジスタの変化込み) を比べる
       {"op": "vram_write", "addr": 0, "words": ["deadbeef", ...]},     # VRAM (ワードアドレス、16K ワードで折り返す)
       {"op": "pal_write", "index": 0, "colors": ["#rrggbb", ...]},      # パレット (0..511)
       {"op": "tiles", "kind": "demo", "addr": 0},                        # 下の tile_words (タイル 16 個 = 128 ワード)
       {"op": "tilemap", "kind": "demo", "addr": 14336, "w": 32, "h": 28},  # 下の map_entries
-      {"op": "palette", "kind": "demo", "index": 0, "count": 64, "offset": 0}   # 下の palette_colors
+      {"op": "palette", "kind": "demo", "index": 0, "count": 64, "offset": 0},  # 下の palette_colors
+      {"op": "oam_write", "addr": 0, "words": ["deadbeef", ...]},      # OAM (ワードアドレス、256 ワードで折り返す)
+      {"op": "oam", "sprites": [{"x": -4, "y": 10, "w": 2, "h": 1, "tile": 3, "hflip": false, "vflip": false,
+                                 "pal": 0, "pri": 0, "order": 0}, ...]}  # OAM 全体 (書かなかったエントリは無効)
   ]}
-タイル レイヤの形式は rtl/vdp/tile_layer.sv。VRAM とパレットは、印を付けたフレームの記録中には書かないこと
-(モデルは最後の内容で合成する)。
+タイル レイヤの形式は rtl/vdp/tile_layer.sv、スプライト (OAM) は rtl/vdp/sprite_layer.sv。VRAM・パレット・OAM は、
+印を付けたフレームの記録中には書かないこと (モデルは最後の内容で合成する)。
 色は "#rrggbb" (RGB565 に丸める) か、RGB565 の整数。
 """
 import json
@@ -39,16 +43,21 @@ SRC_W, SRC_H = fbmodel.SRC_W, fbmodel.SRC_H
 OP_NOP, OP_CLEAR, OP_FILL_RECT, OP_SWAP, OP_UPLOAD = 0x00, 0x01, 0x02, 0x03, 0x04
 OP_POINT, OP_DRAW_LINE, OP_CLIP, OP_BLIT = 0x05, 0x06, 0x07, 0x08
 OP_REG_WRITE, OP_WAIT_LINE, OP_WAIT_VBLANK = 0x09, 0x0A, 0x0B
-OP_VRAM_WRITE, OP_PAL_WRITE = 0x0C, 0x0D
+OP_VRAM_WRITE, OP_PAL_WRITE, OP_OAM_WRITE = 0x0C, 0x0D, 0x0F
 # 合成のレジスタ: 名前 -> (REG_WRITE の番号, ビットの幅のマスク)
 LAYER_REGS = {"bg_color": 0, "layer_ctrl": 1, "bitmap_key": 2, "tile_scroll_x": 3, "tile_scroll_y": 4,
-              "tile_map_base": 5, "tile_pat_base": 6, "tile_ctrl": 7, "bitmap_rank": 8}
-LAYER_MASK = {"bg_color": 0xFFFF, "layer_ctrl": 0x7, "bitmap_key": 0xFFFF, "tile_scroll_x": 0x3FF, "tile_scroll_y": 0x3FF,
-              "tile_map_base": 0x3FFF, "tile_pat_base": 0x3FFF, "tile_ctrl": 0x7F, "bitmap_rank": 0x7}
+              "tile_map_base": 5, "tile_pat_base": 6, "tile_ctrl": 7, "bitmap_rank": 8,
+              "spr_pat_base": 9, "spr_bank": 10, "spr_line_px": 11}
+LAYER_MASK = {"bg_color": 0xFFFF, "layer_ctrl": 0xF, "bitmap_key": 0xFFFF, "tile_scroll_x": 0x3FF, "tile_scroll_y": 0x3FF,
+              "tile_map_base": 0x3FFF, "tile_pat_base": 0x3FFF, "tile_ctrl": 0x7F, "bitmap_rank": 0x7,
+              "spr_pat_base": 0x3FFF, "spr_bank": 0x7, "spr_line_px": 0x3FF}
 LAYER_RESET = {"bg_color": 0x0000, "layer_ctrl": 0x01, "bitmap_key": 0x0000, "tile_scroll_x": 0, "tile_scroll_y": 0,
-               "tile_map_base": 0, "tile_pat_base": 0, "tile_ctrl": 0, "bitmap_rank": 1}
-# 合成の順位 (line_compositor.sv): 0 背景色、面 A のタイルは優先度ビットで 2 か 5、ビットマップは bitmap_rank
+               "tile_map_base": 0, "tile_pat_base": 0, "tile_ctrl": 0, "bitmap_rank": 1,
+               "spr_pat_base": 0, "spr_bank": 0, "spr_line_px": 320}
+# 合成の順位 (line_compositor.sv): 0 背景色、面 A のタイルは優先度ビットで 2 か 5、スプライトは 3 か 6、ビットマップは bitmap_rank
 RANK_A_LO, RANK_A_HI = 2, 5
+RANK_S_LO, RANK_S_HI = 3, 6
+OAM_WORDS = 256
 VRAM_WORDS = 16384
 BLIT_MAX_W = 512
 SPRITE_KEY = 0xF81F      # sprite_pixels が透過色に使う色 (#ff00ff)
@@ -110,6 +119,10 @@ def encode(step):
         return vram_write_words(step["addr"], map_words(map_entries(step["kind"], step["w"], step["h"])))
     if op == "palette":
         return pal_write_words(step["index"], palette_colors(step["kind"], step["count"], step.get("offset", 0)))
+    if op == "oam_write":
+        return oam_write_words(step["addr"], [int(w, 16) if isinstance(w, str) else w for w in step["words"]])
+    if op == "oam":
+        return oam_write_words(0, oam_words(step["sprites"]))
     if op in ("check", "check_marked"):
         return []
     raise ValueError(f"unknown op {op!r}")
@@ -122,6 +135,34 @@ def layer_reset_words():
 
 def vram_write_words(addr, words):
     return [OP_VRAM_WRITE << 24 | len(words), addr] + list(words)
+
+
+def oam_write_words(addr, words):
+    return [OP_OAM_WRITE << 24 | len(words), addr] + list(words)
+
+
+def oam_entry(sp):
+    """スプライト 1 つ (辞書) を OAM の 2 ワードに (sprite_layer.sv の形式)"""
+    w0 = (sp["x"] & 0x3FF | (sp["y"] & 0x3FF) << 16 | (sp.get("w", 1) - 1) << 26 | (sp.get("h", 1) - 1) << 28
+          | (1 if sp.get("order") else 0) << 30 | (0 if sp.get("enable", True) is False else 1) << 31)
+    w1 = (sp.get("tile", 0) & 0x7FF | (1 if sp.get("hflip") else 0) << 11 | (1 if sp.get("vflip") else 0) << 12
+          | (sp.get("pal", 0) & 3) << 13 | (1 if sp.get("pri") else 0) << 15)
+    return [w0, w1]
+
+
+def oam_words(sprites):
+    """OAM 全体 (128 エントリ)。sprites の後ろのエントリは無効"""
+    if len(sprites) > 128:
+        raise ValueError("more than 128 sprites")
+    out = []
+    for sp in sprites:
+        out += oam_entry(sp)
+    return out + [0] * (OAM_WORDS - len(out))
+
+
+def s10(v):
+    v &= 0x3FF
+    return v - 0x400 if v & 0x200 else v
 
 
 def pal_write_words(index, colors):
@@ -139,7 +180,17 @@ def tile_row_word(px):
 
 def tile_words(kind):
     """シナリオ用の決まったタイル (4bpp、1 タイル 8 ワード)
-      demo: 16 個。0 は全部透明、1 は塗りつぶし、ほかは形・グラデーション・左右上下が非対称な模様 (反転がわかる)"""
+      demo:  16 個。0 は全部透明、1 は塗りつぶし、ほかは形・グラデーション・左右上下が非対称な模様 (反転がわかる)
+      sheet: 64 個 (16 x 4 の表)。タイル t は demo の t % 16 で、不透明なピクセルの値を t // 16 ごとにずらす (行ごとに色が変わる)"""
+    if kind == "sheet":
+        demo = tile_words("demo")
+        out = []
+        for t in range(64):
+            for y in range(8):
+                w = demo[(t % 16) * 8 + y]
+                px = [(w >> (28 - 4 * i)) & 15 for i in range(8)]
+                out.append(tile_row_word([0 if v == 0 else (v - 1 + 3 * (t // 16)) % 15 + 1 for v in px]))
+        return out
     if kind != "demo":
         raise ValueError(f"unknown tiles {kind!r}")
     F = ["11111111", "11000000", "11000000", "11111100", "11000000", "11000000", "11000000", "00000000"]
@@ -315,6 +366,7 @@ class Model:
         self.regs = dict(LAYER_RESET)                 # 合成のレジスタ (今の値)
         self.vram = {}                                # VRAM: ワードアドレス -> 32bit (書いていないワードは None)
         self.pal = {}                                 # パレット: 番号 -> RGB565
+        self.oam = {}                                 # OAM: ワードアドレス -> 32bit
         # 印を付けたフレーム: {"line_regs": {ライン: レジスタ}, "fb_base": ..} と、記録中かどうか・今のライン
         self.marked = None
         self.recording = False
@@ -422,6 +474,11 @@ class Model:
                 for k in range(n):
                     self.vram[(addr + k) % VRAM_WORDS] = words[i + 2 + k]
                 i += 2 + n
+            elif op == OP_OAM_WRITE:
+                n, addr = w & 0xFFFFFF, words[i + 1]
+                for k in range(n):
+                    self.oam[(addr + k) % OAM_WORDS] = words[i + 2 + k]
+                i += 2 + n
             elif op == OP_PAL_WRITE:
                 n, index = w & 0xFFFFFF, words[i + 1]
                 for k in range(n):
@@ -470,11 +527,57 @@ class Model:
             out.append((self.pal[pi], e >> 15 & 1))
         return out
 
+    def oam_word(self, a):
+        w = self.oam.get(a)
+        if w is None:
+            raise ValueError(f"sprites read unwritten OAM word {a:#x}")
+        return w
+
+    def sprite_line(self, y, regs):
+        """sprite_layer.sv と同じ: ライン y に出るスプライトのピクセル (x, 色, 優先度) を出す順に。
+        OAM の順、ラインの上限は spr_line_px // 8 列 (画面の外の列も数える)"""
+        cols = regs["spr_line_px"] >> 3
+        bank = regs["spr_bank"]
+        out = []
+        for n in range(128):
+            w0 = self.oam_word(2 * n)
+            sx, sy = s10(w0), s10(w0 >> 16)
+            w, h, order = (w0 >> 26 & 3) + 1, (w0 >> 28 & 3) + 1, w0 >> 30 & 1
+            dy = y - sy
+            if not (w0 >> 31 and 0 <= dy < h * 8):
+                continue
+            w1 = self.oam_word(2 * n + 1)
+            first, hflip, vflip, pal, pri = w1 & 0x7FF, w1 >> 11 & 1, w1 >> 12 & 1, w1 >> 13 & 3, w1 >> 15 & 1
+            ry = h * 8 - 1 - dy if vflip else dy
+            for col in range(w):
+                if cols == 0:
+                    return out
+                cols -= 1
+                sc = w - 1 - col if hflip else col
+                if order:
+                    tile = ((first >> 4) + ry // 8) % 128 << 4 | (first + sc) % 16
+                else:
+                    tile = (first + sc * h + ry // 8) % 2048
+                row = self.vram_word(regs["spr_pat_base"] + tile * 8 + ry % 8)
+                for k in range(8):
+                    x = sx + col * 8 + k
+                    nib = row >> (28 - 4 * (7 - k if hflip else k)) & 15
+                    if 0 <= x < SRC_W and nib:
+                        pi = bank << 6 | pal << 4 | nib
+                        if pi not in self.pal:
+                            raise ValueError(f"sprites use unwritten palette entry {pi}")
+                        out.append((x, self.pal[pi], pri))
+        return out
+
     def compose_line(self, base, y, regs):
-        """line_compositor.sv と同じ: 順位の付いた作業ラインに、タイル → ビットマップの順に「順位が今より大きいときだけ」書く。
-        順位 0 (誰も書かなかった) は背景色"""
+        """line_compositor.sv と同じ: 順位の付いた作業ラインに、スプライト (空いているところだけ = OAM の前が勝つ) →
+        タイル → ビットマップの順に書く。タイルとビットマップは「順位が今より大きいときだけ」。順位 0 (誰も書かなかった) は背景色"""
         bg, ctrl, key = regs["bg_color"], regs["layer_ctrl"], regs["bitmap_key"]
         line = [(0, bg)] * SRC_W                  # (順位, 色)
+        if ctrl & 8:
+            for x, c, pri in self.sprite_line(y, regs):
+                if line[x][0] == 0:
+                    line[x] = (RANK_S_HI if pri else RANK_S_LO, c)
         if ctrl & 4:
             for x, t in enumerate(self.tile_line(y, regs)):
                 if t is not None:
