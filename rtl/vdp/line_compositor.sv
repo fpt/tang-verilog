@@ -5,14 +5,22 @@
 //         取り込み、順位の付いた作業ライン (ピクセルごとに {順位, 色}) に、レイヤごとのパスで書く。
 //         1. スプライト (有効なら): sprite_layer が OAM の順に出すピクセル。作業ラインがまだ空 (順位 0) のところだけ書くので、
 //            スプライト同士は優先度ビットによらず OAM の前のものが勝つ (メガドラ・SNES と同じ)。順位は優先度ビットで RANK_S_LO / RANK_S_HI
-//         2. タイル レイヤ (有効なら): tile_layer が出すピクセル。順位はタイルの優先度ビットで RANK_A_LO / RANK_A_HI
+//         2. タイルの面 (有効なら): 1 つの tile_layer を設定を変えて順に動かす。順位はタイルの優先度ビットで決まる
+//            a. 面 B: RANK_B_LO / RANK_B_HI
+//            b. 面 A: RANK_A_LO / RANK_A_HI。ウィンドウの範囲は書かない
+//            c. ウィンドウ (範囲があるラインだけ): 面 A と同じ順位で、ウィンドウの範囲だけ書く。スクロールしない 64 x 32 のマップ
+//               (win_map_base)。タイルの場所・パレットのバンク・エントリの並びは面 A のもの
+//            ウィンドウの範囲 (メガドラと同じ): win_v ([5] 下, [4:0] 位置 x 8 ライン) でラインの上 / 下、
+//            win_h ([5] 右, [4:0] 位置 x 16 ピクセル) で左 / 右。ラインが縦の範囲に入ればライン全体、でなければ横の範囲
 //         3. ビットマップ レイヤ (有効なら): SDRAM のフレームバッファの行をバーストで読む。順位は bitmap_rank (既定 1)。
 //            透過色が有効なら、透過色のピクセルは書かない
 //         4. 出力: 作業ラインをライン バッファに写し (順位 0 = どのレイヤも書かなかったところは背景色)、作業ラインを空に戻す
 //         2 と 3 は「不透明で、順位が今の値より大きいピクセルだけ」書くので、パスの順番によらず順位の高いものが残る (同じ順位なら先のパス)。
 //         順位 (3bit): 0 背景色、1 面 B (低)、2 面 A (低)、3 スプライト (低)、4 面 B (高)、5 面 A (高)、6 スプライト (高)。
-//         今のタイル レイヤは面 A。面 B は E4 でパスを足す。
-//   VRAM (16K ワード x 32bit) とパレット (512 x RGB565) はここに置き、読み出しのポートをスプライトとタイルのパスが順番に使う。
+//   横スクロールの表 (hs_mode != 0): ラインを始めるときに VRAM の hs_base + 番号 の 1 ワードを読み、[25:16] を面 A、[9:0] を面 B の
+//         横スクロールの値にする (メガドラの表をビッグエンディアンの 32bit ワードで読んだ並び。値の向きもメガドラと同じで、
+//         正の値で面が右に動く = scroll_x = -値)。番号は hs_mode 1: 0 (画面全体)、2: ライン & ~7 (8 ラインごと)、3: ライン
+//   VRAM (16K ワード x 32bit) とパレット (512 x RGB565) はここに置き、読み出しのポートを横スクロールの表・スプライト・タイルのパスが順番に使う。
 //   レジスタはラインの合成を始めるときに取り込むので、GPU の WAIT_LINE n のあとの REG_WRITE はライン n から効く。
 //   そのために、合成を始めるたびに line_start とライン番号 line_num を出す。
 //
@@ -40,15 +48,25 @@ module line_compositor #(
     input  logic [12:0] fb_base,          // 256 ワード単位。ライン 0 を合成し始めるときに取り込む
     output logic        base_latched,     // fb_base を取り込んだとき 1 クロック
     input  logic [15:0] bg_color,         // 背景色 (RGB565)
-    input  logic [3:0]  layer_ctrl,       // bit0: ビットマップ レイヤ有効, bit1: ビットマップの透過色を有効, bit2: タイル レイヤ有効,
-                                          // bit3: スプライト有効
+    input  logic [4:0]  layer_ctrl,       // bit0: ビットマップ レイヤ有効, bit1: ビットマップの透過色を有効, bit2: 面 A (とウィンドウ) 有効,
+                                          // bit3: スプライト有効, bit4: 面 B 有効
     input  logic [15:0] bitmap_key,       // ビットマップの透過色
     input  logic [2:0]  bitmap_rank,      // ビットマップ レイヤの順位 (既定 1)
-    input  logic [9:0]  tile_scroll_x,    // タイル レイヤ (tile_layer.sv)
+    input  logic [9:0]  tile_scroll_x,    // 面 A (tile_layer.sv)
     input  logic [9:0]  tile_scroll_y,
     input  logic [13:0] tile_map_base,
     input  logic [13:0] tile_pat_base,
-    input  logic [6:0]  tile_ctrl,
+    input  logic [7:0]  tile_ctrl,
+    input  logic [9:0]  tileb_scroll_x,   // 面 B
+    input  logic [9:0]  tileb_scroll_y,
+    input  logic [13:0] tileb_map_base,
+    input  logic [13:0] tileb_pat_base,
+    input  logic [7:0]  tileb_ctrl,
+    input  logic [5:0]  win_h,            // ウィンドウ: {右, 位置 x 16 ピクセル}
+    input  logic [5:0]  win_v,            //             {下, 位置 x 8 ライン}
+    input  logic [13:0] win_map_base,
+    input  logic [1:0]  hs_mode,          // 横スクロールの表: 0 なし (レジスタ)、1 画面全体、2 8 ラインごと、3 ラインごと
+    input  logic [13:0] hs_base,
     input  logic [13:0] spr_pat_base,     // スプライト (sprite_layer.sv)
     input  logic [2:0]  spr_bank,
     input  logic [6:0]  spr_line_cols,
@@ -79,7 +97,8 @@ module line_compositor #(
 );
     localparam int WORDS = SRC_W / 2;
     localparam int VA_W  = $clog2(VRAM_WORDS);
-    localparam logic [2:0] RANK_A_LO = 3'd2, RANK_A_HI = 3'd5, RANK_S_LO = 3'd3, RANK_S_HI = 3'd6;
+    localparam logic [2:0] RANK_B_LO = 3'd1, RANK_B_HI = 3'd4, RANK_A_LO = 3'd2, RANK_A_HI = 3'd5,
+                           RANK_S_LO = 3'd3, RANK_S_HI = 3'd6;
 
     // --- ライン バッファ (2 ライン x 256 ワード)。書き込みは clk_sys、読み出しは clk_pix ---
     logic [31:0] line_buf [0:511];
@@ -140,7 +159,8 @@ module line_compositor #(
         wl_q_odd  <= wl_odd[wl_rd_addr];
     end
 
-    typedef enum logic [2:0] {P_IDLE, P_SPRITE, P_TILE, P_ISSUE, P_BITMAP, P_OUT_PRE, P_OUT} phase_t;
+    typedef enum logic [1:0] {TP_B, TP_A, TP_W, TP_NONE} tpass_t;      // タイルのパス
+    typedef enum logic [3:0] {P_IDLE, P_HS, P_HS_DATA, P_SPRITE, P_TILE, P_ISSUE, P_BITMAP, P_OUT_PRE, P_OUT} phase_t;
     phase_t phase;
 
     logic [2:0]  req_s;
@@ -151,16 +171,29 @@ module line_compositor #(
     logic [7:0]  oidx;           // 出力のパスで書くワード
     // このラインのレジスタ (合成を始めるときに取り込む)
     logic [15:0] l_bg, l_key;
-    logic        l_key_en, l_bm_en, l_tile_en;
+    logic        l_key_en, l_bm_en, l_tile_en, l_b_en, l_spr_en;
     logic [2:0]  l_bm_rank;
     logic [9:0]  l_sx, l_sy;
     logic [13:0] l_map, l_pat;
-    logic [6:0]  l_tctrl;
+    logic [7:0]  l_tctrl;
+    logic [9:0]  l_bsx, l_bsy;
+    logic [13:0] l_bmap, l_bpat;
+    logic [7:0]  l_bctrl;
+    logic [5:0]  l_wh, l_wv;
+    logic [13:0] l_wmap;
+    logic [1:0]  l_hs_mode;
+    logic [13:0] l_hs_base;
+    logic [9:0]  hs_a, hs_b;     // 横スクロールの表から読んだ値
     logic [13:0] l_spat;
     logic [2:0]  l_sbank;
     logic [6:0]  l_scols;
     logic [20:0] l_addr;         // ビットマップの行のアドレス
     logic        t_start, t_busy;
+    // 動かしているタイルのパス。yosys の FSM の抽出が符号を付け直すと $buf が残って nextpnr が置けないので、ふつうのレジスタのままにする
+    (* fsm_encoding = "none" *) tpass_t tpass;
+    logic [9:0]  t_sx, t_sy;
+    logic [13:0] t_map, t_pat;
+    logic [7:0]  t_ctrl;
     logic        t_valid, t_opaque, t_pri;
     logic [7:0]  t_next;
     logic [8:0]  t_x;
@@ -173,14 +206,22 @@ module line_compositor #(
 
     assign busy = phase != P_IDLE;
 
-    // VRAM とパレット。読み出しはスプライトのパスのあいだ sprite_layer、それ以外は tile_layer
+    // VRAM とパレット。読み出しは 横スクロールの表 (P_HS)、スプライトのパスのあいだ sprite_layer、それ以外は tile_layer
     logic [31:0] vram [0:VRAM_WORDS-1];
     logic [15:0] pal  [0:511];
     logic [13:0] vram_raddr, t_vram_raddr, s_vram_raddr;
     logic [8:0]  pal_raddr, t_pal_raddr, s_pal_raddr;
     logic [31:0] vram_q;
     logic [15:0] pal_q;
-    assign vram_raddr = (phase == P_SPRITE) ? s_vram_raddr : t_vram_raddr;
+    logic [13:0] hs_addr;
+    always_comb begin
+        unique case (l_hs_mode)
+            2'd2:    hs_addr = l_hs_base + 14'({line_num[7:3], 3'b000});
+            2'd3:    hs_addr = l_hs_base + 14'(line_num);
+            default: hs_addr = l_hs_base;
+        endcase
+    end
+    assign vram_raddr = (phase == P_SPRITE) ? s_vram_raddr : (phase == P_HS) ? hs_addr : t_vram_raddr;
     assign pal_raddr  = (phase == P_SPRITE) ? s_pal_raddr  : t_pal_raddr;
 
     always_ff @(posedge clk_sys) begin
@@ -203,10 +244,53 @@ module line_compositor #(
     tile_layer #(.SRC_W(SRC_W)) u_tile (
         .clk(clk_sys), .rst(rst_sys),
         .vram_raddr(t_vram_raddr), .vram_q, .pal_raddr(t_pal_raddr), .pal_q,
-        .start(t_start), .line(line_num), .scroll_x(l_sx), .scroll_y(l_sy), .map_base(l_map), .pat_base(l_pat),
-        .ctrl(l_tctrl), .busy(t_busy), .next_word(t_next),
+        .start(t_start), .line(line_num), .scroll_x(t_sx), .scroll_y(t_sy), .map_base(t_map), .pat_base(t_pat),
+        .ctrl(t_ctrl), .busy(t_busy), .next_word(t_next),
         .px_valid(t_valid), .px_x(t_x), .px_opaque(t_opaque), .px_pri(t_pri), .px_color(t_color)
     );
+
+    // タイルのパスごとの設定 (パスのあいだは変わらない)
+    logic hs_on;
+    assign hs_on = l_hs_mode != 2'd0;
+    always_comb begin
+        unique case (tpass)
+            TP_B: begin
+                t_sx = hs_on ? 10'd0 - hs_b : l_bsx;  t_sy = l_bsy;
+                t_map = l_bmap;  t_pat = l_bpat;  t_ctrl = l_bctrl;
+            end
+            TP_W: begin
+                t_sx = '0;  t_sy = '0;
+                t_map = l_wmap;  t_pat = l_pat;  t_ctrl = {l_tctrl[7:4], 2'd0, 2'd1};    // 64 x 32、面 A のバンクと並び
+            end
+            default: begin
+                t_sx = hs_on ? 10'd0 - hs_a : l_sx;  t_sy = l_sy;
+                t_map = l_map;  t_pat = l_pat;  t_ctrl = l_tctrl;
+            end
+        endcase
+    end
+
+    // ウィンドウの範囲
+    logic [8:0] win_h16;
+    logic [7:0] win_v8;
+    logic       win_line, win_run, t_in_win;
+    assign win_h16  = {l_wh[4:0], 4'b0};
+    assign win_v8   = {l_wv[4:0], 3'b0};
+    assign win_line = l_wv[5] ? line_num >= win_v8 : line_num < win_v8;
+    assign win_run  = win_line || (l_wh[5] ? win_h16 < 9'(SRC_W) : win_h16 != 9'd0);
+    assign t_in_win = win_line || (l_wh[5] ? t_x >= win_h16 : t_x < win_h16);
+
+    // 次のタイルのパス: B → A → ウィンドウ の順に、有効なもの
+    tpass_t     tp_first, tp_after;
+    logic       en_w;
+    assign en_w     = l_tile_en && win_run;
+    assign tp_first = l_b_en ? TP_B : l_tile_en ? TP_A : en_w ? TP_W : TP_NONE;
+    always_comb begin
+        unique case (tpass)
+            TP_B:    tp_after = l_tile_en ? TP_A : en_w ? TP_W : TP_NONE;
+            TP_A:    tp_after = en_w ? TP_W : TP_NONE;
+            default: tp_after = TP_NONE;
+        endcase
+    end
 
     always_ff @(posedge clk_sys) req_s <= {req_s[1:0], req_toggle};
 
@@ -223,8 +307,9 @@ module line_compositor #(
 
     // 作業ラインへの書き込み
     logic [2:0] t_rank, s_rank;
-    logic       bm_lo_ok, bm_hi_ok;
-    assign t_rank   = t_pri ? RANK_A_HI : RANK_A_LO;
+    logic       t_ok, bm_lo_ok, bm_hi_ok;
+    assign t_rank   = (tpass == TP_B) ? (t_pri ? RANK_B_HI : RANK_B_LO) : (t_pri ? RANK_A_HI : RANK_A_LO);
+    assign t_ok     = t_valid && t_opaque && (tpass == TP_A ? !t_in_win : tpass == TP_W ? t_in_win : 1'b1);
     assign s_rank   = s_pri ? RANK_S_HI : RANK_S_LO;
     assign bm_lo_ok = !(l_key_en && mem_rdata[15:0] == l_key) && l_bm_rank > wl_q_even[18:16];
     assign bm_hi_ok = !(l_key_en && mem_rdata[31:16] == l_key) && l_bm_rank > wl_q_odd[18:16];
@@ -242,8 +327,8 @@ module line_compositor #(
             P_TILE: begin
                 wl_wa_even = t_x[8:1];  wl_wd_even = {t_rank, t_color};
                 wl_wa_odd  = t_x[8:1];  wl_wd_odd  = {t_rank, t_color};
-                wl_we_even = t_valid && !t_x[0] && t_opaque && t_rank > wl_q_even[18:16];
-                wl_we_odd  = t_valid &&  t_x[0] && t_opaque && t_rank > wl_q_odd[18:16];
+                wl_we_even = t_ok && !t_x[0] && t_rank > wl_q_even[18:16];
+                wl_we_odd  = t_ok &&  t_x[0] && t_rank > wl_q_odd[18:16];
             end
             P_BITMAP: begin
                 wl_we_even = mem_rvalid && bm_lo_ok;
@@ -280,6 +365,7 @@ module line_compositor #(
             mark_toggle     <= 1'b0;
             t_start         <= 1'b0;
             s_start         <= 1'b0;
+            tpass           <= TP_A;
         end else begin
             base_latched <= 1'b0;
             line_start   <= 1'b0;
@@ -304,6 +390,18 @@ module line_compositor #(
                     l_key_en   <= layer_ctrl[1];
                     l_bm_en    <= layer_ctrl[0];
                     l_tile_en  <= layer_ctrl[2];
+                    l_spr_en   <= layer_ctrl[3];
+                    l_b_en     <= layer_ctrl[4];
+                    l_bsx      <= tileb_scroll_x;
+                    l_bsy      <= tileb_scroll_y;
+                    l_bmap     <= tileb_map_base;
+                    l_bpat     <= tileb_pat_base;
+                    l_bctrl    <= tileb_ctrl;
+                    l_wh       <= win_h;
+                    l_wv       <= win_v;
+                    l_wmap     <= win_map_base;
+                    l_hs_mode  <= hs_mode;
+                    l_hs_base  <= hs_base;
                     l_bm_rank  <= bitmap_rank;
                     l_sx       <= tile_scroll_x;
                     l_sy       <= tile_scroll_y;
@@ -323,10 +421,18 @@ module line_compositor #(
                             mark_pending <= 1'b0;
                         end
                     end
-                    if (layer_ctrl[3]) begin
+                    phase <= P_HS;
+                end
+                // 横スクロールの表を読む (使わないときも読むだけ読む)
+                P_HS: phase <= P_HS_DATA;
+                P_HS_DATA: begin
+                    hs_a <= vram_q[25:16];
+                    hs_b <= vram_q[9:0];
+                    if (l_spr_en) begin
                         s_start <= 1'b1;
                         phase   <= P_SPRITE;
-                    end else if (layer_ctrl[2]) begin
+                    end else if (tp_first != TP_NONE) begin
+                        tpass   <= tp_first;
                         t_start <= 1'b1;
                         phase   <= P_TILE;
                     end else begin
@@ -335,14 +441,22 @@ module line_compositor #(
                 end
                 // s_start / t_start のクロックの busy はまだ 0 (次のクロックから busy)
                 P_SPRITE: if (!s_start && !s_busy) begin
-                    if (l_tile_en) begin
+                    if (tp_first != TP_NONE) begin
+                        tpass   <= tp_first;
                         t_start <= 1'b1;
                         phase   <= P_TILE;
                     end else begin
                         phase <= P_ISSUE;
                     end
                 end
-                P_TILE: if (!t_start && !t_busy) phase <= P_ISSUE;
+                P_TILE: if (!t_start && !t_busy) begin
+                    if (tp_after != TP_NONE) begin
+                        tpass   <= tp_after;
+                        t_start <= 1'b1;
+                    end else begin
+                        phase <= P_ISSUE;
+                    end
+                end
                 P_ISSUE: begin
                     if (l_bm_en) begin
                         mem_req  <= 1'b1;

@@ -11,7 +11,7 @@
 //   0x46 DRAW_BASE  RW 描くフレームバッファの先頭 (同じ単位、0x46..0x47)。既定 256 (= 0x040000 バイト)
 //   0x48 BG_COLOR   RW 背景色 (RGB565、0x48..0x49)。既定 0。line_compositor がラインごとに取り込む
 //   0x4A LAYER_CTRL RW bit0: ビットマップ レイヤ有効 (既定 1), bit1: ビットマップの透過色を有効 (既定 0), bit2: タイル レイヤ有効 (既定 0),
-//                      bit3: スプライト有効 (既定 0)
+//                      bit3: スプライト有効 (既定 0), bit4: 面 B 有効 (既定 0)
 //   0x4C BITMAP_KEY RW ビットマップの透過色 (RGB565、0x4C..0x4D)。既定 0
 //
 // コマンド (先頭ワードの [31:24] がコマンド番号。座標の組は {y[15:0], x[15:0]}):
@@ -29,12 +29,16 @@
 //                   次のワードにソースのワードアドレス、次のワード {h, w} (w は 512 まで)、次のワード {y, x} (描く位置、符号付き)、
 //                   次のワードにソースの 1 行のワード数 (stride)。ソースは SDRAM の RGB565 の画像で、各行はワードの先頭 (偶数のピクセル) から始まる。
 //                   透過のときは透過色のピクセルを書かない。クリップ矩形の外は描かない
-//   0x09 REG_WRITE  [23:16] レジスタ番号、[15:0] 値。合成のレジスタを書く (タイル レイヤの意味は tile_layer.sv)。
+//   0x09 REG_WRITE  [23:16] レジスタ番号、[15:0] 値。合成のレジスタを書く (タイル レイヤの意味は tile_layer.sv、
+//                   ウィンドウと横スクロールの表は line_compositor.sv)。
 //                   0: BG_COLOR, 1: LAYER_CTRL, 2: BITMAP_KEY, 3: TILE_SCROLL_X (10bit), 4: TILE_SCROLL_Y (10bit),
-//                   5: TILE_MAP_BASE (VRAM のワードアドレス, 14bit), 6: TILE_PAT_BASE (同じ), 7: TILE_CTRL (7bit),
+//                   5: TILE_MAP_BASE (VRAM のワードアドレス, 14bit), 6: TILE_PAT_BASE (同じ), 7: TILE_CTRL (8bit) (3〜7 は面 A),
 //                   8: BITMAP_RANK (3bit、合成の順位。line_compositor.sv)、9: SPR_PAT_BASE (VRAM のワードアドレス, 14bit)、
 //                   10: SPR_BANK (3bit、スプライトのパレットのバンク)、11: SPR_LINE_PX (10bit、1 ラインのスプライトのピクセル数の上限。
-//                   8 の倍数に切り捨て。sprite_layer.sv)。どれも既定 0 (LAYER_CTRL と BITMAP_RANK は 1、SPR_LINE_PX は 320)
+//                   8 の倍数に切り捨て。sprite_layer.sv)、12〜16: 面 B の TILEB_SCROLL_X / TILEB_SCROLL_Y / TILEB_MAP_BASE /
+//                   TILEB_PAT_BASE / TILEB_CTRL (面 A と同じ形)、17: WIN_H ([7] 右, [4:0] 位置 x 16 ピクセル)、
+//                   18: WIN_V ([7] 下, [4:0] 位置 x 8 ライン)、19: WIN_MAP_BASE、20: HSCROLL_MODE (2bit)、21: HSCROLL_BASE (14bit)。
+//                   どれも既定 0 (LAYER_CTRL と BITMAP_RANK は 1、SPR_LINE_PX は 320)
 //   0x0A WAIT_LINE  [7:0] ライン n。以降の REG_WRITE がライン n から効くところ (ライン n-1 の合成が始まったところ) まで待つ
 //   0x0B WAIT_VBLANK  WAIT_LINE 0 と同じ (以降の REG_WRITE が次のフレームのライン 0 から効く)。
 //                   [0] = 1 なら、次のフレーム (このあとライン 0 から合成するフレーム) に印を付け、その CRC を MARK_CRC に残す
@@ -82,14 +86,24 @@ module gpu #(
     input  logic        base_latched,    // line_compositor が fb_base を取り込んだとき 1 クロック
     // 合成のレジスタ (line_compositor がラインごとに取り込む)
     output logic [15:0] bg_color,
-    output logic [3:0]  layer_ctrl,
+    output logic [4:0]  layer_ctrl,
     output logic [15:0] bitmap_key,
     output logic [2:0]  bitmap_rank,
     output logic [9:0]  tile_scroll_x,
     output logic [9:0]  tile_scroll_y,
     output logic [13:0] tile_map_base,
     output logic [13:0] tile_pat_base,
-    output logic [6:0]  tile_ctrl,
+    output logic [7:0]  tile_ctrl,
+    output logic [9:0]  tileb_scroll_x,
+    output logic [9:0]  tileb_scroll_y,
+    output logic [13:0] tileb_map_base,
+    output logic [13:0] tileb_pat_base,
+    output logic [7:0]  tileb_ctrl,
+    output logic [5:0]  win_h,           // {右, 位置}
+    output logic [5:0]  win_v,           // {下, 位置}
+    output logic [13:0] win_map_base,
+    output logic [1:0]  hs_mode,
+    output logic [13:0] hs_base,
     output logic [13:0] spr_pat_base,
     output logic [2:0]  spr_bank,
     output logic [6:0]  spr_line_cols,   // SPR_LINE_PX / 8
@@ -300,7 +314,7 @@ module gpu #(
             cx0 <= 9'd0; cx1 <= 9'(SRC_W - 1);
             cy0 <= 8'd0; cy1 <= 8'(SRC_H - 1);
             bg_color    <= 16'h0000;
-            layer_ctrl  <= 4'b0001;
+            layer_ctrl  <= 5'b00001;
             bitmap_key  <= 16'h0000;
             bitmap_rank <= 3'd1;
             tile_scroll_x <= '0;
@@ -308,6 +322,16 @@ module gpu #(
             tile_map_base <= '0;
             tile_pat_base <= '0;
             tile_ctrl     <= '0;
+            tileb_scroll_x <= '0;
+            tileb_scroll_y <= '0;
+            tileb_map_base <= '0;
+            tileb_pat_base <= '0;
+            tileb_ctrl     <= '0;
+            win_h          <= '0;
+            win_v          <= '0;
+            win_map_base   <= '0;
+            hs_mode        <= '0;
+            hs_base        <= '0;
             spr_pat_base  <= '0;
             spr_bank      <= '0;
             spr_line_cols <= 7'd40;
@@ -332,7 +356,7 @@ module gpu #(
                     7'h47: draw_base[12:8] <= wdata[4:0];
                     7'h48: bg_color[7:0]   <= wdata;
                     7'h49: bg_color[15:8]  <= wdata;
-                    7'h4A: layer_ctrl      <= wdata[3:0];
+                    7'h4A: layer_ctrl      <= wdata[4:0];
                     7'h4C: bitmap_key[7:0] <= wdata;
                     7'h4D: bitmap_key[15:8] <= wdata;
                     default: ;
@@ -447,17 +471,27 @@ module gpu #(
                         OP_REG_WRITE: begin
                             unique case (flags_raw)
                                 8'd0: bg_color   <= color;
-                                8'd1: layer_ctrl <= color[3:0];
+                                8'd1: layer_ctrl <= color[4:0];
                                 8'd2: bitmap_key <= color;
                                 8'd3: tile_scroll_x <= color[9:0];
                                 8'd4: tile_scroll_y <= color[9:0];
                                 8'd5: tile_map_base <= color[13:0];
                                 8'd6: tile_pat_base <= color[13:0];
-                                8'd7: tile_ctrl     <= color[6:0];
+                                8'd7: tile_ctrl     <= color[7:0];
                                 8'd8: bitmap_rank   <= color[2:0];
                                 8'd9: spr_pat_base  <= color[13:0];
                                 8'd10: spr_bank     <= color[2:0];
                                 8'd11: spr_line_cols <= color[9:3];
+                                8'd12: tileb_scroll_x <= color[9:0];
+                                8'd13: tileb_scroll_y <= color[9:0];
+                                8'd14: tileb_map_base <= color[13:0];
+                                8'd15: tileb_pat_base <= color[13:0];
+                                8'd16: tileb_ctrl     <= color[7:0];
+                                8'd17: win_h          <= {color[7], color[4:0]};
+                                8'd18: win_v          <= {color[7], color[4:0]};
+                                8'd19: win_map_base   <= color[13:0];
+                                8'd20: hs_mode        <= color[1:0];
+                                8'd21: hs_base        <= color[13:0];
                                 default: error <= 1'b1;
                             endcase
                         end
@@ -741,7 +775,7 @@ module gpu #(
             7'h47:    rdata = {3'b0, draw_base[12:8]};
             7'h48:    rdata = bg_color[7:0];
             7'h49:    rdata = bg_color[15:8];
-            7'h4A:    rdata = {4'b0, layer_ctrl};
+            7'h4A:    rdata = {3'b0, layer_ctrl};
             7'h4C:    rdata = bitmap_key[7:0];
             7'h4D:    rdata = bitmap_key[15:8];
             default:  rdata = 8'h00;

@@ -2,11 +2,12 @@
 //
 //   VRAM とパレット: line_compositor が持ち、読み出しのポート (アドレスを出した次のクロックにデータ) をスプライトのパスと順番に使う
 //   タイル:   8x8 ピクセル、4bpp。1 行が 1 ワードで、ピクセル i (左から) は [31-4i -: 4]。タイル t の行 r は pat_base + t*8 + r
-//   マップ:   1 エントリ 16bit、1 ワードに 2 つ (下位が偶数の列)。列 c、行 r のエントリは map_base + (r * 幅 + c) / 2。
+//   マップ:   1 エントリ 16bit、1 ワードに 2 つ (下位が偶数の列。ctrl[7] = 1 なら上位が偶数の列 = メガドラの VRAM をビッグエンディアンの
+//             32bit ワードで読んだ並び)。列 c、行 r のエントリは map_base + (r * 幅 + c) / 2。
 //             [10:0] タイル番号、[11] 左右反転、[12] 上下反転、[14:13] パレット、[15] 優先度 (px_pri に出す)
 //   色:       ピクセルの値 0 は透明 (下のレイヤが見える)。それ以外はパレットの {ctrl[6:4], エントリのパレット, 値}
 //   ctrl:     [1:0] マップの幅 (0: 32, 1: 64, 2: 128 タイル)、[3:2] 高さ (0: 32, 1: 64, 2: 128, 3: 28 タイル = SMS)、
-//             [6:4] パレットのバンク
+//             [6:4] パレットのバンク、[7] マップのエントリの並び (上を見よ)
 //   スクロール: 画面のピクセル (x, line) は、マップのピクセル ((x + scroll_x) mod 幅, (line + scroll_y) mod 高さ)。
 //             高さ 28 タイル (224 ピクセル) のときは scroll_y < 224 にする
 //
@@ -34,7 +35,7 @@ module tile_layer #(
     input  logic [9:0]  scroll_y,
     input  logic [13:0] map_base,
     input  logic [13:0] pat_base,
-    input  logic [6:0]  ctrl,
+    input  logic [7:0]  ctrl,
     output logic        busy,
     // ピクセルの出力
     output logic [7:0]  next_word,
@@ -106,7 +107,7 @@ module tile_layer #(
     end
 
     logic [15:0] entry;
-    assign entry = col_odd ? vram_q[31:16] : vram_q[15:0];
+    assign entry = (col_odd ^ ctrl[7]) ? vram_q[31:16] : vram_q[15:0];
 
     logic [2:0] pi;               // 反転したあとのタイルの中の x
     logic [3:0] nib;

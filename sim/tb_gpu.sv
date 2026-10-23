@@ -3,7 +3,7 @@
 // DRAW_LINE (8 方向・水平・垂直・1 点・画面の外から)、POINT、CLIP (CLEAR には効かない)、
 // BLIT (偶数 / 奇数の位置、左右・上下反転、透過、画面の外、クリップ、SDRAM の行をまたぐソース)、
 // 合成のレジスタ (REG_WRITE)、WAIT_LINE / WAIT_VBLANK (印)、READY、VRAM_WRITE / PAL_WRITE とタイル レイヤのレジスタ (E2)、
-//   OAM_WRITE とスプライトのレジスタ (E3) を確認
+//   OAM_WRITE とスプライトのレジスタ (E3)、面 B・ウィンドウ・横スクロールの表のレジスタ (E4) を確認
 `timescale 1ns/1ps
 module tb_gpu;
     localparam int SRC_W = 320, SRC_H = 16, FIFO_WORDS = 16;
@@ -15,14 +15,19 @@ module tb_gpu;
     logic        base_latched = 0;
     logic [12:0] fb_base;
     logic [15:0] bg_color, bitmap_key;
-    logic [3:0]  layer_ctrl;
+    logic [4:0]  layer_ctrl;
+    logic [9:0]  tileb_scroll_x, tileb_scroll_y;
+    logic [13:0] tileb_map_base, tileb_pat_base, win_map_base, hs_base;
+    logic [7:0]  tileb_ctrl;
+    logic [5:0]  win_h, win_v;
+    logic [1:0]  hs_mode;
     logic [2:0]  bitmap_rank, spr_bank;
     logic [13:0] spr_pat_base;
     logic [6:0]  spr_line_cols;
     logic        oam_we;
     logic [9:0]  tile_scroll_x, tile_scroll_y;
     logic [13:0] tile_map_base, tile_pat_base, vram_waddr;
-    logic [6:0]  tile_ctrl;
+    logic [7:0]  tile_ctrl;
     logic        vram_we, pal_we;
     logic [31:0] vram_wdata;
     logic [8:0]  pal_waddr;
@@ -52,6 +57,7 @@ module tb_gpu;
         .fb_base, .base_latched, .bg_color, .layer_ctrl, .bitmap_key, .bitmap_rank,
         .tile_scroll_x, .tile_scroll_y, .tile_map_base, .tile_pat_base, .tile_ctrl,
         .spr_pat_base, .spr_bank, .spr_line_cols, .oam_we,
+        .tileb_scroll_x, .tileb_scroll_y, .tileb_map_base, .tileb_pat_base, .tileb_ctrl, .win_h, .win_v, .win_map_base, .hs_mode, .hs_base,
         .vram_we, .vram_waddr, .vram_wdata, .pal_we, .pal_waddr, .pal_wdata,
         .mark_req, .line_start, .line_num, .ready
     );
@@ -409,18 +415,18 @@ module tb_gpu;
         check_all("BLIT with clip");
 
         // ---- 合成のレジスタと WAIT_LINE / WAIT_VBLANK (E1) ----
-        if (bg_color !== 16'h0000 || layer_ctrl !== 4'b0001 || bitmap_key !== 16'h0000) begin
+        if (bg_color !== 16'h0000 || layer_ctrl !== 5'b00001 || bitmap_key !== 16'h0000) begin
             $display("  layer registers after reset: %04h %b %04h", bg_color, layer_ctrl, bitmap_key); errors++;
         end
         cmd(32'h0900_1234); cmd(32'h0901_0002); cmd(32'h0902_5678);
         wait_idle();
-        if (bg_color !== 16'h1234 || layer_ctrl !== 4'b0010 || bitmap_key !== 16'h5678) begin
+        if (bg_color !== 16'h1234 || layer_ctrl !== 5'b00010 || bitmap_key !== 16'h5678) begin
             $display("  REG_WRITE: %04h %b %04h", bg_color, layer_ctrl, bitmap_key); errors++;
         end
         rd(7'h48, f0); rd(7'h49, f1);
         if ({f1, f0} != 16'h1234) begin $display("  BG_COLOR read back: %04h", {f1, f0}); errors++; end
         wr(7'h4A, 8'h01);
-        if (layer_ctrl !== 4'b0001) begin $display("  LAYER_CTRL host write: %b", layer_ctrl); errors++; end
+        if (layer_ctrl !== 5'b00001) begin $display("  LAYER_CTRL host write: %b", layer_ctrl); errors++; end
         // WAIT_LINE 5 のあとの REG_WRITE は、ライン 4 の合成が始まったあとで効く
         lines_on = 1;
         cmd(32'h0A00_0005); cmd(32'h0900_7777);
@@ -453,14 +459,14 @@ module tb_gpu;
         // 値は各レジスタの幅に切る
         cmd(32'h0901_FFFF); cmd(32'h0903_FC05); cmd(32'h0904_0123); cmd(32'h0905_FFFF); cmd(32'h0906_2000); cmd(32'h0907_00FF);
         wait_idle();
-        if (layer_ctrl !== 4'b1111 || tile_scroll_x !== 10'h005 || tile_scroll_y !== 10'h123 || tile_map_base !== 14'h3FFF ||
-            tile_pat_base !== 14'h2000 || tile_ctrl !== 7'h7F) begin
+        if (layer_ctrl !== 5'b11111 || tile_scroll_x !== 10'h005 || tile_scroll_y !== 10'h123 || tile_map_base !== 14'h3FFF ||
+            tile_pat_base !== 14'h2000 || tile_ctrl !== 8'hFF) begin
             $display("  tile REG_WRITE: %b %h %h %h %h %h", layer_ctrl, tile_scroll_x, tile_scroll_y, tile_map_base,
                      tile_pat_base, tile_ctrl);
             errors++;
         end
         rd(7'h4A, f0);
-        if (f0 != 8'h0F) begin $display("  LAYER_CTRL read back: %h", f0); errors++; end
+        if (f0 != 8'h1F) begin $display("  LAYER_CTRL read back: %h", f0); errors++; end
         cmd(32'h0908_FFFE);
         wait_idle();
         if (bitmap_rank !== 3'd6) begin $display("  BITMAP_RANK: %0d", bitmap_rank); errors++; end
@@ -476,6 +482,22 @@ module tb_gpu;
             $display("  sprite REG_WRITE: %h %h %0d", spr_pat_base, spr_bank, spr_line_cols); errors++;
         end
         cmd(32'h0909_0000); cmd(32'h090A_0000); cmd(32'h090B_0140);
+        // 面 B・ウィンドウ・横スクロールの表のレジスタ (E4)
+        if (tileb_scroll_x !== 0 || tileb_scroll_y !== 0 || tileb_map_base !== 0 || tileb_pat_base !== 0 || tileb_ctrl !== 0 ||
+            win_h !== 0 || win_v !== 0 || win_map_base !== 0 || hs_mode !== 0 || hs_base !== 0) begin
+            $display("  plane B / window / hscroll registers after reset"); errors++;
+        end
+        cmd(32'h090C_FC07); cmd(32'h090D_0101); cmd(32'h090E_FFFF); cmd(32'h090F_1234); cmd(32'h0910_01A5);
+        cmd(32'h0911_00FF); cmd(32'h0912_0063); cmd(32'h0913_2C00); cmd(32'h0914_FFFE); cmd(32'h0915_3F00);
+        wait_idle();
+        if (tileb_scroll_x !== 10'h007 || tileb_scroll_y !== 10'h101 || tileb_map_base !== 14'h3FFF || tileb_pat_base !== 14'h1234 ||
+            tileb_ctrl !== 8'hA5 || win_h !== 6'b111111 || win_v !== 6'b000011 || win_map_base !== 14'h2C00 || hs_mode !== 2'd2 ||
+            hs_base !== 14'h3F00) begin
+            $display("  plane B / window / hscroll REG_WRITE: %h %h %h %h %h %b %b %h %0d %h", tileb_scroll_x, tileb_scroll_y,
+                     tileb_map_base, tileb_pat_base, tileb_ctrl, win_h, win_v, win_map_base, hs_mode, hs_base);
+            errors++;
+        end
+        for (x = 12; x <= 21; x++) cmd(32'h0900_0000 | (x << 16));
         // OAM_WRITE 3 ワードを 0xFE から (0x00 に折り返す)。VRAM には書かない
         vram_writes = 0; oam_writes = 0;
         cmd(32'h0F00_0003); cmd(32'h0000_00FE); cmd(32'h1111_0001); cmd(32'h2222_0002); cmd(32'h3333_0003);

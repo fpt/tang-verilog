@@ -1,0 +1,15 @@
+{
+ "name": "e4_md",
+ "description": "E4: メガドラの形式で作った決まったフレーム 3 つ (tools/harness/md.py) を、VRAM・CRAM・VSRAM・レジスタ・SAT から直して比べる。面 A / B と優先度、ウィンドウ (上 + 右 / 下 + 左)、横スクロールの表 (ラインごと / 8 ラインごと / 画面全体)、64x32 / 128x32 / 32x32 の面、リンク順のスプライト 40 個",
+ "steps": [
+  {"op": "md_frame", "variant": 0, "mark": true},
+  {"op": "wait_vblank"},
+  {"op": "check_marked"},
+  {"op": "md_frame", "variant": 1, "mark": true},
+  {"op": "wait_vblank"},
+  {"op": "check_marked"},
+  {"op": "md_frame", "variant": 2, "mark": true},
+  {"op": "wait_vblank"},
+  {"op": "check_marked"}
+ ]
+}
