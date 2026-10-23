@@ -195,7 +195,7 @@ module top (
     logic [20:0] fb_addr;
     logic [8:0]  fb_len;
 
-    logic        g_req, g_we, g_ack, g_wnext;
+    logic        g_req, g_we, g_ack, g_wnext, g_rvalid;
     logic [20:0] g_addr;
     logic [31:0] g_wdata;
     logic [3:0]  g_wmask;
@@ -218,7 +218,7 @@ module top (
         .clk(clk_sys), .rst(rst_sys),
         .addr(reg_addr), .wdata(reg_wdata), .we(reg_we && sel_gpu), .re(reg_re && sel_gpu), .rdata(gpu_rdata),
         .mem_req(g_req), .mem_we(g_we), .mem_addr(g_addr), .mem_wdata(g_wdata), .mem_wmask(g_wmask),
-        .mem_len(g_len), .mem_ack(g_ack), .mem_wnext(g_wnext),
+        .mem_len(g_len), .mem_ack(g_ack), .mem_wnext(g_wnext), .mem_rvalid(g_rvalid), .mem_rdata(mem_rdata32),
         .fb_base, .base_latched
     );
 
@@ -235,7 +235,7 @@ module top (
         .a_req(fb_req), .a_we(1'b0), .a_addr(fb_addr), .a_wdata(32'h0), .a_wmask(4'h0), .a_len(fb_len),
         .a_ack(fb_ack), .a_rvalid(fb_rvalid), .a_wnext(),
         .b_req(g_req), .b_we(g_we), .b_addr(g_addr), .b_wdata(g_wdata), .b_wmask(g_wmask), .b_len(g_len),
-        .b_ack(g_ack), .b_rvalid(), .b_wnext(g_wnext),
+        .b_ack(g_ack), .b_rvalid(g_rvalid), .b_wnext(g_wnext),
         .c_req(t_req), .c_we(t_we), .c_addr(t_addr), .c_wdata(t_wdata), .c_wmask(t_wmask), .c_len(t_len),
         .c_ack(t_ack), .c_rvalid(t_rvalid), .c_wnext(),
         .m_req(mem_req), .m_we(mem_we), .m_addr(mem_addr), .m_wdata(mem_wdata), .m_wmask(mem_wmask), .m_len(mem_len),

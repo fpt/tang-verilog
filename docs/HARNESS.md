@@ -427,7 +427,8 @@ python3 tools/harness/harness.py prog hdmi       # make prog TARGET=hdmi (pinche
 | `memtest [--size N] [--samples 2,..,7] [--seed S] [--phases 0-15]` | SDRAM の BIST を読み出しの取り込み位置ごとに実行 (`--size 21` で 8MiB 全域、1 回 0.6 秒)。`--phases` で SDRAM クロックの位相も変え、位相 x 取り込み位置の合否表を出す |
 | `mem read <addr> [n]` / `mem write <addr> <hex32>...` | SDRAM を 1 ワードずつ読み書き |
 | `fb upload [<png>] [--slot N]` / `fb show` / `fb off` | 320x240 の画像 (省略時はテスト画像) をフレームバッファへ / 表示の切り替え |
-| `scenario <scenarios/*.json> [--no-capture]` | シナリオを GPU に送り、check ごとに `FRAME_CRC` (とキャプチャ) を参照モデル (`gpu_model.py`) と比べる。Verilator 側は `make scenario` |
+| `scenario <scenarios/*.json> [--no-capture]` | シナリオを GPU に送り、check ごとに `FRAME_CRC` (とキャプチャ) を参照モデル (`gpu_model.py`) と比べる。Verilator 側は `make scenario`。キャプチャは 95% 以上で合格 (正しさは CRC で決める) |
+| `fps <file.json> [--frames N]` | `{"setup", "frame"}` の frame (`SWAP` で終わる) を N 回くり返し、fps・表示フレーム / 描画フレーム・`UNDERFLOW` を測る |
 | `fbtest [<png>] [--slot N] [--keep] [--no-capture]` | アップロードして表示し、`FRAME_CRC`・`UNDERFLOW`・キャプチャを参照モデル (`fbmodel.py`) と比べる |
 | `prog <target>` | `make prog TARGET=<target>` |
 

@@ -1,4 +1,4 @@
-// コマンド GPU (docs/GPU_PLAN.md の M5, M6)。コマンド FIFO から 32bit ワードのコマンドを読み、SDRAM のフレームバッファに描く
+// コマンド GPU (docs/GPU_PLAN.md の M5〜M7)。コマンド FIFO から 32bit ワードのコマンドを読み、SDRAM のフレームバッファに描く
 //
 // レジスタ (0x30..0x4F。複数バイトの値はリトルエンディアン):
 //   0x30 CMD        W  コマンドのポート。書いたバイトを 4 つずつ (リトルエンディアン) 1 ワードにして FIFO に入れる。
@@ -21,10 +21,17 @@
 //                   クリップ矩形の外のピクセルは飛ばす (画面の外から始まる線もよい)
 //   0x07 CLIP       次のワード {y0, x0}、次のワード {y1, x1} (符号なし、両端を含む)。以降の FILL_RECT / POINT / DRAW_LINE を
 //                   この矩形の中だけにする。画面の外は画面の端に丸める。x0 > x1 などなら何も描かなくなる。既定は画面全体
+//   0x08 BLIT       [23:16] フラグ (bit0: 透過, bit1: 左右反転, bit2: 上下反転)、[15:0] 透過色 (RGB565)、
+//                   次のワードにソースのワードアドレス、次のワード {h, w} (w は 512 まで)、次のワード {y, x} (描く位置、符号付き)、
+//                   次のワードにソースの 1 行のワード数 (stride)。ソースは SDRAM の RGB565 の画像で、各行はワードの先頭 (偶数のピクセル) から始まる。
+//                   透過のときは透過色のピクセルを書かない。クリップ矩形の外は描かない
 //   それ以外        エラーを立て、1 ワードのコマンドとして読み飛ばす
 //
-// 1 ワードに 2 ピクセル (下位 16bit が偶数の x)。矩形の端が奇数の x で始まる / 終わるときや、線と点の 1 ピクセルは、
-// SDRAM のバイトマスク (DQM) で片方のピクセルだけを書く (読み‐修正‐書きはしない)。矩形の書き込みは 1 行の中で 64 ワードずつのバースト。
+// 1 ワードに 2 ピクセル (下位 16bit が偶数の x)。矩形の端が奇数の x で始まる / 終わるとき、線と点の 1 ピクセル、BLIT の透過色は、
+// SDRAM のバイトマスク (DQM) で片方のピクセルだけを書く (読み‐修正‐書きはしない)。矩形と BLIT の書き込みは 1 行の中で 64 ワードずつのバースト。
+//
+// BLIT は 1 行ずつ: ソースの 1 行をバーストで読んでライン バッファに置き、描く行をバーストで書く。ライン バッファは偶数番目と奇数番目の
+// ピクセルを別の BSRAM に置くので、描く位置が奇数でも、左右反転でも、書くワードの 2 ピクセルを 1 クロックで読める。
 module gpu #(
     parameter int SRC_W = 320,
     parameter int SRC_H = 240,
@@ -47,6 +54,8 @@ module gpu #(
     output logic [8:0]  mem_len,
     input  logic        mem_ack,
     input  logic        mem_wnext,
+    input  logic        mem_rvalid,
+    input  logic [31:0] mem_rdata,
     // 表示
     output logic [12:0] fb_base,
     input  logic        base_latched     // fb_scanout が fb_base を取り込んだとき 1 クロック
@@ -57,7 +66,8 @@ module gpu #(
     localparam logic [6:0] A_STATUS = 7'h40;
 
     localparam logic [7:0] OP_NOP = 8'h00, OP_CLEAR = 8'h01, OP_FILL_RECT = 8'h02, OP_SWAP = 8'h03, OP_UPLOAD = 8'h04,
-                           OP_POINT = 8'h05, OP_DRAW_LINE = 8'h06, OP_CLIP = 8'h07;
+                           OP_POINT = 8'h05, OP_DRAW_LINE = 8'h06, OP_CLIP = 8'h07, OP_BLIT = 8'h08;
+    localparam int BLIT_MAX_W = 512;      // ライン バッファ (256 ワード) に入る幅
 
     // ================================================================ コマンド FIFO
     logic [31:0]     fifo [0:FIFO_WORDS-1];
@@ -79,14 +89,17 @@ module gpu #(
     // ================================================================ 実行
     typedef enum logic [3:0] {
         S_FETCH, S_FETCH_WAIT, S_DECODE, S_ARG, S_EXEC, S_RECT_BURST, S_SWAP_WAIT,
-        S_UPLOAD_WRITE, S_LINE_STEP, S_LINE_PLOT, S_LINE_ADV
+        S_UPLOAD_WRITE, S_LINE_STEP, S_LINE_PLOT, S_LINE_ADV,
+        S_BLIT_SETUP, S_BLIT_SKIP, S_BLIT_READ, S_BLIT_WRITE
     } state_t;
     state_t state, after_fetch;
 
     logic [31:0] word;
     logic [7:0]  op;
-    logic [31:0] arg0, arg1;
-    logic        arg_idx, last_arg;        // 何個目の引数を読んでいるか、それが最後か
+    logic [31:0] arg0, arg1, arg2;
+    logic [15:0] arg3;                     // BLIT の stride (下位 16bit だけ使う)
+    logic [1:0]  arg_idx, arg_last;        // 何個目の引数を読んでいるか、最後の引数の番号
+    logic [2:0]  flags;                    // 先頭ワードの [18:16] (BLIT: bit0 透過, bit1 左右反転, bit2 上下反転)
     logic        error, overflow, swap_seen;
     logic [12:0] draw_base;
     logic [15:0] color;
@@ -137,18 +150,85 @@ module gpu #(
     assign in_clip = lx >= $signed({9'b0, cx0}) && lx <= $signed({9'b0, cx1}) &&
                     ly >= $signed({10'b0, cy0}) && ly <= $signed({10'b0, cy1});
 
+    // --- BLIT ---
+    logic [20:0]        b_src;              // 今のソースの行の先頭 (ワードアドレス)
+    logic [15:0]        b_stride, b_w, b_h;
+    logic signed [17:0] b_dx, b_dy;
+    logic [15:0]        b_skip;             // 最初に描く行のソースの行まで、stride を何回足すか
+    logic [20:0]        b_rd_addr;
+    logic [8:0]         b_rd_left;          // この行で読み残しているワード数
+    logic [7:0]         b_widx;             // ライン バッファに書く位置 (ワード)
+    logic signed [18:0] bxs, bxe, bys, bye; // 描く範囲 (クリップしたあと、両端を含む)
+
+    // 描く範囲 = 置く場所の矩形とクリップ矩形の重なり
+    always_comb begin
+        logic signed [18:0] xe_raw, ye_raw;
+        xe_raw = 19'(b_dx) + 19'(b_w) - 19'sd1;
+        ye_raw = 19'(b_dy) + 19'(b_h) - 19'sd1;
+        bxs = (19'(b_dx) > $signed({10'b0, cx0})) ? 19'(b_dx) : $signed({10'b0, cx0});
+        bxe = (xe_raw < $signed({10'b0, cx1})) ? xe_raw : $signed({10'b0, cx1});
+        bys = (19'(b_dy) > $signed({11'b0, cy0})) ? 19'(b_dy) : $signed({11'b0, cy0});
+        bye = (ye_raw < $signed({11'b0, cy1})) ? ye_raw : $signed({11'b0, cy1});
+    end
+
+    // ライン バッファ: ソースの 1 行。偶数番目のピクセルと奇数番目のピクセルを別の BSRAM に置く
+    logic [15:0] lb_even [0:255];
+    logic [15:0] lb_odd  [0:255];
+    logic [15:0] lb_even_q, lb_odd_q;
+    logic        s0_odd_q;
+
+    always_ff @(posedge clk) begin
+        if (state == S_BLIT_READ && mem_req && mem_rvalid) begin
+            lb_even[b_widx] <= mem_rdata[15:0];
+            lb_odd[b_widx]  <= mem_rdata[31:16];
+        end
+    end
+
+    // 書くワード (wnext で使われるなら次のワードを先読み) の 2 ピクセルのソースでの番号: s0 (下位 = 偶数の x)、s1 (上位)。
+    // 左右反転なら s = (w - 1) - (x - dx)。s0 と s1 は 1 違いなので、片方が偶数、片方が奇数になる
+    // (ライン バッファの番地と偶奇しか使わないので下位 9bit だけ持つ。負の値でも下位ビットは正しい)
+    logic [7:0] w_rd;
+    logic [8:0] s0;
+    logic [7:0] s1h;                        // s1 の番地 (s1 >> 1)。s1 の偶奇は s0 の逆
+    always_comb begin
+        logic signed [18:0] x0;
+        w_rd = (state == S_BLIT_WRITE && mem_wnext) ? w_cur + 8'd1 : w_cur;
+        x0   = $signed({10'b0, w_rd, 1'b0});
+        s0   = 9'(flags[1] ? 19'(b_w) - 19'sd1 - (x0 - 19'(b_dx)) : x0 - 19'(b_dx));
+        s1h  = 8'((flags[1] ? s0 - 9'd1 : s0 + 9'd1) >> 1);
+    end
+
+    always_ff @(posedge clk) begin
+        lb_even_q <= lb_even[s0[0] ? s1h : s0[8:1]];
+        lb_odd_q  <= lb_odd[s0[0] ? s0[8:1] : s1h];
+        s0_odd_q  <= s0[0];
+    end
+
+    logic [15:0] b_lo, b_hi;               // 書くワードの下位 (偶数の x) / 上位 (奇数の x) のピクセル
+    logic [3:0]  b_mask;
+    assign b_lo = s0_odd_q ? lb_odd_q : lb_even_q;
+    assign b_hi = s0_odd_q ? lb_even_q : lb_odd_q;
+    always_comb begin
+        b_mask = cur_mask;
+        if (flags[0] && b_lo == color) b_mask[1:0] = 2'b00;    // 透過色は書かない
+        if (flags[0] && b_hi == color) b_mask[3:2] = 2'b00;
+    end
+
     assign mem_wmask = (state == S_RECT_BURST) ? cur_mask :
+                       (state == S_BLIT_WRITE) ? b_mask :
                        (state == S_LINE_PLOT)  ? (lx[0] ? 4'b1100 : 4'b0011) : 4'hF;
-    assign mem_wdata = (state == S_RECT_BURST || state == S_LINE_PLOT) ? {color, color} : word;
+    assign mem_wdata = (state == S_BLIT_WRITE) ? {b_hi, b_lo} :
+                       (state == S_RECT_BURST || state == S_LINE_PLOT) ? {color, color} : word;
 
     assign pop = (state == S_FETCH && count != 0 && !flush);
 
     // 引数の数 (先頭ワードのあとに続くワード。UPLOAD は先頭のアドレスだけ数え、データは S_UPLOAD_WRITE で読む)
-    function automatic logic [1:0] nargs(input logic [7:0] o);
+    function automatic logic [2:0] nargs(input logic [7:0] o);
         unique case (o)
-            OP_FILL_RECT, OP_DRAW_LINE, OP_CLIP: return 2'd2;
-            OP_UPLOAD, OP_POINT:                 return 2'd1;
-            default:                             return 2'd0;
+            OP_BLIT:                             return 3'd4;
+            OP_FILL_RECT, OP_DRAW_LINE, OP_CLIP: return 3'd2;
+            OP_UPLOAD, OP_POINT:                 return 3'd1;
+            default:                             return 3'd0;
         endcase
     endfunction
 
@@ -195,11 +275,12 @@ module gpu #(
                 // 先頭ワード: 引数があれば読んでから S_EXEC、なければすぐ実行
                 S_DECODE: begin
                     op      <= word[31:24];
+                    flags   <= word[18:16];
                     color   <= word[15:0];
                     up_left <= word[23:0];
-                    arg_idx <= 1'b0;
-                    if (nargs(word[31:24]) != 2'd0) begin
-                        last_arg    <= nargs(word[31:24]) == 2'd1;
+                    arg_idx <= 2'd0;
+                    if (nargs(word[31:24]) != 3'd0) begin
+                        arg_last    <= 2'(nargs(word[31:24]) - 3'd1);
                         state       <= S_FETCH;
                         after_fetch <= S_ARG;
                     end else begin
@@ -207,15 +288,18 @@ module gpu #(
                     end
                 end
                 S_ARG: begin
-                    if (!arg_idx) arg0 <= word;
-                    else          arg1 <= word;
-                    arg_idx <= 1'b1;
-                    if (last_arg) begin
+                    unique case (arg_idx)
+                        2'd0: arg0 <= word;
+                        2'd1: arg1 <= word;
+                        2'd2: arg2 <= word;
+                        default: arg3 <= word[15:0];
+                    endcase
+                    arg_idx <= arg_idx + 2'd1;
+                    if (arg_idx == arg_last) begin
                         state       <= S_EXEC;
                         after_fetch <= S_DECODE;
                     end else begin
-                        last_arg <= 1'b1;
-                        state    <= S_FETCH;
+                        state <= S_FETCH;
                     end
                 end
 
@@ -272,8 +356,93 @@ module gpu #(
                             if (arg0[15:0] > 16'(SRC_W - 1)) cx0 <= 9'd1;
                             if (arg0[31:16] > 16'(SRC_H - 1)) cy0 <= 8'd1;
                         end
+                        OP_BLIT: begin
+                            b_src    <= arg0[20:0];
+                            {b_h, b_w} <= arg1;
+                            b_dx     <= 18'(signed'(arg2[15:0]));
+                            b_dy     <= 18'(signed'(arg2[31:16]));
+                            b_stride <= arg3;
+                            if (arg1[15:0] > 16'(BLIT_MAX_W)) error <= 1'b1;
+                            else                             state <= S_BLIT_SETUP;
+                        end
                         default: error <= 1'b1;
                     endcase
+                end
+
+                // ---- BLIT ----
+                // 描く範囲を決め、最初に描く行がソースの何行目か (上下反転なら下から) を数える
+                S_BLIT_SETUP: begin
+                    if (b_w == 0 || b_h == 0 || bxs > bxe || bys > bye) begin
+                        state <= S_FETCH;
+                    end else begin
+                        y_cur   <= 8'(bys);
+                        y_last  <= 8'(bye);
+                        x0_odd  <= bxs[0];
+                        x1_odd  <= bxe[0];
+                        w_first <= 8'(bxs >>> 1);
+                        w_last  <= 8'(bxe >>> 1);
+                        b_skip  <= flags[2] ? 16'(19'(b_h) - 19'sd1 - (bys - 19'(b_dy))) : 16'(bys - 19'(b_dy));
+                        state   <= S_BLIT_SKIP;
+                    end
+                end
+                // ソースの最初の行まで進める (掛け算を使わず、stride を足していく)
+                S_BLIT_SKIP: begin
+                    if (b_skip != 0) begin
+                        b_src  <= b_src + 21'(b_stride);
+                        b_skip <= b_skip - 16'd1;
+                    end else begin
+                        b_rd_addr <= b_src;
+                        b_rd_left <= 9'((17'(b_w) + 17'd1) >> 1);
+                        b_widx    <= '0;
+                        state     <= S_BLIT_READ;
+                    end
+                end
+                // ソースの 1 行をライン バッファへ (SDRAM の行をまたぐときはバーストを分ける)
+                S_BLIT_READ: begin
+                    if (!mem_req) begin
+                        if (b_rd_left == 0) begin
+                            w_cur <= w_first;
+                            state <= S_BLIT_WRITE;
+                        end else begin
+                            mem_req  <= 1'b1;
+                            mem_we   <= 1'b0;
+                            mem_addr <= b_rd_addr;
+                            mem_len  <= (b_rd_left > 9'd256 - 9'(b_rd_addr[7:0])) ? 9'd256 - 9'(b_rd_addr[7:0]) : b_rd_left;
+                        end
+                    end else begin
+                        if (mem_rvalid) b_widx <= b_widx + 8'd1;
+                        if (mem_ack) begin
+                            mem_req   <= 1'b0;
+                            b_rd_addr <= b_rd_addr + 21'(mem_len);
+                            b_rd_left <= b_rd_left - mem_len;
+                        end
+                    end
+                end
+                // 描く行を 64 ワードずつのバーストで書く。終わったら次の行 (上下反転ならソースは前の行)
+                S_BLIT_WRITE: begin
+                    if (!mem_req) begin
+                        mem_req  <= 1'b1;
+                        mem_we   <= 1'b1;
+                        mem_addr <= {draw_base + 13'(y_cur), w_cur};
+                        mem_len  <= burst_len;
+                    end else begin
+                        if (mem_wnext && w_cur != w_last) w_cur <= w_cur + 8'd1;
+                        if (mem_ack) begin
+                            mem_req <= 1'b0;
+                            if (w_cur == w_last) begin
+                                if (y_cur == y_last) begin
+                                    state <= S_FETCH;
+                                end else begin
+                                    y_cur     <= y_cur + 8'd1;
+                                    b_src     <= flags[2] ? b_src - 21'(b_stride) : b_src + 21'(b_stride);
+                                    b_rd_addr <= flags[2] ? b_src - 21'(b_stride) : b_src + 21'(b_stride);
+                                    b_rd_left <= 9'((17'(b_w) + 17'd1) >> 1);
+                                    b_widx    <= '0;
+                                    state     <= S_BLIT_READ;
+                                end
+                            end
+                        end
+                    end
                 end
 
                 // 矩形: 最初に重なりを計算し、1 行の中を 64 ワードずつのバーストで書く

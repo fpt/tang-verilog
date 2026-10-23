@@ -41,7 +41,7 @@ module gpu_scenario_tb;
     logic        fb_req, fb_ack, fb_rvalid;
     logic [20:0] fb_addr;
     logic [8:0]  fb_len;
-    logic        g_req, g_we, g_ack, g_wnext;
+    logic        g_req, g_we, g_ack, g_wnext, g_rvalid;
     logic [20:0] g_addr;
     logic [31:0] g_wdata;
     logic [3:0]  g_wmask;
@@ -62,7 +62,8 @@ module gpu_scenario_tb;
     gpu u_gpu (
         .clk(clk_sys), .rst, .addr, .wdata, .we, .re, .rdata,
         .mem_req(g_req), .mem_we(g_we), .mem_addr(g_addr), .mem_wdata(g_wdata), .mem_wmask(g_wmask),
-        .mem_len(g_len), .mem_ack(g_ack), .mem_wnext(g_wnext), .fb_base, .base_latched
+        .mem_len(g_len), .mem_ack(g_ack), .mem_wnext(g_wnext), .mem_rvalid(g_rvalid), .mem_rdata(m_rdata),
+        .fb_base, .base_latched
     );
 
     sdram_arb u_arb (
@@ -70,7 +71,7 @@ module gpu_scenario_tb;
         .a_req(fb_req), .a_we(1'b0), .a_addr(fb_addr), .a_wdata(32'h0), .a_wmask(4'h0), .a_len(fb_len),
         .a_ack(fb_ack), .a_rvalid(fb_rvalid), .a_wnext(),
         .b_req(g_req), .b_we(g_we), .b_addr(g_addr), .b_wdata(g_wdata), .b_wmask(g_wmask), .b_len(g_len),
-        .b_ack(g_ack), .b_rvalid(), .b_wnext(g_wnext),
+        .b_ack(g_ack), .b_rvalid(g_rvalid), .b_wnext(g_wnext),
         .c_req(1'b0), .c_we(1'b0), .c_addr(21'h0), .c_wdata(32'h0), .c_wmask(4'h0), .c_len(9'd1),
         .c_ack(), .c_rvalid(), .c_wnext(),
         .m_req, .m_we, .m_addr, .m_wdata, .m_wmask, .m_len, .m_ack, .m_rvalid, .m_wnext

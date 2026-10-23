@@ -21,6 +21,8 @@ usage: harness.py [--port PORT] <command> [args...]
   frametest [--ref-dir DIR] [--no-capture] [--out DIR]
                             アニメーションを止め、FRAME_CRC を参照 (make render FREEZE=1 の frames.json) と比べ、
                             HDMI キャプチャも参照画像と比べる。キャプチャと差分画像を --out に保存
+  fps <file.json> [--frames N]
+                            {"setup", "frame"} の frame を N 回くり返して速さを測る (fps、表示フレーム / 描画フレーム、UNDERFLOW)
   scenario <file.json> [--no-capture]
                             シナリオを実機で走らせ、check ごとに FRAME_CRC を参照モデル (gpu_model.py) と比べる
   fb upload [<png>] [--slot N]  320x240 の画像 (省略時はテスト画像) を SDRAM のフレームバッファへ (slot は 1KiB 単位)
@@ -71,6 +73,7 @@ MEM = {
     "ERRORS": 0x18, "FAIL_ADDR": 0x1C, "FAIL_EXP": 0x20, "FAIL_GOT": 0x24, "ADDR": 0x28, "DATA": 0x2C,
 }
 GPU_ST_BUSY, GPU_ST_ERROR, GPU_ST_OVERFLOW = 0x01, 0x02, 0x04
+CAPTURE_OK = 0.95      # scenario のキャプチャの合格線 (正しさは FRAME_CRC で決める)
 SPI_MAX_DATA = 4092    # ブリッジの spi は 1 回 4096 バイトまで (先頭のアドレス 1 バイトを除き、4 の倍数)
 MEM_CMD_BIST, MEM_CMD_READ, MEM_CMD_WRITE = 1, 2, 3
 MEM_ST_INIT, MEM_ST_BUSY, MEM_ST_DONE, MEM_ST_PASS = 0x01, 0x02, 0x04, 0x08
@@ -515,7 +518,9 @@ def scenario(bridge, path, do_capture, out_dir):
                 imgcmp.write_png(os.path.join(out_dir, f"{name}_expected.png"), w, h, expect)
                 imgcmp.write_png(os.path.join(out_dir, f"{name}_capture.png"), w, h, cap)
                 imgcmp.write_png(os.path.join(out_dir, f"{name}_diff.png"), w, h, diff)
-                r["capture"] = {"match_ratio": stats["match_ratio"], "ok": stats["match_ratio"] >= 0.99}
+                # 正しさは CRC で決める。キャプチャは「画面に出ているか」を見るだけなので 95% で合格にする
+                # (グラデーションの色変換の非線形や、細かいスプライトの縁の 4:2:2 のにじみで 99% を少し切ることがある)
+                r["capture"] = {"match_ratio": stats["match_ratio"], "ok": stats["match_ratio"] >= CAPTURE_OK}
                 r["ok"] = r["ok"] and r["capture"]["ok"]
             results.append(r)
         under = (vdp.read1(REGS["UNDERFLOW"]) - under0) & 0xFF
@@ -524,6 +529,44 @@ def scenario(bridge, path, do_capture, out_dir):
         vdp.write(REGS["CONTROL"], [control])
     return {"ok": all(r["ok"] for r in results) and under == 0, "scenario": sc["name"], "underflow": under,
             "checks": results}
+
+
+def fps(bridge, path, frames):
+    """{"setup": [...], "frame": [...]} の frame (SWAP で終わる) を frames 回くり返し、速さを測る。
+    SWAP は表示がフレームの先頭で取り込むまで待つので、間に合っていれば 60 フレーム / 秒 (表示 1 フレームに 1 回の SWAP) になる"""
+    import gpu_model
+    sc = gpu_model.load(path)
+    setup = [w for st in sc["setup"] for w in gpu_model.encode(st)]
+    frame = [w for st in sc["frame"] for w in gpu_model.encode(st)]
+    vdp = Vdp(bridge)
+    gpu = Gpu(vdp)
+    control = vdp.read1(REGS["CONTROL"])
+    bridge.command("freq 8000000")
+    try:
+        gpu.flush()
+        gpu.wait_idle()
+        gpu.status()
+        vdp.write(REGS["FB_BASE"], gpu_model.FB_BASE_RESET.to_bytes(2, "little"))
+        vdp.write(REGS["DRAW_BASE"], gpu_model.DRAW_BASE_RESET.to_bytes(2, "little"))
+        gpu.send(setup)
+        gpu.wait_idle(timeout=20)
+        vdp.write(REGS["CONTROL"], [control | CONTROL_FB])
+        under0 = vdp.read1(REGS["UNDERFLOW"])
+        _, f0 = read_crc(vdp)
+        start = time.monotonic()
+        for _ in range(frames):
+            gpu.send(frame)
+        st = gpu.wait_idle(timeout=20)
+        elapsed = time.monotonic() - start
+        _, f1 = read_crc(vdp)
+        under = (vdp.read1(REGS["UNDERFLOW"]) - under0) & 0xFF
+    finally:
+        bridge.command("freq 1000000")
+        vdp.write(REGS["CONTROL"], [control])
+    shown = (f1 - f0) & 0xFFFF
+    return {"ok": under == 0 and not st & (GPU_ST_ERROR | GPU_ST_OVERFLOW), "scenario": sc["name"], "frames": frames,
+            "words_per_frame": len(frame), "seconds": round(elapsed, 2), "fps": round(frames / elapsed, 1),
+            "display_frames_per_drawn_frame": round(shown / frames, 2), "underflow": under, "gpu_status": st}
 
 
 def fb_show(vdp, slot, on):
@@ -586,6 +629,7 @@ def main():
                     help="frametest: reference from make render FREEZE=1")
     ap.add_argument("--no-capture", action="store_true", help="frametest / fbtest: CRC only")
     ap.add_argument("--slot", type=int, default=0, help="fb / fbtest: framebuffer base in 1KiB units")
+    ap.add_argument("--frames", type=int, default=120, help="fps: number of frames")
     ap.add_argument("--keep", action="store_true", help="fbtest: leave the framebuffer displayed")
     ap.add_argument("--out", default=os.path.join(REPO, "build", "hw"), help="frametest: where to save capture/diff")
     ap.add_argument("command")
@@ -598,12 +642,16 @@ def main():
         # make の出力は標準エラーへ (標準出力は JSON だけにする)
         r = subprocess.run(["make", "prog", f"TARGET={a.args[0]}"], cwd=REPO, stdout=sys.stderr)
         result = {"ok": r.returncode == 0, "target": a.args[0]}
-    elif a.command in ("reg", "selftest", "memtest", "mem", "frametest", "fb", "fbtest", "scenario"):
+    elif a.command in ("reg", "selftest", "memtest", "mem", "frametest", "fb", "fbtest", "scenario", "fps"):
         bridge = Bridge(find_port(a.port))
         try:
             vdp = Vdp(bridge)
             if a.command == "selftest":
                 result = selftest(bridge, a.iterations)
+            elif a.command == "fps":
+                if len(a.args) != 1:
+                    ap.error("fps <scenarios/*.json> [--frames N]")
+                result = fps(bridge, a.args[0], a.frames)
             elif a.command == "scenario":
                 if len(a.args) != 1:
                     ap.error("scenario <scenarios/*.json>")
