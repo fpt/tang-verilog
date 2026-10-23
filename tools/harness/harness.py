@@ -23,6 +23,8 @@ usage: harness.py [--port PORT] <command> [args...]
                             HDMI キャプチャも参照画像と比べる。キャプチャと差分画像を --out に保存
   fps <file.json> [--frames N]
                             {"setup", "frame"} の frame を N 回くり返して速さを測る (fps、表示フレーム / 描画フレーム、UNDERFLOW)
+  demo [--frames N] [--start K]
+                            M9 のデモ (demo.py) を流す。N フレーム (0 なら Ctrl-C まで)。速さ・表示フレーム / 描画フレーム・UNDERFLOW
   scenario <file.json> [--no-capture]
                             シナリオを実機で走らせ、check ごとに FRAME_CRC を参照モデル (gpu_model.py) と比べる
   fb upload [<png>] [--slot N]  320x240 の画像 (省略時はテスト画像) を SDRAM のフレームバッファへ (slot は 1KiB 単位)
@@ -610,6 +612,54 @@ def fps(bridge, path, frames):
             "display_frames_per_drawn_frame": round(shown / frames, 2), "underflow": under, "gpu_status": st}
 
 
+def demo(bridge, frames, start):
+    """M9 のデモ (demo.py) を流し続ける。フレームは WAIT_VBLANK で区切られるので、間に合っていれば 60 フレーム / 秒"""
+    import demo as demo_mod
+    import gpu_model
+    vdp = Vdp(bridge)
+    gpu = Gpu(vdp)
+    control = vdp.read1(REGS["CONTROL"])
+    bridge.command("freq 8000000")
+    k = start
+    words = 0
+    try:
+        gpu.flush()
+        gpu.wait_idle()
+        gpu.status()
+        vdp.write(REGS["FB_BASE"], gpu_model.FB_BASE_RESET.to_bytes(2, "little"))
+        vdp.write(REGS["DRAW_BASE"], gpu_model.DRAW_BASE_RESET.to_bytes(2, "little"))
+        gpu.send(gpu_model.layer_reset_words() + demo_mod.setup_words())
+        gpu.wait_idle(timeout=20)
+        vdp.write(REGS["CONTROL"], [control | CONTROL_FB])
+        under0 = vdp.read1(REGS["UNDERFLOW"])
+        f0 = vdp.read1(REGS["FRAME_COUNT"])
+        shown, last = 0, f0
+        t0 = time.monotonic()
+        try:
+            while frames == 0 or k < start + frames:
+                w = demo_mod.frame_words(k)
+                gpu.send(w)
+                words += len(w)
+                k += 1
+                f = vdp.read1(REGS["FRAME_COUNT"])      # 8bit で回るので、こまめに足す
+                shown += (f - last) & 0xFF
+                last = f
+        except KeyboardInterrupt:
+            pass
+        st = gpu.wait_idle(timeout=20)
+        elapsed = time.monotonic() - t0
+        f = vdp.read1(REGS["FRAME_COUNT"])
+        shown += (f - last) & 0xFF
+        under = (vdp.read1(REGS["UNDERFLOW"]) - under0) & 0xFF
+    finally:
+        bridge.command("freq 1000000")
+    drawn = k - start
+    return {"ok": under == 0 and not st & (GPU_ST_ERROR | GPU_ST_OVERFLOW) and drawn > 0 and shown <= drawn + 2,
+            "frames": drawn, "words_per_frame": round(words / max(drawn, 1)), "seconds": round(elapsed, 2),
+            "fps": round(drawn / elapsed, 1), "display_frames_per_drawn_frame": round(shown / max(drawn, 1), 2),
+            "underflow": under, "gpu_status": st}
+
+
 def fb_show(vdp, slot, on):
     vdp.write(REGS["FB_BASE"], slot.to_bytes(2, "little"))
     control = vdp.read1(REGS["CONTROL"])
@@ -675,7 +725,8 @@ def main():
                     help="frametest: reference from make render FREEZE=1")
     ap.add_argument("--no-capture", action="store_true", help="frametest / fbtest: CRC only")
     ap.add_argument("--slot", type=int, default=0, help="fb / fbtest: framebuffer base in 1KiB units")
-    ap.add_argument("--frames", type=int, default=120, help="fps: number of frames")
+    ap.add_argument("--frames", type=int, default=120, help="fps / demo: number of frames (demo: 0 = until Ctrl-C)")
+    ap.add_argument("--start", type=int, default=0, help="demo: first frame number")
     ap.add_argument("--keep", action="store_true", help="fbtest: leave the framebuffer displayed")
     ap.add_argument("--out", default=os.path.join(REPO, "build", "hw"), help="frametest: where to save capture/diff")
     ap.add_argument("command")
@@ -688,7 +739,7 @@ def main():
         # make の出力は標準エラーへ (標準出力は JSON だけにする)
         r = subprocess.run(["make", "prog", f"TARGET={a.args[0]}"], cwd=REPO, stdout=sys.stderr)
         result = {"ok": r.returncode == 0, "target": a.args[0]}
-    elif a.command in ("reg", "selftest", "memtest", "mem", "frametest", "fb", "fbtest", "scenario", "fps"):
+    elif a.command in ("reg", "selftest", "memtest", "mem", "frametest", "fb", "fbtest", "scenario", "fps", "demo"):
         bridge = Bridge(find_port(a.port))
         try:
             vdp = Vdp(bridge)
@@ -698,6 +749,8 @@ def main():
                 if len(a.args) != 1:
                     ap.error("fps <scenarios/*.json> [--frames N]")
                 result = fps(bridge, a.args[0], a.frames)
+            elif a.command == "demo":
+                result = demo(bridge, a.frames, a.start)
             elif a.command == "scenario":
                 if len(a.args) != 1:
                     ap.error("scenario <scenarios/*.json>")

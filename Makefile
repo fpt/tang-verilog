@@ -63,7 +63,7 @@ RP2_MOUNT         = $(firstword $(wildcard /Volumes/RPI-RP2 /Volumes/RP2350 /med
 PICO_BOARD    ?= pico2
 PICO_PLATFORM ?= rp2350-arm-s   # rp2350-riscv にすると Hazard3 コア用
 
-.PHONY: help images image-fpga image-pico all lint sim scenario $(addprefix sim-,$(TBS)) render synth pnr bitstream pincheck prog flash fw harness-fw harness-deploy shell shell-pico zip clean
+.PHONY: help images image-fpga image-pico all lint sim scenario $(addprefix sim-,$(TBS)) render synth pnr bitstream pincheck prog flash demo fw harness-fw harness-deploy shell shell-pico zip clean
 
 help:
 	@echo "make images      Docker イメージをビルド (image-fpga / image-pico で個別に)"
@@ -77,6 +77,7 @@ help:
 	@echo "make pincheck    ハーネスが駆動するピンを FPGA が駆動しないか検査 (prog / flash の前に自動で実行)"
 	@echo "make prog        SRAM に書き込み (ホストの openFPGALoader が必要)"
 	@echo "make flash       Flash に書き込み (同上)"
+	@echo "make demo        M9 のデモをハーネス経由で流す (FRAMES=0 で Ctrl-C まで。ホストの python3)"
 	@echo "make harness-fw  ハーネスの RP2 ブリッジファームウェア (HARNESS_BOARD=$(HARNESS_BOARD))"
 	@echo "make harness-deploy  BOOTSEL の RP2 に書き込む (ホストで実行)"
 	@echo "make fw          RP2350 ファームウェアをビルド (firmware/build/*.uf2)"
@@ -189,6 +190,11 @@ prog: pincheck
 
 flash: pincheck
 	openFPGALoader -b $(BOARD) -f $(BUILD)/$(TOP).fs
+
+# M9 のデモ: ハーネス (USB) を使うのでホストで動かす。FPGA に HDMI の設計が入っている前提
+FRAMES ?= 0
+demo:
+	python3 tools/harness/harness.py demo --frames $(FRAMES)
 
 # ---------------------------------------------------------------- RP2350
 fw:
