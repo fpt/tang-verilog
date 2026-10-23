@@ -7,7 +7,9 @@
 //   0x05 FRAME_CRC   R  直前のフレームの CRC-32 (32bit、リトルエンディアン、0x05..0x08)。frame_crc.sv
 //                       0x05 を読んだ時点の値を 0x06..0x08 用に取っておくので、0x05 から続けて読めば 4 バイトが同じフレームの値になる
 //   0x09 UNDERFLOW   R  表示に間に合わなかったライン数 (fb_scanout、飽和する)
-//   0x0A FB_BASE     RW 表示するフレームバッファの先頭 (256 ワード = 1KiB 単位、13bit、リトルエンディアン 0x0A..0x0B)
+//   0x0A CRC_FRAME   R  FRAME_CRC がどのフレームの値か (リセット後のフレーム番号、16bit、0x0A..0x0B)。
+//                       FRAME_CRC と同じく 0x05 を読んだ時点の値 (先に 0x05..0x08 を読み、そのあとで読む)
+//   (表示するフレームバッファの先頭 FB_BASE は M5 で gpu.sv の 0x44 へ移した)
 //   0x7D SCRATCH     RW 書いた値がそのまま読める (SPI リンクの確認用)
 //   0x7E ID          R  0x5A
 //   0x7F VERSION     R  RTL の版
@@ -26,10 +28,10 @@ module vdp_regs #(
     input  logic       vblank_async,   // VBLANK 中 (ピクセルクロック側)
     input  logic       frame_toggle_async,  // フレームごとにトグル (ピクセルクロック側)
     input  logic [31:0] crc_async,     // フレームの CRC (ピクセルクロック側、crc_toggle が変わるまで変化しない)
+    input  logic [15:0] crc_frame_async,   // その CRC のフレーム番号 (同上)
     input  logic       crc_toggle_async,
     input  logic       error_event,    // エラーを 1 クロック (このクロック側)
     input  logic [7:0] underflow_count,
-    output logic [12:0] fb_base,
     output logic [7:0] control,
     output logic       irq,
     output logic       error
@@ -54,10 +56,17 @@ module vdp_regs #(
 
     // crc_async はトグルより前に確定し、次のトグルまで変わらないので、トグルの変化を見てから取り込めばよい
     logic [31:0] crc;
+    logic [15:0] crc_frame, crc_frame_snap;
     logic [31:8] crc_snap;     // 0x05 (下位バイト) はその場で返すので、残りの 3 バイトだけ取っておく
     always_ff @(posedge clk) begin
-        if (crc_s[2] != crc_s[1]) crc <= crc_async;
-        if (re && addr == A_FRAME_CRC) crc_snap <= crc[31:8];
+        if (crc_s[2] != crc_s[1]) begin
+            crc       <= crc_async;
+            crc_frame <= crc_frame_async;
+        end
+        if (re && addr == A_FRAME_CRC) begin
+            crc_snap       <= crc[31:8];
+            crc_frame_snap <= crc_frame;
+        end
     end
     logic vblank;
     assign vblank = vblank_s[1];
@@ -70,7 +79,6 @@ module vdp_regs #(
             scratch     <= '0;
             frame_count <= '0;
             error       <= 1'b0;
-            fb_base     <= '0;
         end else begin
             if (frame_s[2] != frame_s[1]) frame_count <= frame_count + 8'd1;
 
@@ -81,8 +89,6 @@ module vdp_regs #(
                 unique case (addr)
                     A_CONTROL: control <= wdata;
                     A_SCRATCH: scratch <= wdata;
-                    7'h0A:     fb_base[7:0]  <= wdata;
-                    7'h0B:     fb_base[12:8] <= wdata[4:0];
                     default:   ;
                 endcase
             end
@@ -99,8 +105,8 @@ module vdp_regs #(
             7'h07:         rdata = crc_snap[23:16];
             7'h08:         rdata = crc_snap[31:24];
             7'h09:         rdata = underflow_count;
-            7'h0A:         rdata = fb_base[7:0];
-            7'h0B:         rdata = {3'b0, fb_base[12:8]};
+            7'h0A:         rdata = crc_frame_snap[7:0];
+            7'h0B:         rdata = crc_frame_snap[15:8];
             A_SCRATCH:     rdata = scratch;
             A_ID:          rdata = ID;
             A_VERSION:     rdata = VERSION;

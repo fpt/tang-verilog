@@ -7,7 +7,8 @@
 //                          (実機でバースト読み出しが正しく読めるのは 5 だけ。1 ワードずつなら 5..7 で読めるが、6, 7 は浮いたバスが
 //                          値を保っているだけで、次のワードがすぐ続くバーストでは崩れる。M4 で判明)
 //   0x12 MEM_STATUS     R  bit0: SDRAM 初期化完了, bit1: 実行中 (アップロードの書き込み待ちを含む), bit2: BIST 完了,
-//                          bit3: BIST 合格, bit4: アップロードのあふれ (MEM_ADDR の 0x28 を書くとクリア)
+//                          bit3: BIST 合格
+//   (M4 のアップロード用ポート 0x30 は、M5 で GPU の UPLOAD コマンド (gpu.sv) に置き換えた)
 //   0x13 BIST_SIZE      RW テストするワード数の log2 (1..21、既定 21 = 全 8MiB)
 //   0x14 BIST_SEED      RW パターンの種
 //   0x15 MEM_CLK        RW [3:0] SDRAM のクロックの位相 (1/16 周期 = 約 1ns 単位、既定 0)。トップが PLL の動的位相調整 (PSDA) に渡す。
@@ -20,11 +21,6 @@
 //   0x24 BIST_FAIL_GOT  R  32bit そのときに読めた値
 //   0x28 MEM_ADDR       RW 32bit ワードアドレス (下位 21bit が有効)
 //   0x2C MEM_DATA       RW 32bit
-//   0x30 MEM_PORT       W  アップロード用のポート。書いたバイトを 4 つずつ (リトルエンディアン) 1 ワードにして MEM_ADDR に書き、
-//                          MEM_ADDR を 1 進める。spi_slave は 0x30..0x3F ではアドレスを進めないので、1 回のトランザクションで
-//                          続けて流し込める。MEM_ADDR (0x28) を書くとワードの組み立てをやり直す。
-//                          書き込み待ちは 1 ワード分 (書き込み中 + 待ち + 組み立て中) なので、表示の読み出しで少し待たされても
-//                          8MHz の SPI (1 ワード 4us) なら間に合う。間に合わなければ bit4 を立ててそのワードを捨てる
 //
 // BIST: pattern(a) を全域に書いて読んで比べ、次に ~pattern(a) で同じことをする。
 //   読み出しは表示と同じく 1 行 (256 ワード) ずつのバーストで行う (取り込み位置の判定がバーストと同じになるように)。
@@ -43,6 +39,7 @@ module mem_test (
     output logic        mem_we,
     output logic [20:0] mem_addr,
     output logic [31:0] mem_wdata,
+    output logic [3:0]  mem_wmask,
     output logic [8:0]  mem_len,
     input  logic        mem_ack,
     input  logic        mem_rvalid,     // バースト読み出しの 1 ワードごと
@@ -60,10 +57,9 @@ module mem_test (
     localparam logic [6:0] A_CLK    = 7'h15;
 
     assign clk_duty = clk_phase + 4'd8;    // 立ち下がりを立ち上がりの半周期後に (デューティ 50%)
-    localparam logic [6:0] A_PORT   = 7'h30;
     // 0x18..0x2F の 32bit レジスタは下の casez でバイト単位に読み書きする
 
-    typedef enum logic [2:0] {S_IDLE, S_SINGLE, S_PORT, S_BIST_WRITE, S_BIST_READ} state_t;
+    typedef enum logic [2:0] {S_IDLE, S_SINGLE, S_BIST_WRITE, S_BIST_READ} state_t;
     state_t state;
 
     logic [4:0]  bist_size;
@@ -73,12 +69,7 @@ module mem_test (
     logic [31:0] reg_addr, reg_data;
     logic [20:0] cursor, last;
 
-    // アップロード用のポート
-    logic [23:0] port_bytes;     // 組み立て中の下位 3 バイト
-    logic [1:0]  port_cnt;
-    logic        port_pending, port_overflow;
-    logic [31:0] port_data;
-    logic [20:0] port_waddr;
+    assign mem_wmask = 4'hF;   // メモリテストは常にワード全体を書く
 
     logic        bist_rdone;     // 読み出し側で最後のワードまで比べ終えた
 
@@ -118,30 +109,7 @@ module mem_test (
             reg_addr  <= '0;
             reg_data  <= '0;
             mem_req   <= 1'b0;
-            port_cnt      <= '0;
-            port_pending  <= 1'b0;
-            port_overflow <= 1'b0;
         end else begin
-            // --- アップロード用のポート ---
-            if (we && addr == 7'h28) begin
-                port_cnt      <= '0;
-                port_overflow <= 1'b0;
-            end else if (we && addr == A_PORT) begin
-                if (port_cnt == 2'd3) begin
-                    if (port_pending) begin
-                        port_overflow <= 1'b1;
-                    end else begin
-                        port_pending <= 1'b1;
-                        port_data    <= {wdata, port_bytes};
-                        port_waddr   <= reg_addr[20:0];
-                        reg_addr     <= reg_addr + 32'd1;
-                    end
-                end else begin
-                    port_bytes[8 * port_cnt +: 8] <= wdata;
-                end
-                port_cnt <= port_cnt + 2'd1;
-            end
-
             // --- レジスタ書き込み (実行中も受け付けるが、コマンドは S_IDLE のときだけ) ---
             if (we) begin
                 unique case (addr)
@@ -162,14 +130,7 @@ module mem_test (
             end
 
             unique case (state)
-                S_IDLE: if (port_pending && !(we && addr == A_CMD)) begin
-                    mem_req      <= 1'b1;
-                    mem_we       <= 1'b1;
-                    mem_addr     <= port_waddr;
-                    mem_wdata    <= port_data;
-                    port_pending <= 1'b0;          // 書き込み中のあいだに次のワードを受け付けられるように
-                    state        <= S_PORT;
-                end else if (we && addr == A_CMD && mem_init_done) begin
+                S_IDLE: if (we && addr == A_CMD && mem_init_done) begin
                     unique case (wdata)
                         8'd1: begin
                             bist_done <= 1'b0;
@@ -188,16 +149,13 @@ module mem_test (
                         8'd3: begin
                             mem_req   <= 1'b1;
                             mem_we    <= 1'b1;
+                            mem_len   <= 9'd1;
                             mem_addr  <= reg_addr[20:0];
                             mem_wdata <= reg_data;
                             state     <= S_SINGLE;
                         end
                         default: ;
                     endcase
-                end
-                S_PORT: if (mem_ack) begin
-                    mem_req <= 1'b0;
-                    state   <= S_IDLE;
                 end
                 S_SINGLE: if (mem_ack) begin
                     mem_req  <= 1'b0;
@@ -270,8 +228,7 @@ module mem_test (
     always_comb begin
         unique casez (addr)
             A_CFG:     rdata = {5'b0, rd_sample};
-            A_STATUS:  rdata = {3'b0, port_overflow, bist_done && errors == 0, bist_done,
-                                state != S_IDLE || port_pending, mem_init_done};
+            A_STATUS:  rdata = {4'b0, bist_done && errors == 0, bist_done, state != S_IDLE, mem_init_done};
             A_SIZE:    rdata = {3'b0, bist_size};
             A_SEED:    rdata = bist_seed;
             A_CLK:     rdata = {4'b0, clk_phase};

@@ -6,6 +6,8 @@ module tb_sdram_ctrl;
     logic        clk = 0, rst = 1;
     logic        req = 0, we = 0, ack, init_done, rvalid;
     logic [8:0]  len = 9'd1;
+    logic [3:0]  wmask = 4'hF;
+    logic        wnext;
     logic [20:0] addr = '0;
     logic [31:0] wdata = '0, rdata;
     logic [2:0]  rd_sample = 3'd4;
@@ -19,7 +21,7 @@ module tb_sdram_ctrl;
     assign dq = dq_oe ? dq_out : 'z;
 
     sdram_ctrl #(.CLK_HZ(63_000_000), .INIT_US(2)) dut (
-        .clk, .rst, .req, .we, .addr, .wdata, .len, .ack, .rvalid, .rdata, .init_done, .rd_sample,
+        .clk, .rst, .req, .we, .addr, .wdata, .wmask, .len, .wnext, .ack, .rvalid, .rdata, .init_done, .rd_sample,
         .sdram_cke(cke), .sdram_cs_n(cs_n), .sdram_ras_n(ras_n), .sdram_cas_n(cas_n), .sdram_we_n(we_n),
         .sdram_ba(ba), .sdram_addr(sa), .sdram_dqm(dqm), .sdram_dq_out(dq_out), .sdram_dq_oe(dq_oe),
         .sdram_dq_in(dq)
@@ -33,6 +35,11 @@ module tb_sdram_ctrl;
     always #7.936 clk = ~clk;   // 63MHz
 
     int errors = 0;
+
+    // wnext は組み合わせ回路なので、立ち上がりの直前の値を覚えておく (その立ち上がりでワードが使われた)
+    bit wnext_seen = 0;
+    always @(negedge clk) wnext_seen = 0;
+    always @(posedge clk) wnext_seen = wnext;
 
     task automatic access(input logic w, input logic [20:0] a, input logic [31:0] d, output logic [31:0] q);
         @(negedge clk);
@@ -110,6 +117,35 @@ module tb_sdram_ctrl;
             end while (!ack);
             req = 0; len = 9'd1;
             if (got != 160) begin $display("  burst: %0d words (expected 160)", got); errors++; end
+        end
+
+        // 書き込みのバースト + バイトマスク: 同じ行の 16 ワードを 0 で埋め、16 ワードのバーストでワード k に
+        // 0xA0A0A0A0 + k を書く。ワードごとにマスクを変え、マスクしたバイトは 0 のまま残ることを確かめる
+        begin
+            logic [31:0] q, expect_w;
+            int k;
+            for (k = 0; k < 16; k++) access(1'b1, 21'h1F_E20 + 21'(k), 32'h0, q);
+            @(negedge clk);
+            req = 1; we = 1; addr = 21'h1F_E20; len = 9'd16; k = 0;
+            wdata = 32'hA0A0_A0A0; wmask = 4'(k * 5);
+            do begin
+                @(posedge clk);
+                #1;
+                if (wnext_seen) begin
+                    k++;
+                    wdata = 32'hA0A0_A0A0 + 32'(k);
+                    wmask = 4'(k * 5);
+                end
+            end while (!ack);
+            @(negedge clk);
+            req = 0; we = 0; len = 9'd1; wmask = 4'hF;
+            if (k != 16) begin $display("  write burst consumed %0d words (expected 16)", k); errors++; end
+            for (k = 0; k < 16; k++) begin
+                access(1'b0, 21'h1F_E20 + 21'(k), '0, q);
+                expect_w = 32'hA0A0_A0A0 + 32'(k);
+                for (int b = 0; b < 4; b++) if (!(4'(k * 5) >> b & 1)) expect_w[8 * b +: 8] = 8'h00;
+                if (q !== expect_w) begin $display("  masked write word %0d: got %08h, expected %08h", k, q, expect_w); errors++; end
+            end
         end
 
         // 60us 放置してリフレッシュが続いていることを確かめ、もう一度読む

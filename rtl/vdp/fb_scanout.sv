@@ -6,6 +6,8 @@
 //   動き方:     ソースのライン n を表示しているあいだ (出力 2 ライン分) に、ライン n+1 を SDRAM からバーストで読み、
 //               2 ライン分のライン バッファ (BSRAM) の空いているほうに書く。ライン 0 は最後のブランキング ラインで頼む。
 //               表示が始まるときに読み込みが終わっていなかったら underflow_count を 1 増やす。
+//   fb_base:    ライン 0 を読み始めるときにだけ取り込み、そのフレームの間は変えない (途中で変えても上下で面が混ざらない)。
+//               取り込んだクロックで base_latched を 1 クロック出す (GPU の SWAP が「表示に反映された」を知るため)。
 //
 //   クロック: ピクセル側 (clk_pix) が「次のライン」をトグルで頼み、システム側 (clk_sys) が SDRAM から読む。
 //            頼むライン番号はトグルの前に確定し、次に頼むまで (出力 2 ライン以上) 変わらない。
@@ -17,7 +19,8 @@ module fb_scanout #(
     // --- システムクロック側 ---
     input  logic        clk_sys,
     input  logic        rst_sys,
-    input  logic [12:0] fb_base,          // 256 ワード単位
+    input  logic [12:0] fb_base,          // 256 ワード単位。ライン 0 を読み始めるときに取り込む
+    output logic        base_latched,     // fb_base を取り込んだとき 1 クロック
     output logic        mem_req,
     output logic [20:0] mem_addr,
     output logic [8:0]  mem_len,
@@ -80,6 +83,7 @@ module fb_scanout #(
     logic [2:0]  req_s;
     logic        busy, pending;
     logic        line_bank;      // 読んでいるラインを書くバッファ (ライン番号の偶奇)
+    logic [12:0] frame_base;     // このフレームで使う fb_base
     logic [7:0]  widx;
 
     always_ff @(posedge clk_sys) req_s <= {req_s[1:0], req_toggle};
@@ -95,7 +99,10 @@ module fb_scanout #(
             pending         <= 1'b0;
             mem_req         <= 1'b0;
             underflow_count <= '0;
+            frame_base      <= '0;
+            base_latched    <= 1'b0;
         end else begin
+            base_latched <= 1'b0;
             // 新しい依頼が来たときにまだ読んでいたら、表示に間に合っていない
             if (req_s[2] != req_s[1]) begin
                 if (busy && underflow_count != 8'hFF) underflow_count <= underflow_count + 8'd1;
@@ -107,7 +114,13 @@ module fb_scanout #(
                 busy     <= 1'b1;
                 line_bank <= req_line[0];
                 mem_req  <= 1'b1;
-                mem_addr <= {fb_base + 13'(req_line), 8'b0};
+                if (req_line == 9'd0) begin
+                    frame_base   <= fb_base;
+                    base_latched <= 1'b1;
+                    mem_addr     <= {fb_base, 8'b0};
+                end else begin
+                    mem_addr <= {frame_base + 13'(req_line), 8'b0};
+                end
                 widx     <= '0;
             end
 

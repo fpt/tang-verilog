@@ -9,7 +9,7 @@ module tb_vdp_regs;
     logic [31:0] crc_async = '0;
     logic       crc_toggle_async = 0;
     logic [7:0] underflow_count = 8'd7;
-    logic [12:0] fb_base;
+    logic [15:0] crc_frame_async = '0;
     logic       irq, error;
 
     vdp_regs #(.VERSION(8'h01)) dut (.*);
@@ -99,25 +99,25 @@ module tb_vdp_regs;
 
         // FRAME_CRC: トグルが変わったら取り込む。0x05 を読んだ時点の値が 0x06..0x08 に残る
         crc_async = 32'h1234_5678;
+        crc_frame_async = 16'h0102;
         #50 crc_toggle_async = 1;
         #100;
         rd_re(7'h05, d); check("FRAME_CRC[7:0]", d, 8'h78);
         crc_async = 32'hAABB_CCDD;          // 次のフレームの CRC が届いても
+        crc_frame_async = 16'h0103;
         #50 crc_toggle_async = 0;
         #100;
         rd(7'h06, d); check("FRAME_CRC[15:8] (snapshot)", d, 8'h56);
         rd(7'h07, d); check("FRAME_CRC[23:16] (snapshot)", d, 8'h34);
         rd(7'h08, d); check("FRAME_CRC[31:24] (snapshot)", d, 8'h12);
+        rd(7'h0A, d); check("CRC_FRAME[7:0] (snapshot)", d, 8'h02);
+        rd(7'h0B, d); check("CRC_FRAME[15:8] (snapshot)", d, 8'h01);
         rd_re(7'h05, d); check("FRAME_CRC[7:0] (next frame)", d, 8'hDD);
         rd(7'h08, d); check("FRAME_CRC[31:24] (next frame)", d, 8'hAA);
+        rd(7'h0A, d); check("CRC_FRAME[7:0] (next frame)", d, 8'h03);
 
-        // フレームバッファ: UNDERFLOW はそのまま読め、FB_BASE は 13bit
+        // UNDERFLOW はそのまま読める
         rd(7'h09, d); check("UNDERFLOW", d, 8'd7);
-        wr(7'h0A, 8'h00); wr(7'h0B, 8'hFF);
-        rd(7'h0B, d); check("FB_BASE[12:8]", d, 8'h1F);
-        if (fb_base !== 13'h1F00) begin $display("  fb_base output: %h", fb_base); errors++; end
-        wr(7'h0A, 8'h00); wr(7'h0B, 8'h01);
-        if (fb_base !== 13'h0100) begin $display("  fb_base output: %h", fb_base); errors++; end
 
         // リセットでレジスタが戻る
         @(negedge clk);

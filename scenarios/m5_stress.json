@@ -1,0 +1,172 @@
+{
+ "name": "m5_stress",
+ "description": "全画面の CLEAR と横いっぱいの FILL_RECT を続け、描画のバーストと表示の読み出しを競合させる (UNDERFLOW 0、最大待ち < 4000 クロック)",
+ "steps": [
+  {
+   "op": "clear",
+   "color": "#ff0000"
+  },
+  {
+   "op": "fill_rect",
+   "x": 1,
+   "y": 0,
+   "w": 317,
+   "h": 200,
+   "color": "#00ff00"
+  },
+  {
+   "op": "clear",
+   "color": "#00ff00"
+  },
+  {
+   "op": "fill_rect",
+   "x": 2,
+   "y": 2,
+   "w": 315,
+   "h": 200,
+   "color": "#14eb25"
+  },
+  {
+   "op": "clear",
+   "color": "#0000ff"
+  },
+  {
+   "op": "fill_rect",
+   "x": 3,
+   "y": 4,
+   "w": 313,
+   "h": 200,
+   "color": "#28d74a"
+  },
+  {
+   "op": "clear",
+   "color": "#ffffff"
+  },
+  {
+   "op": "fill_rect",
+   "x": 4,
+   "y": 6,
+   "w": 311,
+   "h": 200,
+   "color": "#3cc36f"
+  },
+  {
+   "op": "clear",
+   "color": "#ff0000"
+  },
+  {
+   "op": "fill_rect",
+   "x": 5,
+   "y": 8,
+   "w": 309,
+   "h": 200,
+   "color": "#50af94"
+  },
+  {
+   "op": "clear",
+   "color": "#00ff00"
+  },
+  {
+   "op": "fill_rect",
+   "x": 6,
+   "y": 10,
+   "w": 307,
+   "h": 200,
+   "color": "#649bb9"
+  },
+  {
+   "op": "clear",
+   "color": "#0000ff"
+  },
+  {
+   "op": "fill_rect",
+   "x": 7,
+   "y": 12,
+   "w": 305,
+   "h": 200,
+   "color": "#7887de"
+  },
+  {
+   "op": "clear",
+   "color": "#ffffff"
+  },
+  {
+   "op": "fill_rect",
+   "x": 8,
+   "y": 14,
+   "w": 303,
+   "h": 200,
+   "color": "#8c7303"
+  },
+  {
+   "op": "clear",
+   "color": "#ff0000"
+  },
+  {
+   "op": "fill_rect",
+   "x": 9,
+   "y": 16,
+   "w": 301,
+   "h": 200,
+   "color": "#a05f28"
+  },
+  {
+   "op": "clear",
+   "color": "#00ff00"
+  },
+  {
+   "op": "fill_rect",
+   "x": 10,
+   "y": 18,
+   "w": 299,
+   "h": 200,
+   "color": "#b44b4d"
+  },
+  {
+   "op": "clear",
+   "color": "#0000ff"
+  },
+  {
+   "op": "fill_rect",
+   "x": 11,
+   "y": 20,
+   "w": 297,
+   "h": 200,
+   "color": "#c83772"
+  },
+  {
+   "op": "clear",
+   "color": "#ffffff"
+  },
+  {
+   "op": "fill_rect",
+   "x": 12,
+   "y": 22,
+   "w": 295,
+   "h": 200,
+   "color": "#dc2397"
+  },
+  {
+   "op": "fill_rect",
+   "x": 0,
+   "y": 0,
+   "w": 320,
+   "h": 240,
+   "color": "#123456"
+  },
+  {
+   "op": "fill_rect",
+   "x": 3,
+   "y": 5,
+   "w": 313,
+   "h": 7,
+   "color": "#fedcba"
+  },
+  {
+   "op": "swap"
+  },
+  {
+   "op": "check"
+  }
+ ]
+}

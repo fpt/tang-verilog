@@ -1,0 +1,23 @@
+{
+  "name": "m5_basic",
+  "description": "CLEAR / FILL_RECT (奇数の端・はみ出し・画面外) / SWAP のダブルバッファ",
+  "steps": [
+    {"op": "clear", "color": "#202040"},
+    {"op": "fill_rect", "x": 0, "y": 0, "w": 320, "h": 8, "color": "#ffffff"},
+    {"op": "fill_rect", "x": 11, "y": 20, "w": 101, "h": 50, "color": "#ff0000"},
+    {"op": "fill_rect", "x": 60, "y": 45, "w": 1, "h": 100, "color": "#00ff00"},
+    {"op": "fill_rect", "x": 61, "y": 45, "w": 1, "h": 100, "color": "#0000ff"},
+    {"op": "fill_rect", "x": 300, "y": 220, "w": 64, "h": 64, "color": "#ffff00"},
+    {"op": "fill_rect", "x": 400, "y": 10, "w": 10, "h": 10, "color": "#ff00ff"},
+    {"op": "fill_rect", "x": 150, "y": 100, "w": 0, "h": 10, "color": "#ff00ff"},
+    {"op": "swap"},
+    {"op": "check"},
+    {"op": "clear", "color": "#000000"},
+    {"op": "fill_rect", "x": 33, "y": 33, "w": 254, "h": 174, "color": "#00ffff"},
+    {"op": "fill_rect", "x": 34, "y": 34, "w": 252, "h": 172, "color": "#000080"},
+    {"op": "swap"},
+    {"op": "check"},
+    {"op": "swap"},
+    {"op": "check"}
+  ]
+}

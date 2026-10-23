@@ -17,3 +17,6 @@ certs.pem
 *.vcd
 *.fst
 *.gtkw
+
+# Python
+__pycache__/
