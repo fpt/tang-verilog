@@ -2,7 +2,7 @@
 // はみ出しの切り取り、UPLOAD、SWAP (表示が取り込むまで待つ)、知らないコマンド、FIFO の空きとあふれ、
 // DRAW_LINE (8 方向・水平・垂直・1 点・画面の外から)、POINT、CLIP (CLEAR には効かない)、
 // BLIT (偶数 / 奇数の位置、左右・上下反転、透過、画面の外、クリップ、SDRAM の行をまたぐソース)、
-// 合成のレジスタ (REG_WRITE)、WAIT_LINE / WAIT_VBLANK (印)、READY を確認
+// 合成のレジスタ (REG_WRITE)、WAIT_LINE / WAIT_VBLANK (印)、READY、VRAM_WRITE / PAL_WRITE とタイル レイヤのレジスタ (E2) を確認
 `timescale 1ns/1ps
 module tb_gpu;
     localparam int SRC_W = 320, SRC_H = 16, FIFO_WORDS = 16;
@@ -14,7 +14,14 @@ module tb_gpu;
     logic        base_latched = 0;
     logic [12:0] fb_base;
     logic [15:0] bg_color, bitmap_key;
-    logic [1:0]  layer_ctrl;
+    logic [2:0]  layer_ctrl;
+    logic [9:0]  tile_scroll_x, tile_scroll_y;
+    logic [13:0] tile_map_base, tile_pat_base, vram_waddr;
+    logic [6:0]  tile_ctrl;
+    logic        vram_we, pal_we;
+    logic [31:0] vram_wdata;
+    logic [8:0]  pal_waddr;
+    logic [15:0] pal_wdata;
     logic        mark_req, ready;
     logic        line_start = 0;
     logic [7:0]  line_num = 0;
@@ -37,8 +44,20 @@ module tb_gpu;
         .clk, .rst, .addr, .wdata, .we, .re, .rdata,
         .mem_req, .mem_we, .mem_addr, .mem_wdata, .mem_wmask, .mem_len, .mem_ack, .mem_wnext, .mem_rvalid,
         .mem_rdata(rdata32),
-        .fb_base, .base_latched, .bg_color, .layer_ctrl, .bitmap_key, .mark_req, .line_start, .line_num, .ready
+        .fb_base, .base_latched, .bg_color, .layer_ctrl, .bitmap_key,
+        .tile_scroll_x, .tile_scroll_y, .tile_map_base, .tile_pat_base, .tile_ctrl,
+        .vram_we, .vram_waddr, .vram_wdata, .pal_we, .pal_waddr, .pal_wdata,
+        .mark_req, .line_start, .line_num, .ready
     );
+
+    // VRAM とパレットへの書き込みを記録する
+    logic [31:0] vram_tb [0:16383];
+    logic [15:0] pal_tb  [0:511];
+    int          vram_writes = 0, pal_writes = 0;
+    always @(posedge clk) begin
+        if (vram_we) begin vram_tb[vram_waddr] <= vram_wdata; vram_writes++; end
+        if (pal_we)  begin pal_tb[pal_waddr]   <= pal_wdata;  pal_writes++;  end
+    end
 
     sdram_ctrl #(.CLK_HZ(63_000_000), .INIT_US(2)) u_ctrl (
         .clk, .rst, .req(mem_req), .we(mem_we), .addr(mem_addr), .wdata(mem_wdata), .wmask(mem_wmask),
@@ -382,18 +401,18 @@ module tb_gpu;
         check_all("BLIT with clip");
 
         // ---- 合成のレジスタと WAIT_LINE / WAIT_VBLANK (E1) ----
-        if (bg_color !== 16'h0000 || layer_ctrl !== 2'b01 || bitmap_key !== 16'h0000) begin
+        if (bg_color !== 16'h0000 || layer_ctrl !== 3'b001 || bitmap_key !== 16'h0000) begin
             $display("  layer registers after reset: %04h %b %04h", bg_color, layer_ctrl, bitmap_key); errors++;
         end
         cmd(32'h0900_1234); cmd(32'h0901_0002); cmd(32'h0902_5678);
         wait_idle();
-        if (bg_color !== 16'h1234 || layer_ctrl !== 2'b10 || bitmap_key !== 16'h5678) begin
+        if (bg_color !== 16'h1234 || layer_ctrl !== 3'b010 || bitmap_key !== 16'h5678) begin
             $display("  REG_WRITE: %04h %b %04h", bg_color, layer_ctrl, bitmap_key); errors++;
         end
         rd(7'h48, f0); rd(7'h49, f1);
         if ({f1, f0} != 16'h1234) begin $display("  BG_COLOR read back: %04h", {f1, f0}); errors++; end
         wr(7'h4A, 8'h01);
-        if (layer_ctrl !== 2'b01) begin $display("  LAYER_CTRL host write: %b", layer_ctrl); errors++; end
+        if (layer_ctrl !== 3'b001) begin $display("  LAYER_CTRL host write: %b", layer_ctrl); errors++; end
         // WAIT_LINE 5 のあとの REG_WRITE は、ライン 4 の合成が始まったあとで効く
         lines_on = 1;
         cmd(32'h0A00_0005); cmd(32'h0900_7777);
@@ -415,6 +434,49 @@ module tb_gpu;
             $display("  WAIT_VBLANK mark: %0d pulses, after line %0d", mark_count_tb, mark_line); errors++;
         end
         lines_on = 0;
+        cmd(32'h0900_0000);
+        wait_idle();
+
+        // ---- タイル レイヤのレジスタ、VRAM_WRITE / PAL_WRITE (E2) ----
+        if (tile_scroll_x !== 0 || tile_scroll_y !== 0 || tile_map_base !== 0 || tile_pat_base !== 0 || tile_ctrl !== 0) begin
+            $display("  tile registers after reset"); errors++;
+        end
+        // 値は各レジスタの幅に切る
+        cmd(32'h0901_FFFF); cmd(32'h0903_FC05); cmd(32'h0904_0123); cmd(32'h0905_FFFF); cmd(32'h0906_2000); cmd(32'h0907_00FF);
+        wait_idle();
+        if (layer_ctrl !== 3'b111 || tile_scroll_x !== 10'h005 || tile_scroll_y !== 10'h123 || tile_map_base !== 14'h3FFF ||
+            tile_pat_base !== 14'h2000 || tile_ctrl !== 7'h7F) begin
+            $display("  tile REG_WRITE: %b %h %h %h %h %h", layer_ctrl, tile_scroll_x, tile_scroll_y, tile_map_base,
+                     tile_pat_base, tile_ctrl);
+            errors++;
+        end
+        rd(7'h4A, f0);
+        if (f0 != 8'h07) begin $display("  LAYER_CTRL read back: %h", f0); errors++; end
+        cmd(32'h0901_0001);
+        // VRAM_WRITE 3 ワードを 0x3FFF から (0x0000 に折り返す)、0 ワード、PAL_WRITE 3 色を 510 から (0 に折り返す)
+        vram_writes = 0; pal_writes = 0;
+        cmd(32'h0C00_0003); cmd(32'h0000_3FFF); cmd(32'hA0A0_0001); cmd(32'hB0B0_0002); cmd(32'hC0C0_0003);
+        cmd(32'h0C00_0000); cmd(32'h0000_0100);
+        cmd(32'h0D00_0003); cmd(32'h0000_01FE); cmd(32'h2222_1111); cmd(32'hDEAD_3333);
+        cmd(32'h0900_4242);
+        wait_idle();
+        if (vram_writes != 3 || vram_tb[16383] !== 32'hA0A0_0001 || vram_tb[0] !== 32'hB0B0_0002 || vram_tb[1] !== 32'hC0C0_0003) begin
+            $display("  VRAM_WRITE: %0d writes, %h %h %h", vram_writes, vram_tb[16383], vram_tb[0], vram_tb[1]); errors++;
+        end
+        if (pal_writes != 3 || pal_tb[510] !== 16'h1111 || pal_tb[511] !== 16'h2222 || pal_tb[0] !== 16'h3333) begin
+            $display("  PAL_WRITE: %0d writes, %h %h %h", pal_writes, pal_tb[510], pal_tb[511], pal_tb[0]); errors++;
+        end
+        if (bg_color !== 16'h4242) begin $display("  command after PAL_WRITE not run: %h", bg_color); errors++; end
+        rd_re(7'h40, d);
+        if (d[1]) begin $display("  error after VRAM_WRITE / PAL_WRITE"); errors++; end
+        // PAL_WRITE の偶数個 (2 ワード = 4 色)
+        pal_writes = 0;
+        cmd(32'h0D00_0004); cmd(32'h0000_0010); cmd(32'h0B0A_0A0B); cmd(32'h0D0C_0C0D);
+        wait_idle();
+        repeat (2) @(posedge clk);       // 最後の書き込みは実行が終わった次のクロック
+        if (pal_writes != 4 || pal_tb[16] !== 16'h0A0B || pal_tb[17] !== 16'h0B0A || pal_tb[18] !== 16'h0C0D || pal_tb[19] !== 16'h0D0C) begin
+            $display("  PAL_WRITE x4: %0d writes %h %h %h %h", pal_writes, pal_tb[16], pal_tb[17], pal_tb[18], pal_tb[19]); errors++;
+        end
         cmd(32'h0900_0000);
         wait_idle();
 

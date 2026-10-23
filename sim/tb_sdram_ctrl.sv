@@ -1,4 +1,5 @@
-// SDRAM コントローラ: 振る舞いモデル相手に、初期化・ランダムな読み書き・リフレッシュ・取り込み位置を確認
+// SDRAM コントローラ: 振る舞いモデル相手に、初期化・ランダムな読み書き・リフレッシュ・取り込み位置
+// (バーストの途中で変えても止まらないこと) を確認
 //   モデルのデータは立ち下がり 1 の T_AC (5.4ns) 後から立ち下がり 2 の T_OH (2.5ns) 後まで有効なので、
 //   取り込み位置 h = 4 (立ち上がり 2) と 5 (立ち下がり 2) は読めて、3 と 6 は読めないはず
 `timescale 1ns/1ps
@@ -117,6 +118,31 @@ module tb_sdram_ctrl;
             end while (!ack);
             req = 0; len = 9'd1;
             if (got != 160) begin $display("  burst: %0d words (expected 160)", got); errors++; end
+        end
+
+        // バーストの途中で rd_sample を変えても (4 -> 6)、そのバーストは前の位置のまま最後まで読めて ack が出る
+        // (以前は受け取ったワードの数がずれて ack が出ず、止まっていた)
+        rd_sample = 3'd4;
+        begin
+            int got, cycles;
+            @(negedge clk);
+            req = 1; we = 0; addr = 21'h0A_C10; len = 9'd160;
+            got = 0; cycles = 0;
+            do begin
+                @(negedge clk);
+                cycles++;
+                if (cycles == 40) rd_sample = 3'd6;
+                if (rvalid) begin
+                    if (rdata !== 32'h5000_0000 + 32'(got * 7)) begin
+                        if (errors < 10) $display("  burst (rd_sample changed) word %0d: got %08h", got, rdata);
+                        errors++;
+                    end
+                    got++;
+                end
+            end while (!ack && cycles < 1000);
+            req = 0; len = 9'd1;
+            if (!ack || got != 160) begin $display("  burst with rd_sample change: ack %b, %0d words", ack, got); errors++; end
+            rd_sample = 3'd4;
         end
 
         // 書き込みのバースト + バイトマスク: 同じ行の 16 ワードを 0 で埋め、16 ワードのバーストでワード k に

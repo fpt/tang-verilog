@@ -173,7 +173,9 @@ MS2109 は YUV (4:2:2、リミテッドレンジ) を通るので、色が少し
 ### M7 のあと: E1 (ラインごとの合成) ✅
 
 M8 の前に、[EMU_GPU_PLAN.md](EMU_GPU_PLAN.md) の E1 を先に行った。表示は `fb_scanout` (フレームバッファを直接出す) から
-`line_compositor` (ラインごとにレイヤを合成する) に変わり、`REG_WRITE` / `WAIT_LINE` / `WAIT_VBLANK` と READY の線が増えた。結果は EMU_GPU_PLAN.md の「E1 の結果」
+`line_compositor` (ラインごとにレイヤを合成する) に変わり、`REG_WRITE` / `WAIT_LINE` / `WAIT_VBLANK` と READY の線が増えた。結果は EMU_GPU_PLAN.md の「E1 の結果」。
+続けて E2 (タイル レイヤ 1 面、`VRAM_WRITE` / `PAL_WRITE`) も行った (「E2 の結果」)。M8 の `DRAW_TILEMAP` は、タイル レイヤがあるので
+「タイルをフレームバッファに描く」ホームブリュー向けのコマンドとして残すか、やめるかを M8 の前に決める
 
 ### M7 の結果 ✅
 

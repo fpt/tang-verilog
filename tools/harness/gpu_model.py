@@ -16,12 +16,19 @@ rtl/vdp/gpu.sv と同じ規則でコマンドを解釈し、表示される面�
       {"op": "upload_sprite", "kind": "arrow", "addr": 196608, "w": 16, "h": 16, "stride": 8},   # 下の sprite_pixels
       {"op": "blit", "src": 196608, "stride": 8, "w": 16, "h": 16, "x": 10, "y": 20,
        "transparent": true, "hflip": false, "vflip": false, "key": "#ff00ff"},
-      {"op": "reg", "name": "bg_color", "value": "#rrggbb"},   # 合成のレジスタ (bg_color / layer_ctrl / bitmap_key)
+      {"op": "reg", "name": "bg_color", "value": "#rrggbb"},   # 合成のレジスタ (LAYER_REGS の名前)
       {"op": "wait_line", "line": 100},          # 以降の reg がライン 100 から効く
       {"op": "wait_vblank", "mark": true},       # 以降の reg が次のフレームのライン 0 から効く。mark なら次のフレームに印
       {"op": "check"},                           # ここで表示されている画面を比べる (レジスタは最後の値が全ラインに効いている前提)
-      {"op": "check_marked"}                     # 印を付けたフレーム (ラインごとのレジスタの変化込み) を比べる
+      {"op": "check_marked"},                    # 印を付けたフレーム (ラインごとのレジスタの変化込み) を比べる
+      {"op": "vram_write", "addr": 0, "words": ["deadbeef", ...]},     # VRAM (ワードアドレス、16K ワードで折り返す)
+      {"op": "pal_write", "index": 0, "colors": ["#rrggbb", ...]},      # パレット (0..511)
+      {"op": "tiles", "kind": "demo", "addr": 0},                        # 下の tile_words (タイル 16 個 = 128 ワード)
+      {"op": "tilemap", "kind": "demo", "addr": 14336, "w": 32, "h": 28},  # 下の map_entries
+      {"op": "palette", "kind": "demo", "index": 0, "count": 64, "offset": 0}   # 下の palette_colors
   ]}
+タイル レイヤの形式は rtl/vdp/tile_layer.sv。VRAM とパレットは、印を付けたフレームの記録中には書かないこと
+(モデルは最後の内容で合成する)。
 色は "#rrggbb" (RGB565 に丸める) か、RGB565 の整数。
 """
 import json
@@ -32,8 +39,15 @@ SRC_W, SRC_H = fbmodel.SRC_W, fbmodel.SRC_H
 OP_NOP, OP_CLEAR, OP_FILL_RECT, OP_SWAP, OP_UPLOAD = 0x00, 0x01, 0x02, 0x03, 0x04
 OP_POINT, OP_DRAW_LINE, OP_CLIP, OP_BLIT = 0x05, 0x06, 0x07, 0x08
 OP_REG_WRITE, OP_WAIT_LINE, OP_WAIT_VBLANK = 0x09, 0x0A, 0x0B
-LAYER_REGS = {"bg_color": 0, "layer_ctrl": 1, "bitmap_key": 2}
-LAYER_RESET = {"bg_color": 0x0000, "layer_ctrl": 0x01, "bitmap_key": 0x0000}
+OP_VRAM_WRITE, OP_PAL_WRITE = 0x0C, 0x0D
+# 合成のレジスタ: 名前 -> (REG_WRITE の番号, ビットの幅のマスク)
+LAYER_REGS = {"bg_color": 0, "layer_ctrl": 1, "bitmap_key": 2, "tile_scroll_x": 3, "tile_scroll_y": 4,
+              "tile_map_base": 5, "tile_pat_base": 6, "tile_ctrl": 7}
+LAYER_MASK = {"bg_color": 0xFFFF, "layer_ctrl": 0x7, "bitmap_key": 0xFFFF, "tile_scroll_x": 0x3FF, "tile_scroll_y": 0x3FF,
+              "tile_map_base": 0x3FFF, "tile_pat_base": 0x3FFF, "tile_ctrl": 0x7F}
+LAYER_RESET = {"bg_color": 0x0000, "layer_ctrl": 0x01, "bitmap_key": 0x0000, "tile_scroll_x": 0, "tile_scroll_y": 0,
+               "tile_map_base": 0, "tile_pat_base": 0, "tile_ctrl": 0}
+VRAM_WORDS = 16384
 BLIT_MAX_W = 512
 SPRITE_KEY = 0xF81F      # sprite_pixels が透過色に使う色 (#ff00ff)
 FB_BASE_RESET, DRAW_BASE_RESET = 0, 256
@@ -84,9 +98,137 @@ def encode(step):
         return [OP_WAIT_LINE << 24 | (step["line"] & 0xFF)]
     if op == "wait_vblank":
         return [OP_WAIT_VBLANK << 24 | (1 if step.get("mark") else 0)]
+    if op == "vram_write":
+        return vram_write_words(step["addr"], [int(w, 16) if isinstance(w, str) else w for w in step["words"]])
+    if op == "pal_write":
+        return pal_write_words(step["index"], [color565(c) for c in step["colors"]])
+    if op == "tiles":
+        return vram_write_words(step["addr"], tile_words(step["kind"]))
+    if op == "tilemap":
+        return vram_write_words(step["addr"], map_words(map_entries(step["kind"], step["w"], step["h"])))
+    if op == "palette":
+        return pal_write_words(step["index"], palette_colors(step["kind"], step["count"], step.get("offset", 0)))
     if op in ("check", "check_marked"):
         return []
     raise ValueError(f"unknown op {op!r}")
+
+
+def layer_reset_words():
+    """合成のレジスタを既定に戻す REG_WRITE の列 (シナリオを始める前に送る)"""
+    return [OP_REG_WRITE << 24 | LAYER_REGS[k] << 16 | v for k, v in LAYER_RESET.items()]
+
+
+def vram_write_words(addr, words):
+    return [OP_VRAM_WRITE << 24 | len(words), addr] + list(words)
+
+
+def pal_write_words(index, colors):
+    padded = list(colors) + [0] * (len(colors) % 2)
+    return [OP_PAL_WRITE << 24 | len(colors), index] + [padded[k] | padded[k + 1] << 16 for k in range(0, len(padded), 2)]
+
+
+def tile_row_word(px):
+    """8 ピクセルの値 (0..15) を 1 ワードに。ピクセル i は [31-4i -: 4]"""
+    w = 0
+    for i, v in enumerate(px):
+        w |= (v & 15) << (28 - 4 * i)
+    return w
+
+
+def tile_words(kind):
+    """シナリオ用の決まったタイル (4bpp、1 タイル 8 ワード)
+      demo: 16 個。0 は全部透明、1 は塗りつぶし、ほかは形・グラデーション・左右上下が非対称な模様 (反転がわかる)"""
+    if kind != "demo":
+        raise ValueError(f"unknown tiles {kind!r}")
+    F = ["11111111", "11000000", "11000000", "11111100", "11000000", "11000000", "11000000", "00000000"]
+    out = []
+    for t in range(16):
+        for y in range(8):
+            row = []
+            for x in range(8):
+                if t == 0:
+                    v = 0
+                elif t == 1:
+                    v = 1
+                elif t == 2:
+                    v = 2 if x in (0, 7) or y in (0, 7) else 3
+                elif t == 3:
+                    v = 4 if (x // 2 + y // 2) % 2 else 5
+                elif t == 4:
+                    v = 6 if (x + y) % 4 < 2 else 0
+                elif t == 5:
+                    v = 7 if (x - 3.5) ** 2 + (y - 3.5) ** 2 <= 12 else 0
+                elif t == 6:
+                    v = x + 1
+                elif t == 7:
+                    v = 9 + y if y < 7 else 1
+                elif t == 8:
+                    v = 10 if x <= 7 - abs(2 * y - 7) // 2 - 1 else 0       # 右向きの三角
+                elif t == 9:
+                    v = 11 if F[y][x] == "1" else 12                      # F の字
+                elif t == 10:
+                    v = 13 if x % 4 < 2 else 14                           # 縦じま
+                elif t == 11:
+                    v = 15 if y < 4 else (2 if y < 6 else 0)              # 上が濃い横じま (下は透明)
+                elif t == 12:
+                    v = 3 if x % 3 == 1 and y % 3 == 1 else 0             # 点
+                elif t == 13:
+                    v = 5 if abs(x - 3.5) + abs(y - 3.5) <= 4 else 1      # ひし形
+                elif t == 14:
+                    v = 8 if x < 2 or y > 5 else 9                        # L の字
+                else:
+                    v = (x * 7 + y * 11 + t * 13 + x * y) % 16           # 決まった雑音 (0 = 透明も混ざる)
+                row.append(v)
+            out.append(tile_row_word(row))
+    return out
+
+
+def map_entries(kind, w, h):
+    """マップのエントリ (行優先、w x h)。[10:0] タイル、[11] 左右反転、[12] 上下反転、[14:13] パレット、[15] 優先度
+      demo: タイル 0..15 を並べ、場所によって反転・パレットを変える。優先度のビットも混ぜる (E2 では無視される)
+      scene: 画面らしい並び。上 2 行は F の字 (4 通りの反転)、空 (透明 = 背景色、ところどころ雲と三角)、
+             丘 (斜めじま)、地面 (箱・市松・ひし形・グラデーションなど)"""
+    out = []
+    for r in range(h):
+        for c in range(w):
+            if kind == "demo":
+                tile = (c + 2 * r) % 16
+                hflip = (c // 3 + r) % 2
+                vflip = (r // 2 + c) % 3 == 0
+                pal = (c // 8 + r // 7) % 4
+            elif kind == "scene":
+                hflip = vflip = 0
+                if r < 2:
+                    tile, pal = 9, 0
+                    hflip, vflip = c % 2, (c // 2) % 2
+                elif r < 13:
+                    k = (c * 5 + r * 3) % 23
+                    tile, pal = (5, 1) if k == 0 else (8, 1) if k == 7 else (12, 0) if k == 11 else (0, 0)
+                    hflip = r % 2
+                elif r < 16:
+                    tile, pal = 4, 2
+                    hflip = r == 14
+                else:
+                    tile = [2, 3, 13, 6, 7, 10, 14, 1][(c // 2 + r) % 8]
+                    pal = 3 if r < 22 else 2
+                    hflip, vflip = c % 2, r % 2
+            else:
+                raise ValueError(f"unknown tilemap {kind!r}")
+            out.append(tile | hflip << 11 | vflip << 12 | pal << 13 | (r % 2) << 15)
+    return out
+
+
+def map_words(entries):
+    padded = list(entries) + [0] * (len(entries) % 2)
+    return [padded[k] | padded[k + 1] << 16 for k in range(0, len(padded), 2)]
+
+
+def palette_colors(kind, count, offset=0):
+    """demo: 決まった色の列 (番号ごとに色相と明るさが変わる)。offset で列をずらす (別のバンク用)"""
+    if kind != "demo":
+        raise ValueError(f"unknown palette {kind!r}")
+    return [fbmodel.to565((i * 53 + 40) % 256, (i * 97 + 90) % 256, (i * 151 + 20) % 256)
+            for i in range(offset, offset + count)]
 
 
 def xy(x, y):
@@ -169,6 +311,8 @@ class Model:
         self.draw_base = DRAW_BASE_RESET
         self.clip = (0, 0, SRC_W - 1, SRC_H - 1)     # (x0, y0, x1, y1) 両端を含む
         self.regs = dict(LAYER_RESET)                 # 合成のレジスタ (今の値)
+        self.vram = {}                                # VRAM: ワードアドレス -> 32bit (書いていないワードは None)
+        self.pal = {}                                 # パレット: 番号 -> RGB565
         # 印を付けたフレーム: {"line_regs": {ライン: レジスタ}, "fb_base": ..} と、記録中かどうか・今のライン
         self.marked = None
         self.recording = False
@@ -246,7 +390,7 @@ class Model:
             elif op == OP_REG_WRITE:
                 name = {v: k for k, v in LAYER_REGS.items()}.get((w >> 16) & 0xFF)
                 if name:
-                    self.regs[name] = w & (0x3 if name == "layer_ctrl" else 0xFFFF)
+                    self.regs[name] = w & LAYER_MASK[name]
                     if self.recording:
                         self.marked["line_regs"][self.cursor] = dict(self.regs)
                 i += 1
@@ -271,6 +415,17 @@ class Model:
             elif op == OP_SWAP:
                 self.fb_base, self.draw_base = self.draw_base, self.fb_base
                 i += 1
+            elif op == OP_VRAM_WRITE:
+                n, addr = w & 0xFFFFFF, words[i + 1]
+                for k in range(n):
+                    self.vram[(addr + k) % VRAM_WORDS] = words[i + 2 + k]
+                i += 2 + n
+            elif op == OP_PAL_WRITE:
+                n, index = w & 0xFFFFFF, words[i + 1]
+                for k in range(n):
+                    d = words[i + 2 + k // 2]
+                    self.pal[(index + k) % 512] = d >> 16 if k % 2 else d & 0xFFFF
+                i += 2 + (n + 1) // 2
             elif op == OP_UPLOAD:
                 n, addr = w & 0xFFFFFF, words[i + 1]
                 for k in range(n):
@@ -279,18 +434,55 @@ class Model:
             else:          # NOP と知らないコマンドは 1 ワード
                 i += 1
 
+    def vram_word(self, a):
+        w = self.vram.get(a % VRAM_WORDS)
+        if w is None:
+            raise ValueError(f"tile layer reads unwritten VRAM word {a % VRAM_WORDS:#x}")
+        return w
+
+    def tile_line(self, y, regs):
+        """tile_layer.sv と同じ: ライン y のタイル レイヤ。透明なピクセルは None"""
+        ctrl = regs["tile_ctrl"]
+        mw = 32 << min(ctrl & 3, 2)
+        rows = 28 if (ctrl >> 2) & 3 == 3 else 32 << ((ctrl >> 2) & 3)
+        bank = (ctrl >> 4) & 7
+        vy = (y + regs["tile_scroll_y"]) % (rows * 8)
+        if (ctrl >> 2) & 3 == 3 and y + regs["tile_scroll_y"] >= 3 * 224:
+            raise ValueError("tile_scroll_y too large for a 28-row map")
+        out = []
+        for x in range(SRC_W):
+            vx = (x + regs["tile_scroll_x"]) % (mw * 8)
+            idx = (vy // 8) * mw + vx // 8
+            mword = self.vram_word(regs["tile_map_base"] + idx // 2)
+            e = mword >> 16 if idx % 2 else mword & 0xFFFF
+            ty = 7 - vy % 8 if e >> 12 & 1 else vy % 8
+            tx = 7 - vx % 8 if e >> 11 & 1 else vx % 8
+            row = self.vram_word(regs["tile_pat_base"] + (e & 0x7FF) * 8 + ty)
+            nib = row >> (28 - 4 * tx) & 15
+            if nib == 0:
+                out.append(None)
+                continue
+            pi = bank << 6 | (e >> 13 & 3) << 4 | nib
+            if pi not in self.pal:
+                raise ValueError(f"tile layer uses unwritten palette entry {pi}")
+            out.append(self.pal[pi])
+        return out
+
     def compose_line(self, base, y, regs):
-        """line_compositor.sv と同じ: ビットマップ (透過色は背景色に置き換え) か、背景色だけ"""
+        """line_compositor.sv と同じ: ビットマップ (透過色は背景色に置き換え) か背景色の上に、タイルの不透明なピクセル"""
         bg, ctrl, key = regs["bg_color"], regs["layer_ctrl"], regs["bitmap_key"]
         if not ctrl & 1:
-            return [bg] * SRC_W
-        out = []
-        for x in range(SRC_W // 2):
-            w = self.mem.get((base + y) * 256 + x)
-            if w is None:
-                raise ValueError(f"displayed plane {base} has unwritten pixels at ({2 * x},{y})")
-            for p in (w & 0xFFFF, w >> 16):
-                out.append(bg if ctrl & 2 and p == key else p)
+            out = [bg] * SRC_W
+        else:
+            out = []
+            for x in range(SRC_W // 2):
+                w = self.mem.get((base + y) * 256 + x)
+                if w is None:
+                    raise ValueError(f"displayed plane {base} has unwritten pixels at ({2 * x},{y})")
+                for p in (w & 0xFFFF, w >> 16):
+                    out.append(bg if ctrl & 2 and p == key else p)
+        if ctrl & 4:
+            out = [b if t is None else t for b, t in zip(out, self.tile_line(y, regs))]
         return out
 
     def displayed565(self):
@@ -363,15 +555,16 @@ def compare(path, out_dir):
     results, ok = [], True
     for i, (_, _, crc) in enumerate(checks):
         with open(os.path.join(out_dir, f"crc_{i}.txt")) as f:
-            rtl_crc, frame, under, max_fetch = f.read().split()
+            rtl_crc, frame, under, max_fetch, max_line = f.read().split()
         with open(os.path.join(out_dir, f"frame_{i}.ppm"), "rb") as f:
             ppm = f.read()
         ppm_crc = zlib.crc32(ppm[ppm.index(b"255\n") + 4:])
         r = {"check": i, "model": f"0x{crc:08x}", "rtl_frame_crc": f"0x{int(rtl_crc, 16):08x}",
              "ppm": f"0x{ppm_crc:08x}", "frame": int(frame), "underflow": int(under),
-             "max_fetch_cycles": int(max_fetch)}
-        # 表示のライン読み出しは出力 2 ライン (63.5us = clk_sys 4000 クロック) までに終われば間に合う
-        r["ok"] = int(rtl_crc, 16) == crc == ppm_crc and int(under) == 0 and int(max_fetch) < 4000
+             "max_fetch_cycles": int(max_fetch), "max_line_cycles": int(max_line)}
+        # 1 ラインの合成 (タイルのパス + 表示のライン読み出し) は出力 2 ライン (63.5us = clk_sys 4000 クロック) までに終われば間に合う
+        r["ok"] = (int(rtl_crc, 16) == crc == ppm_crc and int(under) == 0 and int(max_fetch) < 4000
+                   and int(max_line) < 4000)
         ok &= r["ok"]
         results.append(r)
     print(json.dumps({"scenario": sc["name"], "ok": ok, "checks": results}, indent=1))

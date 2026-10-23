@@ -120,6 +120,7 @@ lint:
 	$(FPGA) verilator --lint-only -Wall --top-module mem_test $(VDP_SRC)
 	$(FPGA) verilator --lint-only -Wall --top-module sdram_arb $(VDP_SRC)
 	$(FPGA) verilator --lint-only -Wall --top-module line_compositor $(VDP_SRC)
+	$(FPGA) verilator --lint-only -Wall --top-module tile_layer $(VDP_SRC)
 	$(FPGA) verilator --lint-only -Wall --top-module gpu $(VDP_SRC)
 
 sim: $(addprefix sim-,$(TBS))

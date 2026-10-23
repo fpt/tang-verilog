@@ -1,0 +1,1216 @@
+{
+ "name": "e2_tiles",
+ "description": "タイル レイヤ (E2): SMS 相当 (32x28 マップ、4bpp、反転・パレット、スクロール) の画面、ラインごとに横スクロールを変える (波) フレーム、ビットマップの上に透明のあるタイル (64x32 マップ、別のパレットのバンク) を重ねる画面",
+ "steps": [
+  {
+   "op": "palette",
+   "kind": "demo",
+   "index": 0,
+   "count": 64
+  },
+  {
+   "op": "palette",
+   "kind": "demo",
+   "index": 64,
+   "count": 64,
+   "offset": 17
+  },
+  {
+   "op": "tiles",
+   "kind": "demo",
+   "addr": 0
+  },
+  {
+   "op": "tilemap",
+   "kind": "scene",
+   "addr": 14336,
+   "w": 32,
+   "h": 28
+  },
+  {
+   "op": "reg",
+   "name": "bg_color",
+   "value": "#5080e0"
+  },
+  {
+   "op": "reg",
+   "name": "tile_map_base",
+   "value": 14336
+  },
+  {
+   "op": "reg",
+   "name": "tile_pat_base",
+   "value": 0
+  },
+  {
+   "op": "reg",
+   "name": "tile_ctrl",
+   "value": 12
+  },
+  {
+   "op": "reg",
+   "name": "tile_scroll_x",
+   "value": 13
+  },
+  {
+   "op": "reg",
+   "name": "tile_scroll_y",
+   "value": 50
+  },
+  {
+   "op": "reg",
+   "name": "layer_ctrl",
+   "value": 4
+  },
+  {
+   "op": "check"
+  },
+  {
+   "op": "wait_vblank",
+   "mark": true
+  },
+  {
+   "op": "reg",
+   "name": "tile_scroll_x",
+   "value": 13
+  },
+  {
+   "op": "wait_line",
+   "line": 2
+  },
+  {
+   "op": "reg",
+   "name": "tile_scroll_x",
+   "value": 16
+  },
+  {
+   "op": "wait_line",
+   "line": 4
+  },
+  {
+   "op": "reg",
+   "name": "tile_scroll_x",
+   "value": 18
+  },
+  {
+   "op": "wait_line",
+   "line": 6
+  },
+  {
+   "op": "reg",
+   "name": "tile_scroll_x",
+   "value": 20
+  },
+  {
+   "op": "wait_line",
+   "line": 8
+  },
+  {
+   "op": "reg",
+   "name": "tile_scroll_x",
+   "value": 23
+  },
+  {
+   "op": "wait_line",
+   "line": 10
+  },
+  {
+   "op": "reg",
+   "name": "tile_scroll_x",
+   "value": 25
+  },
+  {
+   "op": "wait_line",
+   "line": 12
+  },
+  {
+   "op": "reg",
+   "name": "tile_scroll_x",
+   "value": 27
+  },
+  {
+   "op": "wait_line",
+   "line": 14
+  },
+  {
+   "op": "reg",
+   "name": "tile_scroll_x",
+   "value": 29
+  },
+  {
+   "op": "wait_line",
+   "line": 16
+  },
+  {
+   "op": "reg",
+   "name": "tile_scroll_x",
+   "value": 31
+  },
+  {
+   "op": "wait_line",
+   "line": 18
+  },
+  {
+   "op": "reg",
+   "name": "tile_scroll_x",
+   "value": 32
+  },
+  {
+   "op": "wait_line",
+   "line": 20
+  },
+  {
+   "op": "reg",
+   "name": "tile_scroll_x",
+   "value": 34
+  },
+  {
+   "op": "wait_line",
+   "line": 22
+  },
+  {
+   "op": "reg",
+   "name": "tile_scroll_x",
+   "value": 35
+  },
+  {
+   "op": "wait_line",
+   "line": 24
+  },
+  {
+   "op": "reg",
+   "name": "tile_scroll_x",
+   "value": 36
+  },
+  {
+   "op": "wait_line",
+   "line": 26
+  },
+  {
+   "op": "reg",
+   "name": "tile_scroll_x",
+   "value": 36
+  },
+  {
+   "op": "wait_line",
+   "line": 28
+  },
+  {
+   "op": "reg",
+   "name": "tile_scroll_x",
+   "value": 37
+  },
+  {
+   "op": "wait_line",
+   "line": 30
+  },
+  {
+   "op": "reg",
+   "name": "tile_scroll_x",
+   "value": 37
+  },
+  {
+   "op": "wait_line",
+   "line": 32
+  },
+  {
+   "op": "reg",
+   "name": "tile_scroll_x",
+   "value": 37
+  },
+  {
+   "op": "wait_line",
+   "line": 34
+  },
+  {
+   "op": "reg",
+   "name": "tile_scroll_x",
+   "value": 36
+  },
+  {
+   "op": "wait_line",
+   "line": 36
+  },
+  {
+   "op": "reg",
+   "name": "tile_scroll_x",
+   "value": 36
+  },
+  {
+   "op": "wait_line",
+   "line": 38
+  },
+  {
+   "op": "reg",
+   "name": "tile_scroll_x",
+   "value": 35
+  },
+  {
+   "op": "wait_line",
+   "line": 40
+  },
+  {
+   "op": "reg",
+   "name": "tile_scroll_x",
+   "value": 34
+  },
+  {
+   "op": "wait_line",
+   "line": 42
+  },
+  {
+   "op": "reg",
+   "name": "tile_scroll_x",
+   "value": 32
+  },
+  {
+   "op": "wait_line",
+   "line": 44
+  },
+  {
+   "op": "reg",
+   "name": "tile_scroll_x",
+   "value": 31
+  },
+  {
+   "op": "wait_line",
+   "line": 46
+  },
+  {
+   "op": "reg",
+   "name": "tile_scroll_x",
+   "value": 29
+  },
+  {
+   "op": "wait_line",
+   "line": 48
+  },
+  {
+   "op": "reg",
+   "name": "tile_scroll_x",
+   "value": 27
+  },
+  {
+   "op": "wait_line",
+   "line": 50
+  },
+  {
+   "op": "reg",
+   "name": "tile_scroll_x",
+   "value": 25
+  },
+  {
+   "op": "wait_line",
+   "line": 52
+  },
+  {
+   "op": "reg",
+   "name": "tile_scroll_x",
+   "value": 23
+  },
+  {
+   "op": "wait_line",
+   "line": 54
+  },
+  {
+   "op": "reg",
+   "name": "tile_scroll_x",
+   "value": 20
+  },
+  {
+   "op": "wait_line",
+   "line": 56
+  },
+  {
+   "op": "reg",
+   "name": "tile_scroll_x",
+   "value": 18
+  },
+  {
+   "op": "wait_line",
+   "line": 58
+  },
+  {
+   "op": "reg",
+   "name": "tile_scroll_x",
+   "value": 16
+  },
+  {
+   "op": "wait_line",
+   "line": 60
+  },
+  {
+   "op": "reg",
+   "name": "tile_scroll_x",
+   "value": 13
+  },
+  {
+   "op": "wait_line",
+   "line": 62
+  },
+  {
+   "op": "reg",
+   "name": "tile_scroll_x",
+   "value": 10
+  },
+  {
+   "op": "wait_line",
+   "line": 64
+  },
+  {
+   "op": "reg",
+   "name": "tile_scroll_x",
+   "value": 8
+  },
+  {
+   "op": "wait_line",
+   "line": 66
+  },
+  {
+   "op": "reg",
+   "name": "tile_scroll_x",
+   "value": 6
+  },
+  {
+   "op": "wait_line",
+   "line": 68
+  },
+  {
+   "op": "reg",
+   "name": "tile_scroll_x",
+   "value": 3
+  },
+  {
+   "op": "wait_line",
+   "line": 70
+  },
+  {
+   "op": "reg",
+   "name": "tile_scroll_x",
+   "value": 1
+  },
+  {
+   "op": "wait_line",
+   "line": 72
+  },
+  {
+   "op": "reg",
+   "name": "tile_scroll_x",
+   "value": 1023
+  },
+  {
+   "op": "wait_line",
+   "line": 74
+  },
+  {
+   "op": "reg",
+   "name": "tile_scroll_x",
+   "value": 1021
+  },
+  {
+   "op": "wait_line",
+   "line": 76
+  },
+  {
+   "op": "reg",
+   "name": "tile_scroll_x",
+   "value": 1019
+  },
+  {
+   "op": "wait_line",
+   "line": 78
+  },
+  {
+   "op": "reg",
+   "name": "tile_scroll_x",
+   "value": 1018
+  },
+  {
+   "op": "wait_line",
+   "line": 80
+  },
+  {
+   "op": "reg",
+   "name": "tile_scroll_x",
+   "value": 1016
+  },
+  {
+   "op": "wait_line",
+   "line": 82
+  },
+  {
+   "op": "reg",
+   "name": "tile_scroll_x",
+   "value": 1015
+  },
+  {
+   "op": "wait_line",
+   "line": 84
+  },
+  {
+   "op": "reg",
+   "name": "tile_scroll_x",
+   "value": 1014
+  },
+  {
+   "op": "wait_line",
+   "line": 86
+  },
+  {
+   "op": "reg",
+   "name": "tile_scroll_x",
+   "value": 1014
+  },
+  {
+   "op": "wait_line",
+   "line": 88
+  },
+  {
+   "op": "reg",
+   "name": "tile_scroll_x",
+   "value": 1013
+  },
+  {
+   "op": "wait_line",
+   "line": 90
+  },
+  {
+   "op": "reg",
+   "name": "tile_scroll_x",
+   "value": 1013
+  },
+  {
+   "op": "wait_line",
+   "line": 92
+  },
+  {
+   "op": "reg",
+   "name": "tile_scroll_x",
+   "value": 1013
+  },
+  {
+   "op": "wait_line",
+   "line": 94
+  },
+  {
+   "op": "reg",
+   "name": "tile_scroll_x",
+   "value": 1014
+  },
+  {
+   "op": "wait_line",
+   "line": 96
+  },
+  {
+   "op": "reg",
+   "name": "tile_scroll_x",
+   "value": 1014
+  },
+  {
+   "op": "wait_line",
+   "line": 98
+  },
+  {
+   "op": "reg",
+   "name": "tile_scroll_x",
+   "value": 1015
+  },
+  {
+   "op": "wait_line",
+   "line": 100
+  },
+  {
+   "op": "reg",
+   "name": "tile_scroll_x",
+   "value": 1016
+  },
+  {
+   "op": "wait_line",
+   "line": 102
+  },
+  {
+   "op": "reg",
+   "name": "tile_scroll_x",
+   "value": 1018
+  },
+  {
+   "op": "wait_line",
+   "line": 104
+  },
+  {
+   "op": "reg",
+   "name": "tile_scroll_x",
+   "value": 1019
+  },
+  {
+   "op": "wait_line",
+   "line": 106
+  },
+  {
+   "op": "reg",
+   "name": "tile_scroll_x",
+   "value": 1021
+  },
+  {
+   "op": "wait_line",
+   "line": 108
+  },
+  {
+   "op": "reg",
+   "name": "tile_scroll_x",
+   "value": 1023
+  },
+  {
+   "op": "wait_line",
+   "line": 110
+  },
+  {
+   "op": "reg",
+   "name": "tile_scroll_x",
+   "value": 1
+  },
+  {
+   "op": "wait_line",
+   "line": 112
+  },
+  {
+   "op": "reg",
+   "name": "tile_scroll_x",
+   "value": 3
+  },
+  {
+   "op": "wait_line",
+   "line": 114
+  },
+  {
+   "op": "reg",
+   "name": "tile_scroll_x",
+   "value": 6
+  },
+  {
+   "op": "wait_line",
+   "line": 116
+  },
+  {
+   "op": "reg",
+   "name": "tile_scroll_x",
+   "value": 8
+  },
+  {
+   "op": "wait_line",
+   "line": 118
+  },
+  {
+   "op": "reg",
+   "name": "tile_scroll_x",
+   "value": 10
+  },
+  {
+   "op": "wait_line",
+   "line": 120
+  },
+  {
+   "op": "reg",
+   "name": "tile_scroll_x",
+   "value": 13
+  },
+  {
+   "op": "reg",
+   "name": "tile_ctrl",
+   "value": 28
+  },
+  {
+   "op": "wait_line",
+   "line": 122
+  },
+  {
+   "op": "reg",
+   "name": "tile_scroll_x",
+   "value": 16
+  },
+  {
+   "op": "wait_line",
+   "line": 124
+  },
+  {
+   "op": "reg",
+   "name": "tile_scroll_x",
+   "value": 18
+  },
+  {
+   "op": "wait_line",
+   "line": 126
+  },
+  {
+   "op": "reg",
+   "name": "tile_scroll_x",
+   "value": 20
+  },
+  {
+   "op": "wait_line",
+   "line": 128
+  },
+  {
+   "op": "reg",
+   "name": "tile_scroll_x",
+   "value": 23
+  },
+  {
+   "op": "wait_line",
+   "line": 130
+  },
+  {
+   "op": "reg",
+   "name": "tile_scroll_x",
+   "value": 25
+  },
+  {
+   "op": "wait_line",
+   "line": 132
+  },
+  {
+   "op": "reg",
+   "name": "tile_scroll_x",
+   "value": 27
+  },
+  {
+   "op": "wait_line",
+   "line": 134
+  },
+  {
+   "op": "reg",
+   "name": "tile_scroll_x",
+   "value": 29
+  },
+  {
+   "op": "wait_line",
+   "line": 136
+  },
+  {
+   "op": "reg",
+   "name": "tile_scroll_x",
+   "value": 31
+  },
+  {
+   "op": "wait_line",
+   "line": 138
+  },
+  {
+   "op": "reg",
+   "name": "tile_scroll_x",
+   "value": 32
+  },
+  {
+   "op": "wait_line",
+   "line": 140
+  },
+  {
+   "op": "reg",
+   "name": "tile_scroll_x",
+   "value": 34
+  },
+  {
+   "op": "wait_line",
+   "line": 142
+  },
+  {
+   "op": "reg",
+   "name": "tile_scroll_x",
+   "value": 35
+  },
+  {
+   "op": "wait_line",
+   "line": 144
+  },
+  {
+   "op": "reg",
+   "name": "tile_scroll_x",
+   "value": 36
+  },
+  {
+   "op": "wait_line",
+   "line": 146
+  },
+  {
+   "op": "reg",
+   "name": "tile_scroll_x",
+   "value": 36
+  },
+  {
+   "op": "wait_line",
+   "line": 148
+  },
+  {
+   "op": "reg",
+   "name": "tile_scroll_x",
+   "value": 37
+  },
+  {
+   "op": "wait_line",
+   "line": 150
+  },
+  {
+   "op": "reg",
+   "name": "tile_scroll_x",
+   "value": 37
+  },
+  {
+   "op": "wait_line",
+   "line": 152
+  },
+  {
+   "op": "reg",
+   "name": "tile_scroll_x",
+   "value": 37
+  },
+  {
+   "op": "wait_line",
+   "line": 154
+  },
+  {
+   "op": "reg",
+   "name": "tile_scroll_x",
+   "value": 36
+  },
+  {
+   "op": "wait_line",
+   "line": 156
+  },
+  {
+   "op": "reg",
+   "name": "tile_scroll_x",
+   "value": 36
+  },
+  {
+   "op": "wait_line",
+   "line": 158
+  },
+  {
+   "op": "reg",
+   "name": "tile_scroll_x",
+   "value": 35
+  },
+  {
+   "op": "wait_line",
+   "line": 160
+  },
+  {
+   "op": "reg",
+   "name": "tile_scroll_x",
+   "value": 34
+  },
+  {
+   "op": "wait_line",
+   "line": 162
+  },
+  {
+   "op": "reg",
+   "name": "tile_scroll_x",
+   "value": 32
+  },
+  {
+   "op": "wait_line",
+   "line": 164
+  },
+  {
+   "op": "reg",
+   "name": "tile_scroll_x",
+   "value": 31
+  },
+  {
+   "op": "wait_line",
+   "line": 166
+  },
+  {
+   "op": "reg",
+   "name": "tile_scroll_x",
+   "value": 29
+  },
+  {
+   "op": "wait_line",
+   "line": 168
+  },
+  {
+   "op": "reg",
+   "name": "tile_scroll_x",
+   "value": 27
+  },
+  {
+   "op": "wait_line",
+   "line": 170
+  },
+  {
+   "op": "reg",
+   "name": "tile_scroll_x",
+   "value": 25
+  },
+  {
+   "op": "wait_line",
+   "line": 172
+  },
+  {
+   "op": "reg",
+   "name": "tile_scroll_x",
+   "value": 23
+  },
+  {
+   "op": "wait_line",
+   "line": 174
+  },
+  {
+   "op": "reg",
+   "name": "tile_scroll_x",
+   "value": 20
+  },
+  {
+   "op": "wait_line",
+   "line": 176
+  },
+  {
+   "op": "reg",
+   "name": "tile_scroll_x",
+   "value": 18
+  },
+  {
+   "op": "wait_line",
+   "line": 178
+  },
+  {
+   "op": "reg",
+   "name": "tile_scroll_x",
+   "value": 16
+  },
+  {
+   "op": "wait_line",
+   "line": 180
+  },
+  {
+   "op": "reg",
+   "name": "tile_scroll_x",
+   "value": 13
+  },
+  {
+   "op": "reg",
+   "name": "tile_scroll_y",
+   "value": 90
+  },
+  {
+   "op": "wait_line",
+   "line": 182
+  },
+  {
+   "op": "reg",
+   "name": "tile_scroll_x",
+   "value": 10
+  },
+  {
+   "op": "wait_line",
+   "line": 184
+  },
+  {
+   "op": "reg",
+   "name": "tile_scroll_x",
+   "value": 8
+  },
+  {
+   "op": "wait_line",
+   "line": 186
+  },
+  {
+   "op": "reg",
+   "name": "tile_scroll_x",
+   "value": 6
+  },
+  {
+   "op": "wait_line",
+   "line": 188
+  },
+  {
+   "op": "reg",
+   "name": "tile_scroll_x",
+   "value": 3
+  },
+  {
+   "op": "wait_line",
+   "line": 190
+  },
+  {
+   "op": "reg",
+   "name": "tile_scroll_x",
+   "value": 1
+  },
+  {
+   "op": "wait_line",
+   "line": 192
+  },
+  {
+   "op": "reg",
+   "name": "tile_scroll_x",
+   "value": 1023
+  },
+  {
+   "op": "wait_line",
+   "line": 194
+  },
+  {
+   "op": "reg",
+   "name": "tile_scroll_x",
+   "value": 1021
+  },
+  {
+   "op": "wait_line",
+   "line": 196
+  },
+  {
+   "op": "reg",
+   "name": "tile_scroll_x",
+   "value": 1019
+  },
+  {
+   "op": "wait_line",
+   "line": 198
+  },
+  {
+   "op": "reg",
+   "name": "tile_scroll_x",
+   "value": 1018
+  },
+  {
+   "op": "wait_line",
+   "line": 200
+  },
+  {
+   "op": "reg",
+   "name": "tile_scroll_x",
+   "value": 1016
+  },
+  {
+   "op": "wait_line",
+   "line": 202
+  },
+  {
+   "op": "reg",
+   "name": "tile_scroll_x",
+   "value": 1015
+  },
+  {
+   "op": "wait_line",
+   "line": 204
+  },
+  {
+   "op": "reg",
+   "name": "tile_scroll_x",
+   "value": 1014
+  },
+  {
+   "op": "wait_line",
+   "line": 206
+  },
+  {
+   "op": "reg",
+   "name": "tile_scroll_x",
+   "value": 1014
+  },
+  {
+   "op": "wait_line",
+   "line": 208
+  },
+  {
+   "op": "reg",
+   "name": "tile_scroll_x",
+   "value": 1013
+  },
+  {
+   "op": "wait_line",
+   "line": 210
+  },
+  {
+   "op": "reg",
+   "name": "tile_scroll_x",
+   "value": 1013
+  },
+  {
+   "op": "wait_line",
+   "line": 212
+  },
+  {
+   "op": "reg",
+   "name": "tile_scroll_x",
+   "value": 1013
+  },
+  {
+   "op": "wait_line",
+   "line": 214
+  },
+  {
+   "op": "reg",
+   "name": "tile_scroll_x",
+   "value": 1014
+  },
+  {
+   "op": "wait_line",
+   "line": 216
+  },
+  {
+   "op": "reg",
+   "name": "tile_scroll_x",
+   "value": 1014
+  },
+  {
+   "op": "wait_line",
+   "line": 218
+  },
+  {
+   "op": "reg",
+   "name": "tile_scroll_x",
+   "value": 1015
+  },
+  {
+   "op": "wait_line",
+   "line": 220
+  },
+  {
+   "op": "reg",
+   "name": "tile_scroll_x",
+   "value": 1016
+  },
+  {
+   "op": "wait_line",
+   "line": 222
+  },
+  {
+   "op": "reg",
+   "name": "tile_scroll_x",
+   "value": 1018
+  },
+  {
+   "op": "wait_line",
+   "line": 224
+  },
+  {
+   "op": "reg",
+   "name": "tile_scroll_x",
+   "value": 1019
+  },
+  {
+   "op": "wait_line",
+   "line": 226
+  },
+  {
+   "op": "reg",
+   "name": "tile_scroll_x",
+   "value": 1021
+  },
+  {
+   "op": "wait_line",
+   "line": 228
+  },
+  {
+   "op": "reg",
+   "name": "tile_scroll_x",
+   "value": 1023
+  },
+  {
+   "op": "wait_line",
+   "line": 230
+  },
+  {
+   "op": "reg",
+   "name": "tile_scroll_x",
+   "value": 1
+  },
+  {
+   "op": "wait_line",
+   "line": 232
+  },
+  {
+   "op": "reg",
+   "name": "tile_scroll_x",
+   "value": 3
+  },
+  {
+   "op": "wait_line",
+   "line": 234
+  },
+  {
+   "op": "reg",
+   "name": "tile_scroll_x",
+   "value": 6
+  },
+  {
+   "op": "wait_line",
+   "line": 236
+  },
+  {
+   "op": "reg",
+   "name": "tile_scroll_x",
+   "value": 8
+  },
+  {
+   "op": "wait_line",
+   "line": 238
+  },
+  {
+   "op": "reg",
+   "name": "tile_scroll_x",
+   "value": 10
+  },
+  {
+   "op": "check_marked"
+  },
+  {
+   "op": "reg",
+   "name": "tile_ctrl",
+   "value": 12
+  },
+  {
+   "op": "reg",
+   "name": "tile_scroll_x",
+   "value": 13
+  },
+  {
+   "op": "reg",
+   "name": "tile_scroll_y",
+   "value": 50
+  },
+  {
+   "op": "upload_image",
+   "slot": 0
+  },
+  {
+   "op": "tilemap",
+   "kind": "scene",
+   "addr": 8192,
+   "w": 64,
+   "h": 32
+  },
+  {
+   "op": "reg",
+   "name": "tile_map_base",
+   "value": 8192
+  },
+  {
+   "op": "reg",
+   "name": "tile_ctrl",
+   "value": 17
+  },
+  {
+   "op": "reg",
+   "name": "tile_scroll_x",
+   "value": 300
+  },
+  {
+   "op": "reg",
+   "name": "tile_scroll_y",
+   "value": 5
+  },
+  {
+   "op": "reg",
+   "name": "layer_ctrl",
+   "value": 5
+  },
+  {
+   "op": "check"
+  }
+ ]
+}

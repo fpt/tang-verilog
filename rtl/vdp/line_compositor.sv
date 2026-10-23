@@ -1,11 +1,11 @@
 // ラインごとの合成 (docs/EMU_GPU_PLAN.md の E1。M4 の fb_scanout を置き換えた)
 //   論理画面 SRC_W x SRC_H を、ライン単位で合成して縦横 2 倍で出す。
 //
-//   合成: ラインを始めるときにレイヤのレジスタ (背景色・レイヤの有効・ビットマップの透過色) を取り込み、
-//         - ビットマップ レイヤが有効なら、SDRAM のフレームバッファの行をバーストで読み、透過色のピクセル (透過色が有効なとき) を背景色に
-//           置き換えて書く
-//         - 無効なら背景色で埋める
-//         タイル レイヤやスプライトは、このあと (E2, E3) で合成のパスを足していく。
+//   合成: ラインを始めるときにレイヤのレジスタ (背景色・レイヤの有効・ビットマップの透過色・タイル レイヤの設定) を取り込み、
+//         1. タイル レイヤが有効なら、tile_layer にそのラインを合成させる (タイル ライン バッファへ、約 450 クロック)
+//         2. ビットマップ レイヤが有効なら、SDRAM のフレームバッファの行をバーストで読み、透過色のピクセル (透過色が有効なとき) を背景色に
+//            置き換えて書く。無効なら背景色で埋める。どちらも、タイルの不透明なピクセルがあればそれで置き換える
+//         重なりは下から 背景色 < ビットマップ < タイル。スプライトは E3 で合成のパスを足す。
 //   レジスタはラインの合成を始めるときに取り込むので、GPU の WAIT_LINE n のあとの REG_WRITE はライン n から効く。
 //   そのために、合成を始めるたびに line_start とライン番号 line_num を出す。
 //
@@ -24,7 +24,8 @@
 module line_compositor #(
     parameter int SRC_W   = 320,
     parameter int SRC_H   = 240,
-    parameter int V_TOTAL = 525
+    parameter int V_TOTAL = 525,
+    parameter int VRAM_WORDS = 16384
 ) (
     // --- システムクロック側 ---
     input  logic        clk_sys,
@@ -32,8 +33,19 @@ module line_compositor #(
     input  logic [12:0] fb_base,          // 256 ワード単位。ライン 0 を合成し始めるときに取り込む
     output logic        base_latched,     // fb_base を取り込んだとき 1 クロック
     input  logic [15:0] bg_color,         // 背景色 (RGB565)
-    input  logic [1:0]  layer_ctrl,       // bit0: ビットマップ レイヤ有効, bit1: ビットマップの透過色を有効
+    input  logic [2:0]  layer_ctrl,       // bit0: ビットマップ レイヤ有効, bit1: ビットマップの透過色を有効, bit2: タイル レイヤ有効
     input  logic [15:0] bitmap_key,       // ビットマップの透過色
+    input  logic [9:0]  tile_scroll_x,    // タイル レイヤ (tile_layer.sv)
+    input  logic [9:0]  tile_scroll_y,
+    input  logic [13:0] tile_map_base,
+    input  logic [13:0] tile_pat_base,
+    input  logic [6:0]  tile_ctrl,
+    input  logic        vram_we,          // VRAM とパレットの書き込み (GPU)
+    input  logic [13:0] vram_waddr,
+    input  logic [31:0] vram_wdata,
+    input  logic        pal_we,
+    input  logic [8:0]  pal_waddr,
+    input  logic [15:0] pal_wdata,
     input  logic        mark_req,         // 次のフレームに印を付ける (1 クロック)
     output logic        mark_toggle,      // 印を付けたフレームの合成を始めるたびに反転
     output logic        line_start,       // ラインの合成を始めたとき 1 クロック
@@ -103,7 +115,22 @@ module line_compositor #(
     logic [7:0]  widx;
     // このラインのレジスタ (合成を始めるときに取り込む)
     logic [15:0] l_bg, l_key;
-    logic        l_key_en;
+    logic        l_key_en, l_bm_en, l_tile_en;
+    logic [9:0]  l_sx, l_sy;
+    logic [13:0] l_map, l_pat;
+    logic [6:0]  l_tctrl;
+    logic [20:0] l_addr;         // ビットマップの行のアドレス
+    logic        issue;          // ビットマップ (または背景色) のパスを始める
+    logic        t_start, t_wait, t_busy;
+    logic [33:0] t_rd;           // タイル ライン バッファの widx のワード: {不透明, 色 (奇数), 不透明, 色 (偶数)}
+    logic [7:0]  t_rd_addr;
+
+    tile_layer #(.SRC_W(SRC_W), .VRAM_WORDS(VRAM_WORDS)) u_tile (
+        .clk(clk_sys), .rst(rst_sys),
+        .vram_we, .vram_waddr, .vram_wdata, .pal_we, .pal_waddr, .pal_wdata,
+        .start(t_start), .line(line_num), .scroll_x(l_sx), .scroll_y(l_sy), .map_base(l_map), .pat_base(l_pat),
+        .ctrl(l_tctrl), .busy(t_busy), .rd_addr(t_rd_addr), .rd_data(t_rd)
+    );
 
     always_ff @(posedge clk_sys) req_s <= {req_s[1:0], req_toggle};
 
@@ -116,9 +143,13 @@ module line_compositor #(
     // BSRAM にするため、書き込みはリセットのない別のブロックで
     logic        wr_en;
     logic [31:0] wr_data;
+    logic [15:0] base_lo, base_hi;
     assign wr_en   = filling || (busy && mem_rvalid);
-    assign wr_data = filling ? {l_bg, l_bg}
-                             : {pick(mem_rdata[31:16], l_bg, l_key, l_key_en), pick(mem_rdata[15:0], l_bg, l_key, l_key_en)};
+    assign base_lo = filling ? l_bg : pick(mem_rdata[15:0], l_bg, l_key, l_key_en);
+    assign base_hi = filling ? l_bg : pick(mem_rdata[31:16], l_bg, l_key, l_key_en);
+    assign wr_data = {(l_tile_en && t_rd[33]) ? t_rd[32:17] : base_hi, (l_tile_en && t_rd[16]) ? t_rd[15:0] : base_lo};
+    // タイル ライン バッファは 1 クロック遅れで読めるので、次に書くワードを先に読んでおく
+    assign t_rd_addr = (filling || mem_rvalid) ? widx + 8'd1 : widx;
     always_ff @(posedge clk_sys) if (wr_en) line_buf[{line_bank, widx}] <= wr_data;
 
     assign mem_len = 9'(WORDS);
@@ -136,9 +167,14 @@ module line_compositor #(
             line_num        <= '0;
             mark_pending    <= 1'b0;
             mark_toggle     <= 1'b0;
+            issue           <= 1'b0;
+            t_start         <= 1'b0;
+            t_wait          <= 1'b0;
         end else begin
             base_latched <= 1'b0;
             line_start   <= 1'b0;
+            t_start      <= 1'b0;
+            issue        <= 1'b0;
             if (mark_req) mark_pending <= 1'b1;
 
             // 新しい依頼が来たときにまだ合成していたら、表示に間に合っていない
@@ -156,6 +192,14 @@ module line_compositor #(
                 l_bg       <= bg_color;
                 l_key      <= bitmap_key;
                 l_key_en   <= layer_ctrl[1];
+                l_bm_en    <= layer_ctrl[0];
+                l_tile_en  <= layer_ctrl[2];
+                l_sx       <= tile_scroll_x;
+                l_sy       <= tile_scroll_y;
+                l_map      <= tile_map_base;
+                l_pat      <= tile_pat_base;
+                l_tctrl    <= tile_ctrl;
+                l_addr     <= (req_line == 9'd0) ? {fb_base, 8'b0} : {frame_base + 13'(req_line), 8'b0};
                 widx       <= '0;
                 if (req_line == 9'd0) begin
                     frame_base   <= fb_base;
@@ -165,9 +209,24 @@ module line_compositor #(
                         mark_pending <= 1'b0;
                     end
                 end
-                if (layer_ctrl[0]) begin
+                // タイル レイヤが有効なら先にタイルのパス、終わったらビットマップ (または背景色) のパス
+                if (layer_ctrl[2]) begin
+                    t_start <= 1'b1;
+                    t_wait  <= 1'b1;
+                end else begin
+                    issue <= 1'b1;
+                end
+            end
+
+            // t_start のクロックの t_busy はまだ 0 (tile_layer は次のクロックから busy)
+            if (t_wait && !t_start && !t_busy) begin
+                t_wait <= 1'b0;
+                issue  <= 1'b1;
+            end
+            if (issue) begin
+                if (l_bm_en) begin
                     mem_req  <= 1'b1;
-                    mem_addr <= (req_line == 9'd0) ? {fb_base, 8'b0} : {frame_base + 13'(req_line), 8'b0};
+                    mem_addr <= l_addr;
                 end else begin
                     filling <= 1'b1;
                 end
