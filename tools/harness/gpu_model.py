@@ -31,6 +31,7 @@ rtl/vdp/gpu.sv と同じ規則でコマンドを解釈し、表示される面�
       {"op": "oam", "sprites": [{"x": -4, "y": 10, "w": 2, "h": 1, "tile": 3, "hflip": false, "vflip": false,
                                  "pal": 0, "pri": 0, "order": 0}, ...]}  # OAM 全体 (書かなかったエントリは無効)
       {"op": "demo_setup"}, {"op": "demo_frame", "frame": 120, "mark": true}   # M9 のデモ (demo.py) のコマンド
+      {"op": "md_frame", "variant": 0, "mark": true}   # メガドラの形式の決まったフレーム (md.py) を直したもの。印付きの 1 フレーム
   ]}
 タイル レイヤの形式は rtl/vdp/tile_layer.sv、スプライト (OAM) は rtl/vdp/sprite_layer.sv。VRAM・パレット・OAM は、
 印を付けたフレームの記録中には書かないこと (モデルは最後の内容で合成する)。
@@ -48,14 +49,23 @@ OP_VRAM_WRITE, OP_PAL_WRITE, OP_OAM_WRITE = 0x0C, 0x0D, 0x0F
 # 合成のレジスタ: 名前 -> (REG_WRITE の番号, ビットの幅のマスク)
 LAYER_REGS = {"bg_color": 0, "layer_ctrl": 1, "bitmap_key": 2, "tile_scroll_x": 3, "tile_scroll_y": 4,
               "tile_map_base": 5, "tile_pat_base": 6, "tile_ctrl": 7, "bitmap_rank": 8,
-              "spr_pat_base": 9, "spr_bank": 10, "spr_line_px": 11}
-LAYER_MASK = {"bg_color": 0xFFFF, "layer_ctrl": 0xF, "bitmap_key": 0xFFFF, "tile_scroll_x": 0x3FF, "tile_scroll_y": 0x3FF,
-              "tile_map_base": 0x3FFF, "tile_pat_base": 0x3FFF, "tile_ctrl": 0x7F, "bitmap_rank": 0x7,
-              "spr_pat_base": 0x3FFF, "spr_bank": 0x7, "spr_line_px": 0x3FF}
+              "spr_pat_base": 9, "spr_bank": 10, "spr_line_px": 11,
+              "tileb_scroll_x": 12, "tileb_scroll_y": 13, "tileb_map_base": 14, "tileb_pat_base": 15, "tileb_ctrl": 16,
+              "win_h": 17, "win_v": 18, "win_map_base": 19, "hscroll_mode": 20, "hscroll_base": 21}
+LAYER_MASK = {"bg_color": 0xFFFF, "layer_ctrl": 0x1F, "bitmap_key": 0xFFFF, "tile_scroll_x": 0x3FF, "tile_scroll_y": 0x3FF,
+              "tile_map_base": 0x3FFF, "tile_pat_base": 0x3FFF, "tile_ctrl": 0xFF, "bitmap_rank": 0x7,
+              "spr_pat_base": 0x3FFF, "spr_bank": 0x7, "spr_line_px": 0x3FF,
+              "tileb_scroll_x": 0x3FF, "tileb_scroll_y": 0x3FF, "tileb_map_base": 0x3FFF, "tileb_pat_base": 0x3FFF,
+              "tileb_ctrl": 0xFF, "win_h": 0x9F, "win_v": 0x9F, "win_map_base": 0x3FFF, "hscroll_mode": 0x3,
+              "hscroll_base": 0x3FFF}
 LAYER_RESET = {"bg_color": 0x0000, "layer_ctrl": 0x01, "bitmap_key": 0x0000, "tile_scroll_x": 0, "tile_scroll_y": 0,
                "tile_map_base": 0, "tile_pat_base": 0, "tile_ctrl": 0, "bitmap_rank": 1,
-               "spr_pat_base": 0, "spr_bank": 0, "spr_line_px": 320}
-# 合成の順位 (line_compositor.sv): 0 背景色、面 A のタイルは優先度ビットで 2 か 5、スプライトは 3 か 6、ビットマップは bitmap_rank
+               "spr_pat_base": 0, "spr_bank": 0, "spr_line_px": 320,
+               "tileb_scroll_x": 0, "tileb_scroll_y": 0, "tileb_map_base": 0, "tileb_pat_base": 0, "tileb_ctrl": 0,
+               "win_h": 0, "win_v": 0, "win_map_base": 0, "hscroll_mode": 0, "hscroll_base": 0}
+# 合成の順位 (line_compositor.sv): 0 背景色、面 B は優先度ビットで 1 か 4、面 A (とウィンドウ) は 2 か 5、スプライトは 3 か 6、
+# ビットマップは bitmap_rank
+RANK_B_LO, RANK_B_HI = 1, 4
 RANK_A_LO, RANK_A_HI = 2, 5
 RANK_S_LO, RANK_S_HI = 3, 6
 OAM_WORDS = 256
@@ -124,6 +134,9 @@ def encode(step):
         return oam_write_words(step["addr"], [int(w, 16) if isinstance(w, str) else w for w in step["words"]])
     if op == "oam":
         return oam_write_words(0, oam_words(step["sprites"]))
+    if op == "md_frame":
+        import md
+        return md.translate(md.synthetic(step.get("variant", 0)), step.get("mark", True))[0]
     if op == "demo_setup":
         import demo
         return demo.setup_words()
@@ -506,24 +519,44 @@ class Model:
             raise ValueError(f"tile layer reads unwritten VRAM word {a % VRAM_WORDS:#x}")
         return w
 
-    def tile_line(self, y, regs):
-        """tile_layer.sv と同じ: ライン y のタイル レイヤ。(色, 優先度) のリスト、透明なピクセルは None"""
-        ctrl = regs["tile_ctrl"]
+    def plane(self, regs, which, y):
+        """line_compositor.sv と同じ: 面 ("a" / "b" / "w" = ウィンドウ) の (scroll_x, scroll_y, map_base, pat_base, ctrl)"""
+        if which == "w":
+            return 0, 0, regs["win_map_base"], regs["tile_pat_base"], (regs["tile_ctrl"] & 0xF0) | 0x01
+        pre = "tile_" if which == "a" else "tileb_"
+        sx = regs[pre + "scroll_x"]
+        mode = regs["hscroll_mode"]
+        if mode:
+            idx = 0 if mode == 1 else (y & ~7 if mode == 2 else y)
+            w = self.vram_word(regs["hscroll_base"] + idx)
+            sx = -((w >> 16) if which == "a" else w) & 0x3FF
+        return sx, regs[pre + "scroll_y"], regs[pre + "map_base"], regs[pre + "pat_base"], regs[pre + "ctrl"]
+
+    def in_window(self, regs, x, y):
+        wh, wv = regs["win_h"], regs["win_v"]
+        v8, h16 = (wv & 31) * 8, (wh & 31) * 16
+        if (y >= v8) if wv & 0x80 else (y < v8):
+            return True
+        return x >= h16 if wh & 0x80 else x < h16
+
+    def tile_line(self, y, regs, which="a"):
+        """tile_layer.sv と同じ: ライン y の面 (which)。(色, 優先度) のリスト、透明なピクセルは None"""
+        scroll_x, scroll_y, map_base, pat_base, ctrl = self.plane(regs, which, y)
         mw = 32 << min(ctrl & 3, 2)
         rows = 28 if (ctrl >> 2) & 3 == 3 else 32 << ((ctrl >> 2) & 3)
         bank = (ctrl >> 4) & 7
-        vy = (y + regs["tile_scroll_y"]) % (rows * 8)
-        if (ctrl >> 2) & 3 == 3 and y + regs["tile_scroll_y"] >= 3 * 224:
+        vy = (y + scroll_y) % (rows * 8)
+        if (ctrl >> 2) & 3 == 3 and y + scroll_y >= 3 * 224:
             raise ValueError("tile_scroll_y too large for a 28-row map")
         out = []
         for x in range(SRC_W):
-            vx = (x + regs["tile_scroll_x"]) % (mw * 8)
+            vx = (x + scroll_x) % (mw * 8)
             idx = (vy // 8) * mw + vx // 8
-            mword = self.vram_word(regs["tile_map_base"] + idx // 2)
-            e = mword >> 16 if idx % 2 else mword & 0xFFFF
+            mword = self.vram_word(map_base + idx // 2)
+            e = mword >> 16 if (idx % 2) ^ (ctrl >> 7 & 1) else mword & 0xFFFF
             ty = 7 - vy % 8 if e >> 12 & 1 else vy % 8
             tx = 7 - vx % 8 if e >> 11 & 1 else vx % 8
-            row = self.vram_word(regs["tile_pat_base"] + (e & 0x7FF) * 8 + ty)
+            row = self.vram_word(pat_base + (e & 0x7FF) * 8 + ty)
             nib = row >> (28 - 4 * tx) & 15
             if nib == 0:
                 out.append(None)
@@ -578,19 +611,28 @@ class Model:
 
     def compose_line(self, base, y, regs):
         """line_compositor.sv と同じ: 順位の付いた作業ラインに、スプライト (空いているところだけ = OAM の前が勝つ) →
-        タイル → ビットマップの順に書く。タイルとビットマップは「順位が今より大きいときだけ」。順位 0 (誰も書かなかった) は背景色"""
+        面 B → 面 A (ウィンドウの外) → ウィンドウ → ビットマップの順に書く。タイルとビットマップは「順位が今より大きいときだけ」。順位 0 (誰も書かなかった) は背景色"""
         bg, ctrl, key = regs["bg_color"], regs["layer_ctrl"], regs["bitmap_key"]
         line = [(0, bg)] * SRC_W                  # (順位, 色)
         if ctrl & 8:
             for x, c, pri in self.sprite_line(y, regs):
                 if line[x][0] == 0:
                     line[x] = (RANK_S_HI if pri else RANK_S_LO, c)
-        if ctrl & 4:
-            for x, t in enumerate(self.tile_line(y, regs)):
+        if ctrl & 16:
+            for x, t in enumerate(self.tile_line(y, regs, "b")):
                 if t is not None:
-                    rank = RANK_A_HI if t[1] else RANK_A_LO
+                    rank = RANK_B_HI if t[1] else RANK_B_LO
                     if rank > line[x][0]:
                         line[x] = (rank, t[0])
+        if ctrl & 4:
+            win = [self.in_window(regs, x, y) for x in range(SRC_W)]
+            passes = [("a", False)] + ([("w", True)] if any(win) else [])
+            for which, inside in passes:
+                for x, t in enumerate(self.tile_line(y, regs, which)):
+                    if t is not None and win[x] == inside:
+                        rank = RANK_A_HI if t[1] else RANK_A_LO
+                        if rank > line[x][0]:
+                            line[x] = (rank, t[0])
         if ctrl & 1:
             rank = regs["bitmap_rank"]
             for x in range(SRC_W // 2):

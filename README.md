@@ -20,7 +20,7 @@ Tang Nano 20K (Gowin GW2AR-18) と RP2350 で、レトロゲーム機の VDP の
 - 実機 (Tang Nano 20K + HDMI) で、SPI のハーネス (RP2040-Zero) からコマンド GPU (図形・BLIT)、ライン合成、タイル レイヤが動いている。
   すべて 参照モデル = Verilator = 実機 の CRC で確かめている ([docs/HARNESS.md](docs/HARNESS.md))
 - 進み具合: コマンド GPU は [docs/GPU_PLAN.md](docs/GPU_PLAN.md) (M0〜M9 済み、M8 はやめた)、エミュレータ向けのタイル/スプライト エンジンは
-  [docs/EMU_GPU_PLAN.md](docs/EMU_GPU_PLAN.md) (E1〜E3 済み、次は E4)
+  [docs/EMU_GPU_PLAN.md](docs/EMU_GPU_PLAN.md) (E1〜E4 済み、次は E5 のホスト翻訳層)
 - 本番ホスト (RP2350) とのリンクは HSTX に決めた (EMU_GPU_PLAN.md の「本番のリンク」)。まだ作っていない
 
 ## ツール

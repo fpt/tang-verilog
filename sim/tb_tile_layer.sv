@@ -1,6 +1,7 @@
 // タイル レイヤ: VRAM とパレットを乱数で埋め、いろいろな設定で 1 ラインを合成して、全ピクセルを参照の計算と比べる
 //   - マップの幅 32 / 64 / 128、高さ 32 / 64 / 28 (SMS)、スクロール (タイルの途中から、マップの端で折り返す)
 //   - タイル単位の左右反転・上下反転・パレット、パレットのバンク、ピクセルの値 0 は透明
+//   - マップのエントリの並び (ctrl[7] = 1 なら上位が偶数の列 = メガドラ)
 //   - ピクセルは x = 0..SRC_W-1 の順に 1 つずつ出て、その 1 クロック前の next_word が x / 2
 //   - 1 ラインの合成が 460 クロック以内に終わる
 `timescale 1ns/1ps
@@ -18,7 +19,7 @@ module tb_tile_layer;
     logic [15:0] pal_wdata = '0;
     logic [7:0]  line = '0, next_word;
     logic [9:0]  scroll_x = '0, scroll_y = '0;
-    logic [6:0]  ctrl = '0;
+    logic [7:0]  ctrl = '0;
     logic        px_valid, px_opaque, px_pri;
     logic [8:0]  px_x;
     logic [15:0] px_color;
@@ -75,7 +76,7 @@ module tb_tile_layer;
         row  = vy / 8;
         idx  = row * mw + col;
         w    = vram_ref[(int'(map_base) + idx / 2) % VW];
-        e    = (idx % 2) ? w[31:16] : w[15:0];
+        e    = ((idx % 2 == 1) != ctrl[7]) ? w[31:16] : w[15:0];
         ty   = e[12] ? 7 - vy % 8 : vy % 8;
         tx   = e[11] ? 7 - vx % 8 : vx % 8;
         w    = vram_ref[(int'(pat_base) + int'(e[10:0]) * 8 + ty) % VW];
@@ -112,7 +113,7 @@ module tb_tile_layer;
         end
     endtask
 
-    task automatic config_lines(input logic [6:0] c, input int sx, input int sy, input int mb, input int pb);
+    task automatic config_lines(input logic [7:0] c, input int sx, input int sy, input int mb, input int pb);
         ctrl = c;
         scroll_x = 10'(sx);
         scroll_y = 10'(sy);
@@ -148,12 +149,14 @@ module tb_tile_layer;
         @(negedge clk) pal_we = 0;
 
         //            ctrl {bank, 高さ, 幅}     scroll_x scroll_y  map_base pat_base
-        config_lines({3'd0, 2'd0, 2'd0},      0,       0,        14'h2000, 0);
-        config_lines({3'd5, 2'd0, 2'd0},      13,      77,       14'h2000, 14'h0100);   // タイルの途中から
-        config_lines({3'd2, 2'd0, 2'd0},      250,     250,      14'h3F00, 14'h1234);   // 端で折り返す (アドレスも)
-        config_lines({3'd1, 2'd3, 2'd0},      100,     200,      14'h0800, 0);          // 28 タイル (224 で折り返す)
-        config_lines({3'd7, 2'd1, 2'd1},      511,     300,      14'h1000, 14'h0040);   // 64 x 64
-        config_lines({3'd3, 2'd2, 2'd2},      1000,    1023,     14'h0000, 14'h2000);   // 128 x 128
+        config_lines({1'b0, 3'd0, 2'd0, 2'd0},      0,       0,        14'h2000, 0);
+        config_lines({1'b0, 3'd5, 2'd0, 2'd0},      13,      77,       14'h2000, 14'h0100);   // タイルの途中から
+        config_lines({1'b0, 3'd2, 2'd0, 2'd0},      250,     250,      14'h3F00, 14'h1234);   // 端で折り返す (アドレスも)
+        config_lines({1'b0, 3'd1, 2'd3, 2'd0},      100,     200,      14'h0800, 0);          // 28 タイル (224 で折り返す)
+        config_lines({1'b0, 3'd7, 2'd1, 2'd1},      511,     300,      14'h1000, 14'h0040);   // 64 x 64
+        config_lines({1'b0, 3'd3, 2'd2, 2'd2},      1000,    1023,     14'h0000, 14'h2000);   // 128 x 128
+        config_lines({1'b1, 3'd4, 2'd0, 2'd1}, 37,     5,        14'h3000, 0);          // 64 x 32、メガドラの並び
+        config_lines({1'b1, 3'd6, 2'd3, 2'd0}, 3,      190,      14'h1800, 14'h0200);   // 32 x 28、メガドラの並び
 
         if (max_cycles > 460) begin $display("  line took %0d cycles", max_cycles); errors++; end
         if (order_errors != 0) begin $display("  pixels out of order / next_word wrong: %0d", order_errors); errors++; end

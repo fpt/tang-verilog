@@ -8,6 +8,8 @@
 //     タイルの優先度ビットが立つとタイルが上。ビットマップの順位 0 は何も書かない
 //   - スプライト: 低優先はタイル (低) の上、タイル (高) の下。高優先は一番上。スプライト同士は OAM の前が勝つ (優先度によらない)。
 //     負の x / y、2 タイル幅の左右反転、ラインの上限 (列の数)
+//   - 面 B: 低優先は面 A (低) の下、高優先は面 A (低) の上。ウィンドウ (ライン全体) は面 A を隠して別のマップを出す。
+//     横スクロールの表 (ラインごと) で面 A と面 B を別々にずらす
 //   - メモリが遅すぎると UNDERFLOW を数える
 `timescale 1ns/1ps
 module tb_line_compositor;
@@ -34,7 +36,11 @@ module tb_line_compositor;
     logic [12:0] fb_base = BASE;
     logic        base_latched;
     logic [15:0] bg_color = 16'h0000, bitmap_key = 16'h0000;
-    logic [3:0]  layer_ctrl = 4'b0001;
+    logic [4:0]  layer_ctrl = 5'b00001;
+    logic [13:0] tileb_map_base = 14'd64;
+    logic [5:0]  win_v = '0;
+    logic [1:0]  hs_mode = '0;
+    localparam logic [13:0] BMAP = 14'd64, WMAP = 14'd128, HSB = 14'd256;
     logic [2:0]  bitmap_rank = 3'd1;
     logic        vram_we = 0, pal_we = 0;
     logic [13:0] vram_waddr = '0;
@@ -55,7 +61,9 @@ module tb_line_compositor;
 
     line_compositor #(.SRC_W(SRC_W), .SRC_H(SRC_H), .V_TOTAL(V_TOTAL), .VRAM_WORDS(1024)) dut (
         .clk_sys, .rst_sys(rst), .fb_base, .base_latched, .bg_color, .layer_ctrl, .bitmap_key, .bitmap_rank,
-        .tile_scroll_x(10'd0), .tile_scroll_y(10'd0), .tile_map_base(14'd0), .tile_pat_base(PAT), .tile_ctrl(7'd0),
+        .tile_scroll_x(10'd0), .tile_scroll_y(10'd0), .tile_map_base(14'd0), .tile_pat_base(PAT), .tile_ctrl(8'd0),
+        .tileb_scroll_x(10'd0), .tileb_scroll_y(10'd0), .tileb_map_base, .tileb_pat_base(PAT), .tileb_ctrl(8'd0),
+        .win_h(6'd0), .win_v, .win_map_base(WMAP), .hs_mode, .hs_base(HSB),
         .spr_pat_base(PAT), .spr_bank(3'd1), .spr_line_cols(spr_line_px[9:3]),
         .vram_we, .vram_waddr, .vram_wdata, .pal_we, .pal_waddr, .pal_wdata, .oam_we,
         .mark_req, .mark_toggle, .line_start, .line_num,
@@ -126,6 +134,25 @@ module tb_line_compositor;
         end
         if (found && srank > rank) c = sc;
         return c;
+    endfunction
+
+    // 面 B / ウィンドウ / 横スクロールの表: 面 B のマップはタイル 1 (パレット 1、優先度 b_hi)、ウィンドウはタイル 1 (パレット 2)。
+    // 色はパレットの {バンク 0, p, n} = 16p + n に 16'h7C00 + 16p + n。横スクロールの表は面 A を y、面 B を 2y ずらす
+    bit b_hi = 0, win_on = 0, hs_on = 0;
+    function automatic logic [15:0] planes(input int sx, input int sy);
+        int ax, bx, nib;
+        ax = hs_on ? (sx + sy) % 8 : sx;
+        bx = hs_on ? (sx + 2 * sy) % 8 : sx;
+        nib = int'(spr_nib(bx, sy));
+        if (win_on) begin                                  // ウィンドウ (順位 2、スクロールしない) > 面 B (低)
+            if (spr_nib(sx, sy) != 0) return 16'h7C20 + 16'(spr_nib(sx, sy));
+            if (nib != 0) return 16'h7C10 + 16'(nib);
+            return 16'h0123;
+        end
+        if (b_hi && nib != 0) return 16'h7C10 + 16'(nib);   // 面 B (高) > 面 A (低)
+        if (tile_nib(ax, sy) != 0) return 16'h7C00 + 16'(tile_nib(ax, sy));
+        if (nib != 0) return 16'h7C10 + 16'(nib);
+        return 16'h0123;
     endfunction
 
     task automatic write_oam();
@@ -199,7 +226,7 @@ module tb_line_compositor;
 
     // 出力は x, y の 1 クロック後。mode: 0 = ビットマップ、1 = 背景色だけ (ラインごと)、2 = 透過色あり、
     // 3 = タイル + ビットマップ、4 = タイル + 背景色、5 = ビットマップ (透過色あり) が上でタイルが下、
-    // 6 = スプライト + タイル + ビットマップ (mixed)
+    // 6 = スプライト + タイル + ビットマップ (mixed)、7 = 面 A + 面 B (+ ウィンドウ、横スクロールの表) + 背景色 (planes)
     logic [10:0] x_d;
     logic [9:0]  y_d;
     logic        de_d;
@@ -219,6 +246,7 @@ module tb_line_compositor;
                 3: e = (tile_nib(sx, sy) != 0) ? 16'h7C00 + 16'(tile_nib(sx, sy)) : pixel(sx, sy);
                 4: e = (tile_nib(sx, sy) != 0) ? 16'h7C00 + 16'(tile_nib(sx, sy)) : 16'h0123;
                 6: e = mixed(sx, sy);
+                7: e = planes(sx, sy);
                 default: e = (pixel(sx, sy) != key_px) ? pixel(sx, sy) :
                              (tile_nib(sx, sy) != 0) ? 16'h7C00 + 16'(tile_nib(sx, sy)) : 16'h0123;
             endcase
@@ -346,6 +374,43 @@ module tb_line_compositor;
         check_frames(6, 2);           // 上限 0: スプライトなし
         spr_line_px = 10'd320;
         layer_ctrl = 4'b0001;
+
+        // 面 B: パレット 16..47、面 A のマップは優先度なし、面 B・ウィンドウのマップ、横スクロールの表
+        for (int i = 16; i < 48; i++) begin
+            @(negedge clk_sys); pal_we = 1; pal_waddr = 9'(i); pal_wdata = 16'h7C00 + 16'(i);
+        end
+        @(negedge clk_sys); pal_we = 0;
+        write_map(32'h0);
+        for (int i = 0; i < 16; i++) begin
+            @(negedge clk_sys); vram_we = 1; vram_waddr = BMAP + 14'(i); vram_wdata = 32'h2001_2001;      // タイル 1、パレット 1
+            @(negedge clk_sys); vram_waddr = WMAP + 14'(i); vram_wdata = 32'h4001_4001;                   // タイル 1、パレット 2
+        end
+        for (int i = 0; i < SRC_H; i++) begin
+            @(negedge clk_sys); vram_we = 1; vram_waddr = HSB + 14'(i);
+            vram_wdata = {16'(-i), 16'(-2 * i)};                                                         // 面 A -y、面 B -2y
+        end
+        @(negedge clk_sys); vram_we = 0;
+        bg_color = 16'h0123;
+        layer_ctrl = 5'b10100;
+        check_frames(7, 2);           // 面 A (低) > 面 B (低)
+        b_hi = 1;
+        for (int i = 0; i < 16; i++) begin
+            @(negedge clk_sys); vram_we = 1; vram_waddr = BMAP + 14'(i); vram_wdata = 32'hA001_A001;
+        end
+        @(negedge clk_sys); vram_we = 0;
+        check_frames(7, 2);           // 面 B (高) > 面 A (低)
+        b_hi = 0;
+        for (int i = 0; i < 16; i++) begin
+            @(negedge clk_sys); vram_we = 1; vram_waddr = BMAP + 14'(i); vram_wdata = 32'h2001_2001;
+        end
+        @(negedge clk_sys); vram_we = 0;
+        hs_on = 1; hs_mode = 2'd3;
+        check_frames(7, 2);           // 横スクロールの表 (ラインごと)
+        hs_on = 0; hs_mode = 2'd0;
+        win_on = 1; win_v = 6'b100000;
+        check_frames(7, 2);           // ウィンドウ (下、位置 0 = 全ライン)
+        win_on = 0; win_v = '0;
+        layer_ctrl = 5'b00001;
 
         // line_start の順番と、印 (次のライン 0 で 1 回だけ)
         if (line_order_errors != 0) begin $display("  line_start out of order: %0d", line_order_errors); errors++; end
