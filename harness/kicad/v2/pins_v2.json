@@ -1,0 +1,28 @@
+{
+  "_comment": "ハーネス v2 (Pico LiPo 2 / RP2350B) の配線表 (docs/HARNESS2.md)。fpga_dir は FPGA から見た向き。信号はすべて正論理 (Low = 何もしていない)。hstx_bit は RP2350 の HSTX 出力ビット (GP12 = bit0)",
+  "pins": [
+    {"signal": "HSTX_D0",   "fpga_pin": 71, "fpga_dir": "input",  "pico_gpio": 12, "pico_pin": 16, "hstx_bit": 0, "series_r": "33R"},
+    {"signal": "HSTX_D1",   "fpga_pin": 72, "fpga_dir": "input",  "pico_gpio": 13, "pico_pin": 17, "hstx_bit": 1, "series_r": "33R"},
+    {"signal": "HSTX_D2",   "fpga_pin": 73, "fpga_dir": "input",  "pico_gpio": 14, "pico_pin": 19, "hstx_bit": 2, "series_r": "33R"},
+    {"signal": "HSTX_D3",   "fpga_pin": 74, "fpga_dir": "input",  "pico_gpio": 15, "pico_pin": 20, "hstx_bit": 3, "series_r": "33R"},
+    {"signal": "HSTX_CLK",  "fpga_pin": 80, "fpga_dir": "input",  "pico_gpio": 16, "pico_pin": 21, "hstx_bit": 4, "series_r": "33R", "note": "GCLKT_0。SD の D2 と共有 (10k プルアップ)"},
+    {"signal": "SPI_SCK",   "fpga_pin": 20, "fpga_dir": "input",  "pico_gpio": 10, "pico_pin": 14, "note": "SPI1 SCK。LED5 と共有"},
+    {"signal": "SPI_COPI",  "fpga_pin": 19, "fpga_dir": "input",  "pico_gpio": 11, "pico_pin": 15, "note": "SPI1 TX。LED4 と共有"},
+    {"signal": "SPI_CIPO",  "fpga_pin": 75, "fpga_dir": "output", "pico_gpio": 8,  "pico_pin": 11, "note": "SPI1 RX。BL616 MISO と共有 (v1 で実績)"},
+    {"signal": "SPI_CS",    "fpga_pin": 86, "fpga_dir": "input",  "pico_gpio": 9,  "pico_pin": 12, "pulldown": "10k", "note": "SPI1 CSn のピンだが正論理で使う。BL616 SPI_DIR と共有 (v1 で実績)"},
+    {"signal": "READY",     "fpga_pin": 85, "fpga_dir": "output", "pico_gpio": 20, "pico_pin": 26, "note": "SD の D1 と共有 (10k プルアップ)。FPGA 未コンフィグでは High"},
+    {"signal": "RESET",     "fpga_pin": 79, "fpga_dir": "input",  "pico_gpio": 21, "pico_pin": 27, "pulldown": "10k", "note": "WS2812 DIN と共有"},
+    {"signal": "VSYNC",     "fpga_pin": 18, "fpga_dir": "output", "pico_gpio": 22, "pico_pin": 29, "optional": "JP2", "note": "LED3 / LCD YU (LCD_INIT3) と共有"},
+    {"signal": "HEARTBEAT", "fpga_pin": 17, "fpga_dir": "output", "pico_gpio": 7,  "pico_pin": 10, "optional": "JP3", "note": "LED2 / LCD XL (LCD_INIT2) と共有"},
+    {"signal": "ERROR",     "fpga_pin": 16, "fpga_dir": "output", "pico_gpio": 6,  "pico_pin": 9,  "optional": "JP4", "note": "LED1 / LCD YD (LCD_INIT1) と共有"}
+  ],
+  "spare": {
+    "pico_gpio": [17, 18, 19, 0, 1, 2, 3, 26, 27, 28],
+    "pico_i2c_qwst": [4, 5],
+    "fpga_pin": [15],
+    "fpga_reserved_lcd": [25, 26, 27, 28, 29, 30, 31, 41, 42, 48, 49, 77],
+    "fpga_reserved_i2s": [51, 54, 55, 56],
+    "fpga_avoid": [52, 53, 76]
+  },
+  "power": {"tang_5v_to_pico_vbus": "JP1 + SS14", "3v3": "つながない", "gnd": "全部"}
+}
