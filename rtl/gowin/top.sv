@@ -129,9 +129,10 @@ module top (
     // 表示ピクセルの CRC (FRAME_CRC レジスタ)
     logic [31:0] frame_crc_value;
     logic        frame_crc_toggle;
+    logic [15:0] frame_crc_frame;
     frame_crc u_crc (
         .clk(clk_pix), .rst, .de, .r, .g, .b, .vblank,
-        .crc(frame_crc_value), .crc_toggle(frame_crc_toggle)
+        .crc(frame_crc_value), .frame(frame_crc_frame), .crc_toggle(frame_crc_toggle)
     );
 
     dvi_tx u_dvi (
@@ -150,16 +151,18 @@ module top (
 
     // --- SPI スレーブとレジスタ (システムクロック) ---
     logic [6:0] reg_addr;
-    logic [7:0] reg_wdata, reg_rdata, vdp_rdata, mem_rdata;
+    logic [7:0] reg_wdata, reg_rdata, vdp_rdata, mem_rdata, gpu_rdata;
     logic       reg_we, reg_re, spi_frame_error;
 
-    logic [12:0] fb_base;            // vdp_regs -> fb_scanout
+    logic [12:0] fb_base;            // gpu -> fb_scanout
+    logic        base_latched;       // fb_scanout -> gpu
     logic [7:0]  underflow_count;    // fb_scanout -> vdp_regs
 
-    // 0x10..0x3F は SDRAM のテストとアップロード (mem_test)、それ以外は vdp_regs
-    logic sel_mem;
-    assign sel_mem   = reg_addr >= 7'h10 && reg_addr <= 7'h3F;
-    assign reg_rdata = sel_mem ? mem_rdata : vdp_rdata;
+    // 0x10..0x2F は SDRAM のテスト (mem_test)、0x30..0x4F は GPU、それ以外は vdp_regs
+    logic sel_mem, sel_gpu;
+    assign sel_mem   = reg_addr >= 7'h10 && reg_addr <= 7'h2F;
+    assign sel_gpu   = reg_addr >= 7'h30 && reg_addr <= 7'h4F;
+    assign reg_rdata = sel_mem ? mem_rdata : sel_gpu ? gpu_rdata : vdp_rdata;
 
     spi_slave u_spi (
         .clk(clk_sys), .rst(rst_sys),
@@ -170,19 +173,21 @@ module top (
 
     vdp_regs u_regs (
         .clk(clk_sys), .rst(rst_sys),
-        .addr(reg_addr), .wdata(reg_wdata), .we(reg_we && !sel_mem), .re(reg_re && !sel_mem), .rdata(vdp_rdata),
+        .addr(reg_addr), .wdata(reg_wdata), .we(reg_we && !sel_mem && !sel_gpu), .re(reg_re && !sel_mem && !sel_gpu),
+        .rdata(vdp_rdata),
         .vblank_async(vblank), .frame_toggle_async(heartbeat),
-        .crc_async(frame_crc_value), .crc_toggle_async(frame_crc_toggle),
+        .crc_async(frame_crc_value), .crc_frame_async(frame_crc_frame), .crc_toggle_async(frame_crc_toggle),
         .error_event(spi_frame_error),
-        .underflow_count, .fb_base,
+        .underflow_count,
         .control, .irq(vdp_irq), .error(error_out)
     );
 
     // --- パッケージ内 SDRAM ---
-    // 利用者: a = フレームバッファの表示 (優先), b = メモリテストとアップロード
-    logic        mem_req, mem_we, mem_ack, mem_rvalid, mem_init_done, sdram_dq_oe;
+    // 利用者: a = フレームバッファの表示 (最優先), b = GPU の描画, c = メモリテスト
+    logic        mem_req, mem_we, mem_ack, mem_rvalid, mem_wnext, mem_init_done, sdram_dq_oe;
     logic [20:0] mem_addr;
     logic [31:0] mem_wdata, mem_rdata32, sdram_dq_out;
+    logic [3:0]  mem_wmask;
     logic [8:0]  mem_len;
     logic [2:0]  rd_sample;
 
@@ -190,40 +195,57 @@ module top (
     logic [20:0] fb_addr;
     logic [8:0]  fb_len;
 
+    logic        g_req, g_we, g_ack, g_wnext;
+    logic [20:0] g_addr;
+    logic [31:0] g_wdata;
+    logic [3:0]  g_wmask;
+    logic [8:0]  g_len;
+
     logic        t_req, t_we, t_ack, t_rvalid;
     logic [20:0] t_addr;
     logic [31:0] t_wdata;
+    logic [3:0]  t_wmask;
     logic [8:0]  t_len;
 
     fb_scanout u_fb (
-        .clk_sys, .rst_sys, .fb_base,
+        .clk_sys, .rst_sys, .fb_base, .base_latched,
         .mem_req(fb_req), .mem_addr(fb_addr), .mem_len(fb_len), .mem_ack(fb_ack),
         .mem_rvalid(fb_rvalid), .mem_rdata(mem_rdata32), .underflow_count,
         .clk_pix, .rst_pix(rst), .enable(fb_en_s[1]), .x(vx), .y(vy), .rgb(fb_rgb)
     );
 
+    gpu u_gpu (
+        .clk(clk_sys), .rst(rst_sys),
+        .addr(reg_addr), .wdata(reg_wdata), .we(reg_we && sel_gpu), .re(reg_re && sel_gpu), .rdata(gpu_rdata),
+        .mem_req(g_req), .mem_we(g_we), .mem_addr(g_addr), .mem_wdata(g_wdata), .mem_wmask(g_wmask),
+        .mem_len(g_len), .mem_ack(g_ack), .mem_wnext(g_wnext),
+        .fb_base, .base_latched
+    );
+
     mem_test u_mem_test (
         .clk(clk_sys), .rst(rst_sys),
         .addr(reg_addr), .wdata(reg_wdata), .we(reg_we && sel_mem), .rdata(mem_rdata),
-        .mem_req(t_req), .mem_we(t_we), .mem_addr(t_addr), .mem_wdata(t_wdata), .mem_len(t_len),
-        .mem_ack(t_ack), .mem_rvalid(t_rvalid), .mem_rdata(mem_rdata32), .mem_init_done, .rd_sample,
+        .mem_req(t_req), .mem_we(t_we), .mem_addr(t_addr), .mem_wdata(t_wdata), .mem_wmask(t_wmask),
+        .mem_len(t_len), .mem_ack(t_ack), .mem_rvalid(t_rvalid), .mem_rdata(mem_rdata32), .mem_init_done, .rd_sample,
         .clk_phase(sdram_psda), .clk_duty(sdram_dutyda)
     );
 
     sdram_arb u_arb (
         .clk(clk_sys), .rst(rst_sys),
-        .a_req(fb_req), .a_we(1'b0), .a_addr(fb_addr), .a_wdata(32'h0), .a_len(fb_len),
-        .a_ack(fb_ack), .a_rvalid(fb_rvalid),
-        .b_req(t_req), .b_we(t_we), .b_addr(t_addr), .b_wdata(t_wdata), .b_len(t_len),
-        .b_ack(t_ack), .b_rvalid(t_rvalid),
-        .m_req(mem_req), .m_we(mem_we), .m_addr(mem_addr), .m_wdata(mem_wdata), .m_len(mem_len),
-        .m_ack(mem_ack), .m_rvalid(mem_rvalid)
+        .a_req(fb_req), .a_we(1'b0), .a_addr(fb_addr), .a_wdata(32'h0), .a_wmask(4'h0), .a_len(fb_len),
+        .a_ack(fb_ack), .a_rvalid(fb_rvalid), .a_wnext(),
+        .b_req(g_req), .b_we(g_we), .b_addr(g_addr), .b_wdata(g_wdata), .b_wmask(g_wmask), .b_len(g_len),
+        .b_ack(g_ack), .b_rvalid(), .b_wnext(g_wnext),
+        .c_req(t_req), .c_we(t_we), .c_addr(t_addr), .c_wdata(t_wdata), .c_wmask(t_wmask), .c_len(t_len),
+        .c_ack(t_ack), .c_rvalid(t_rvalid), .c_wnext(),
+        .m_req(mem_req), .m_we(mem_we), .m_addr(mem_addr), .m_wdata(mem_wdata), .m_wmask(mem_wmask), .m_len(mem_len),
+        .m_ack(mem_ack), .m_rvalid(mem_rvalid), .m_wnext(mem_wnext)
     );
 
     sdram_ctrl #(.CLK_HZ(63_000_000)) u_sdram (
         .clk(clk_sys), .rst(rst_sys),
-        .req(mem_req), .we(mem_we), .addr(mem_addr), .wdata(mem_wdata), .len(mem_len),
-        .ack(mem_ack), .rvalid(mem_rvalid), .rdata(mem_rdata32),
+        .req(mem_req), .we(mem_we), .addr(mem_addr), .wdata(mem_wdata), .wmask(mem_wmask), .len(mem_len),
+        .wnext(mem_wnext), .ack(mem_ack), .rvalid(mem_rvalid), .rdata(mem_rdata32),
         .init_done(mem_init_done), .rd_sample,
         .sdram_cke(O_sdram_cke), .sdram_cs_n(O_sdram_cs_n), .sdram_ras_n(O_sdram_ras_n),
         .sdram_cas_n(O_sdram_cas_n), .sdram_we_n(O_sdram_wen_n), .sdram_ba(O_sdram_ba),

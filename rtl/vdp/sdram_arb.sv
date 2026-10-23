@@ -1,36 +1,53 @@
-// SDRAM の調停 (2 つの利用者 -> sdram_ctrl)。docs/GPU_PLAN.md の M4
-//   a が優先 (表示の読み出し)、b はそれ以外 (メモリテスト、アップロード)。
-//   どちらも sdram_ctrl と同じ約束: req と we / addr / wdata / len を ack まで保持する。
-//   許可した利用者は ack まで変えない。rvalid / rdata / ack は許可した利用者にだけ返す。
+// SDRAM の調停 (3 つの利用者 -> sdram_ctrl)。docs/GPU_PLAN.md の M4, M5
+//   優先順位: a (表示の読み出し) > b (GPU の描画) > c (メモリテスト)。
+//   どれも sdram_ctrl と同じ約束: req と we / addr / len を ack まで保持し、書き込みは wnext で次のワードに進める。
+//   許可した利用者は ack まで変えない。rvalid / wnext / ack は許可した利用者にだけ返す。rdata は sdram_ctrl から全員に配る。
+//   表示の締め切りは出力 2 ライン分 (63.5us) あり、描画のバーストは 64 ワード (約 1us) までなので、途中で止める仕組みは持たない。
 module sdram_arb (
     input  logic        clk,
     input  logic        rst,
-    // a (優先)
+    // a (最優先)
     input  logic        a_req,
     input  logic        a_we,
     input  logic [20:0] a_addr,
     input  logic [31:0] a_wdata,
+    input  logic [3:0]  a_wmask,
     input  logic [8:0]  a_len,
     output logic        a_ack,
     output logic        a_rvalid,
+    output logic        a_wnext,
     // b
     input  logic        b_req,
     input  logic        b_we,
     input  logic [20:0] b_addr,
     input  logic [31:0] b_wdata,
+    input  logic [3:0]  b_wmask,
     input  logic [8:0]  b_len,
     output logic        b_ack,
     output logic        b_rvalid,
-    // sdram_ctrl へ (rdata はそのまま両方に配る)
+    output logic        b_wnext,
+    // c
+    input  logic        c_req,
+    input  logic        c_we,
+    input  logic [20:0] c_addr,
+    input  logic [31:0] c_wdata,
+    input  logic [3:0]  c_wmask,
+    input  logic [8:0]  c_len,
+    output logic        c_ack,
+    output logic        c_rvalid,
+    output logic        c_wnext,
+    // sdram_ctrl へ
     output logic        m_req,
     output logic        m_we,
     output logic [20:0] m_addr,
     output logic [31:0] m_wdata,
+    output logic [3:0]  m_wmask,
     output logic [8:0]  m_len,
     input  logic        m_ack,
-    input  logic        m_rvalid
+    input  logic        m_rvalid,
+    input  logic        m_wnext
 );
-    typedef enum logic [1:0] {OWN_NONE, OWN_A, OWN_B} owner_t;
+    typedef enum logic [1:0] {OWN_NONE, OWN_A, OWN_B, OWN_C} owner_t;
     owner_t owner;
 
     always_ff @(posedge clk) begin
@@ -39,22 +56,28 @@ module sdram_arb (
         end else if (owner == OWN_NONE) begin
             if (a_req)      owner <= OWN_A;
             else if (b_req) owner <= OWN_B;
+            else if (c_req) owner <= OWN_C;
         end else if (m_ack) begin
             owner <= OWN_NONE;
         end
     end
 
-    logic sel_b;
-    assign sel_b = owner == OWN_B;
-
-    assign m_req   = (owner == OWN_A && a_req) || (owner == OWN_B && b_req);
-    assign m_we    = sel_b ? b_we    : a_we;
-    assign m_addr  = sel_b ? b_addr  : a_addr;
-    assign m_wdata = sel_b ? b_wdata : a_wdata;
-    assign m_len   = sel_b ? b_len   : a_len;
+    always_comb begin
+        unique case (owner)
+            OWN_A: {m_req, m_we, m_addr, m_wdata, m_wmask, m_len} = {a_req, a_we, a_addr, a_wdata, a_wmask, a_len};
+            OWN_B: {m_req, m_we, m_addr, m_wdata, m_wmask, m_len} = {b_req, b_we, b_addr, b_wdata, b_wmask, b_len};
+            OWN_C: {m_req, m_we, m_addr, m_wdata, m_wmask, m_len} = {c_req, c_we, c_addr, c_wdata, c_wmask, c_len};
+            default: {m_req, m_we, m_addr, m_wdata, m_wmask, m_len} = '0;
+        endcase
+    end
 
     assign a_ack    = owner == OWN_A && m_ack;
     assign a_rvalid = owner == OWN_A && m_rvalid;
+    assign a_wnext  = owner == OWN_A && m_wnext;
     assign b_ack    = owner == OWN_B && m_ack;
     assign b_rvalid = owner == OWN_B && m_rvalid;
+    assign b_wnext  = owner == OWN_B && m_wnext;
+    assign c_ack    = owner == OWN_C && m_ack;
+    assign c_rvalid = owner == OWN_C && m_rvalid;
+    assign c_wnext  = owner == OWN_C && m_wnext;
 endmodule

@@ -21,6 +21,8 @@ usage: harness.py [--port PORT] <command> [args...]
   frametest [--ref-dir DIR] [--no-capture] [--out DIR]
                             アニメーションを止め、FRAME_CRC を参照 (make render FREEZE=1 の frames.json) と比べ、
                             HDMI キャプチャも参照画像と比べる。キャプチャと差分画像を --out に保存
+  scenario <file.json> [--no-capture]
+                            シナリオを実機で走らせ、check ごとに FRAME_CRC を参照モデル (gpu_model.py) と比べる
   fb upload [<png>] [--slot N]  320x240 の画像 (省略時はテスト画像) を SDRAM のフレームバッファへ (slot は 1KiB 単位)
   fb show [--slot N] / fb off   フレームバッファの表示 / テストパターンに戻す
   fbtest [<png>] [--slot N] [--keep] [--no-capture]
@@ -52,7 +54,13 @@ REGS = {
     "FRAME_COUNT": 0x04,
     "FRAME_CRC": 0x05,      # 32bit、リトルエンディアン (0x05..0x08)
     "UNDERFLOW": 0x09,
-    "FB_BASE": 0x0A,        # 13bit、256 ワード (1KiB) 単位 (0x0A..0x0B)
+    "CRC_FRAME": 0x0A,      # FRAME_CRC のフレーム番号 (16bit、0x05 を読んだ時点の値)
+    # rtl/vdp/gpu.sv
+    "CMD": 0x30,            # コマンドのポート (アドレスが進まない)
+    "GPU_STATUS": 0x40,     # bit0 実行中, bit1 エラー, bit2 FIFO あふれ (読むとクリア) / 書き込み bit0 で FIFO を空に
+    "GPU_FREE": 0x41,       # FIFO の空き (ワード数、16bit)
+    "FB_BASE": 0x44,        # 表示する面 (13bit、256 ワード = 1KiB 単位)
+    "DRAW_BASE": 0x46,      # 描く面
     "SCRATCH": 0x7D,
     "ID": 0x7E,
     "VERSION": 0x7F,
@@ -61,9 +69,9 @@ REGS = {
 MEM = {
     "CMD": 0x10, "CFG": 0x11, "STATUS": 0x12, "SIZE": 0x13, "SEED": 0x14, "CLK": 0x15,
     "ERRORS": 0x18, "FAIL_ADDR": 0x1C, "FAIL_EXP": 0x20, "FAIL_GOT": 0x24, "ADDR": 0x28, "DATA": 0x2C,
-    "PORT": 0x30,
 }
-MEM_ST_PORT_OVERFLOW = 0x10
+GPU_ST_BUSY, GPU_ST_ERROR, GPU_ST_OVERFLOW = 0x01, 0x02, 0x04
+SPI_MAX_DATA = 4092    # ブリッジの spi は 1 回 4096 バイトまで (先頭のアドレス 1 バイトを除き、4 の倍数)
 MEM_CMD_BIST, MEM_CMD_READ, MEM_CMD_WRITE = 1, 2, 3
 MEM_ST_INIT, MEM_ST_BUSY, MEM_ST_DONE, MEM_ST_PASS = 0x01, 0x02, 0x04, 0x08
 REGS.update({f"MEM_{k}": v for k, v in MEM.items()})
@@ -128,6 +136,45 @@ class Bridge:
 
 class HarnessError(Exception):
     pass
+
+
+class Gpu:
+    """コマンド GPU (rtl/vdp/gpu.sv) にワードを送る。FIFO の空き (GPU_FREE) を見て、その分だけ送る"""
+
+    def __init__(self, vdp):
+        self.vdp = vdp
+
+    def free(self):
+        return int.from_bytes(self.vdp.read(REGS["GPU_FREE"], 2), "little")
+
+    def send(self, words, timeout=10.0):
+        data = b"".join((w & 0xFFFFFFFF).to_bytes(4, "little") for w in words)
+        deadline = time.monotonic() + timeout
+        while data:
+            n = min(self.free() * 4, SPI_MAX_DATA, len(data))
+            if n == 0:
+                if time.monotonic() > deadline:
+                    raise HarnessError("GPU FIFO stays full")
+                time.sleep(0.001)
+                continue
+            self.vdp.write(REGS["CMD"], data[:n])
+            data = data[n:]
+
+    def status(self):
+        return self.vdp.read1(REGS["GPU_STATUS"])      # 読むとエラーとあふれが消える
+
+    def wait_idle(self, timeout=5.0):
+        deadline = time.monotonic() + timeout
+        while True:
+            st = self.status()
+            if not st & GPU_ST_BUSY:
+                return st
+            if time.monotonic() > deadline:
+                raise HarnessError("GPU stays busy")
+            time.sleep(0.002)
+
+    def flush(self):
+        self.vdp.write(REGS["GPU_STATUS"], [0x01])
 
 
 class Vdp:
@@ -371,24 +418,94 @@ def load_fb_image(path):
 
 
 def fb_upload(bridge, img565, slot):
-    """1 ライン 1 トランザクション: 0x28 (MEM_ADDR) から書き始め、MEM_DATA を飛ばして 0x30 (ポート) に 640 バイト流す"""
-    import fbmodel
+    """GPU の UPLOAD コマンド (1 ライン 1 コマンド) で送る。FIFO の空きを見ながら 4KiB ずつ"""
+    import gpu_model
     vdp = Vdp(bridge)
     if not vdp.read1(MEM["STATUS"]) & MEM_ST_INIT:
         raise HarnessError("SDRAM not initialized")
+    gpu = Gpu(vdp)
     start = time.monotonic()
-    # 8MHz で流す (ポートは 1 ワード 4us に間に合うように作ってある。あふれたら MEM_STATUS bit4 でわかる)
     bridge.command("freq 8000000")
     try:
-        for y in range(fbmodel.SRC_H):
-            word_addr = (slot + y) * fbmodel.WORDS_PER_LINE
-            vdp.write(MEM["ADDR"], word_addr.to_bytes(4, "little") + bytes(4) + fbmodel.line_bytes(img565, y))
+        gpu.send(gpu_model.upload_image_words(img565, slot))
+        st = gpu.wait_idle()
     finally:
         bridge.command("freq 1000000")
-    st = vdp.mem_wait(timeout=2.0)
-    if st & MEM_ST_PORT_OVERFLOW:
-        raise HarnessError("upload overflow (MEM_STATUS bit4)")
+    if st & (GPU_ST_ERROR | GPU_ST_OVERFLOW):
+        raise HarnessError(f"GPU status 0x{st:02x} after upload")
     return round(time.monotonic() - start, 2)
+
+
+def read_crc(vdp):
+    """(CRC, そのフレーム番号) を読む。0x05 を読むと残りのバイトとフレーム番号が同じフレームの値で固定される"""
+    crc = int.from_bytes(vdp.read(REGS["FRAME_CRC"], 4), "little")
+    frame = int.from_bytes(vdp.read(REGS["CRC_FRAME"], 2), "little")
+    return crc, frame
+
+
+def settled_crc(vdp, frames=2, timeout=1.0):
+    """今の表示が確定してから frames フレーム後の CRC を読む (SWAP が終わった直後は前の面のフレームの CRC が残っているため)"""
+    _, f0 = read_crc(vdp)
+    deadline = time.monotonic() + timeout
+    while True:
+        crc, f = read_crc(vdp)
+        if (f - f0) & 0xFFFF >= frames:
+            return crc, f
+        if time.monotonic() > deadline:
+            raise HarnessError("CRC_FRAME does not advance")
+        time.sleep(0.005)
+
+
+def scenario(bridge, path, do_capture, out_dir):
+    """シナリオ (scenarios/*.json) を実機で走らせ、check ごとに参照モデル (gpu_model.py) の CRC と比べる"""
+    import fbmodel
+    import gpu_model
+    import imgcmp
+    sc = gpu_model.load(path)
+    words, checks = gpu_model.expected(sc)
+    vdp = Vdp(bridge)
+    gpu = Gpu(vdp)
+    control = vdp.read1(REGS["CONTROL"])
+    results = []
+    bridge.command("freq 8000000")
+    try:
+        # モデルと同じ初期状態にする
+        gpu.flush()
+        gpu.wait_idle()
+        gpu.status()
+        vdp.write(REGS["FB_BASE"], gpu_model.FB_BASE_RESET.to_bytes(2, "little"))
+        vdp.write(REGS["DRAW_BASE"], gpu_model.DRAW_BASE_RESET.to_bytes(2, "little"))
+        vdp.write(REGS["CONTROL"], [control | CONTROL_FB])
+        under0 = vdp.read1(REGS["UNDERFLOW"])
+        sent = 0
+        for i, (n, img, crc) in enumerate(checks):
+            start = time.monotonic()
+            gpu.send(words[sent:n])
+            sent = n
+            st = gpu.wait_idle()
+            got, frame = settled_crc(vdp)
+            r = {"check": i, "words": n, "expected_crc": f"0x{crc:08x}", "crc": f"0x{got:08x}", "frame": frame,
+                 "gpu_status": st, "ok": got == crc and not st & (GPU_ST_ERROR | GPU_ST_OVERFLOW),
+                 "seconds": round(time.monotonic() - start, 2)}
+            if do_capture:
+                w, h = 2 * fbmodel.SRC_W, 2 * fbmodel.SRC_H
+                expect = fbmodel.expected_output(img)
+                cap = imgcmp.capture(w, h)
+                stats, diff = imgcmp.compare(expect, cap, w, h)
+                os.makedirs(out_dir, exist_ok=True)
+                name = f"{sc['name']}_{i}"
+                imgcmp.write_png(os.path.join(out_dir, f"{name}_expected.png"), w, h, expect)
+                imgcmp.write_png(os.path.join(out_dir, f"{name}_capture.png"), w, h, cap)
+                imgcmp.write_png(os.path.join(out_dir, f"{name}_diff.png"), w, h, diff)
+                r["capture"] = {"match_ratio": stats["match_ratio"], "ok": stats["match_ratio"] >= 0.99}
+                r["ok"] = r["ok"] and r["capture"]["ok"]
+            results.append(r)
+        under = (vdp.read1(REGS["UNDERFLOW"]) - under0) & 0xFF
+    finally:
+        bridge.command("freq 1000000")
+        vdp.write(REGS["CONTROL"], [control])
+    return {"ok": all(r["ok"] for r in results) and under == 0, "scenario": sc["name"], "underflow": under,
+            "checks": results}
 
 
 def fb_show(vdp, slot, on):
@@ -463,12 +580,16 @@ def main():
         # make の出力は標準エラーへ (標準出力は JSON だけにする)
         r = subprocess.run(["make", "prog", f"TARGET={a.args[0]}"], cwd=REPO, stdout=sys.stderr)
         result = {"ok": r.returncode == 0, "target": a.args[0]}
-    elif a.command in ("reg", "selftest", "memtest", "mem", "frametest", "fb", "fbtest"):
+    elif a.command in ("reg", "selftest", "memtest", "mem", "frametest", "fb", "fbtest", "scenario"):
         bridge = Bridge(find_port(a.port))
         try:
             vdp = Vdp(bridge)
             if a.command == "selftest":
                 result = selftest(bridge, a.iterations)
+            elif a.command == "scenario":
+                if len(a.args) != 1:
+                    ap.error("scenario <scenarios/*.json>")
+                result = scenario(bridge, a.args[0], not a.no_capture, a.out)
             elif a.command == "fbtest":
                 result = fbtest(bridge, a.args[0] if a.args else None, a.slot, a.keep, not a.no_capture, a.out)
             elif a.command == "fb" and a.args and a.args[0] == "upload":

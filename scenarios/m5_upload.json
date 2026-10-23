@@ -1,0 +1,16 @@
+{
+ "name": "m5_upload",
+ "description": "UPLOAD でテスト画像を描く面へ送り、SWAP して表示 (fbtest と同じ CRC になる)",
+ "steps": [
+  {
+   "op": "upload_image",
+   "slot": 256
+  },
+  {
+   "op": "swap"
+  },
+  {
+   "op": "check"
+  }
+ ]
+}

@@ -63,13 +63,14 @@ RP2_MOUNT         = $(firstword $(wildcard /Volumes/RPI-RP2 /Volumes/RP2350 /med
 PICO_BOARD    ?= pico2
 PICO_PLATFORM ?= rp2350-arm-s   # rp2350-riscv にすると Hazard3 コア用
 
-.PHONY: help images image-fpga image-pico all lint sim $(addprefix sim-,$(TBS)) render synth pnr bitstream pincheck prog flash fw harness-fw harness-deploy shell shell-pico zip clean
+.PHONY: help images image-fpga image-pico all lint sim scenario $(addprefix sim-,$(TBS)) render synth pnr bitstream pincheck prog flash fw harness-fw harness-deploy shell shell-pico zip clean
 
 help:
 	@echo "make images      Docker イメージをビルド (image-fpga / image-pico で個別に)"
 	@echo "make lint        Verilator で RTL を lint"
 	@echo "make sim         テストベンチを全部実行 (SIM=iverilog|verilator, VCD は build/sim/)"
 	@echo "make sim-<tb>    個別テストベンチ実行 (例: make sim-tb_tmds_encoder)"
+	@echo "make scenario    シナリオ (SCENARIO=scenarios/*.json) をシステム全体の RTL で走らせ、参照モデルの CRC と比べる"
 	@echo "make render      Verilator で映像出力を PNG 化 ($(RENDER_DIR)/, FRAMES=$(FRAMES), TARGET=lcd で 800x480)"
 	@echo "                 FREEZE=1 でアニメーションを止めた参照画像と CRC (frames.json) を build/render_frozen/ に"
 	@echo "make bitstream   合成 -> 配置配線 -> $(BUILD)/$(TOP).fs (TARGET=hdmi|lcd|harness_probe)"
@@ -119,6 +120,7 @@ lint:
 	$(FPGA) verilator --lint-only -Wall --top-module mem_test $(VDP_SRC)
 	$(FPGA) verilator --lint-only -Wall --top-module sdram_arb $(VDP_SRC)
 	$(FPGA) verilator --lint-only -Wall --top-module fb_scanout $(VDP_SRC)
+	$(FPGA) verilator --lint-only -Wall --top-module gpu $(VDP_SRC)
 
 sim: $(addprefix sim-,$(TBS))
 
@@ -139,6 +141,19 @@ render: | $(RENDER_DIR)
 	$(FPGA) $(RENDER_DIR)/obj/render $(RENDER_DIR) $(FRAMES) $(strip $(FREEZE))
 	$(FPGA) python3 scripts/ppm2png.py $(RENDER_DIR)/*.ppm
 	@rm -f $(RENDER_DIR)/*.ppm
+
+# シナリオをシステム全体の RTL (Verilator) で走らせ、参照モデル (tools/harness/gpu_model.py) と比べる
+SCENARIO ?= scenarios/m5_basic.json
+SCN_DIR   = $(BUILD)/scenario/$(basename $(notdir $(SCENARIO)))
+
+scenario:
+	@mkdir -p $(SCN_DIR)
+	$(FPGA) python3 tools/harness/gpu_model.py export $(SCENARIO) $(SCN_DIR)
+	$(FPGA) verilator --binary --timing -O2 -Wno-fatal -Wno-lint -Wno-style \
+		--top-module gpu_scenario_tb -Mdir $(BUILD)/scenario/obj -o gpu_scenario \
+		sim/scenario/gpu_scenario_tb.sv $(VDP_SRC) $(SIM_LIB)
+	$(FPGA) $(BUILD)/scenario/obj/gpu_scenario +cmds=$(SCN_DIR)/cmds.hex +checks=$(SCN_DIR)/checks.txt +out=$(SCN_DIR)
+	$(FPGA) python3 tools/harness/gpu_model.py compare $(SCENARIO) $(SCN_DIR)
 
 # ---------------------------------------------------------------- 実装
 synth: $(BUILD)/$(TOP).json

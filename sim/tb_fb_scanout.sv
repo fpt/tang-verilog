@@ -7,6 +7,10 @@ module tb_fb_scanout;
     localparam int V_ACTIVE = 2 * SRC_H, V_FP = 1, V_SYNC = 1, V_BP = 1;   // 11 ライン
     localparam int V_TOTAL = V_ACTIVE + V_FP + V_SYNC + V_BP;
     localparam logic [12:0] BASE = 13'd3;
+    localparam logic [12:0] OTHER = 13'd40;
+    logic [12:0] fb_base = BASE;
+    logic        base_latched;
+    int          latches = 0;
 
     logic clk_sys = 0, clk_pix = 0, rst = 1;
     always #3 clk_sys = ~clk_sys;     // システムクロックのほうが速い (実機は 63MHz と 25.2MHz)
@@ -29,7 +33,7 @@ module tb_fb_scanout;
     logic        enable = 0;
 
     fb_scanout #(.SRC_W(SRC_W), .SRC_H(SRC_H), .V_TOTAL(V_TOTAL)) dut (
-        .clk_sys, .rst_sys(rst), .fb_base(BASE),
+        .clk_sys, .rst_sys(rst), .fb_base, .base_latched,
         .mem_req, .mem_addr, .mem_len, .mem_ack, .mem_rvalid, .mem_rdata, .underflow_count,
         .clk_pix, .rst_pix(rst), .enable, .x, .y, .rgb
     );
@@ -53,7 +57,9 @@ module tb_fb_scanout;
         if (mem_req && !mem_ack) begin
             requests++;
             line = int'(mem_addr >> 8) - int'(BASE);
-            if (mem_addr[7:0] != 0 || mem_len != 9'(SRC_W / 2) || line < 0 || line >= SRC_H) begin
+            if (mem_addr >= 21'(int'(OTHER) << 8)) line = int'(mem_addr >> 8) - int'(OTHER) + 100;   // もう 1 つの面 (印を付ける)
+            // リセット直後、最初にライン 0 で fb_base を取り込むまではフレームの面が決まっていないので見ない
+            if (latches > 0 && (mem_addr[7:0] != 0 || mem_len != 9'(SRC_W / 2) || line < 0 || (line >= SRC_H && line < 100))) begin
                 $display("  bad request: addr %h len %0d", mem_addr, mem_len);
                 errors++;
             end
@@ -71,6 +77,13 @@ module tb_fb_scanout;
     end
 
     int checked = 0;
+    int other_reqs = 0;
+    logic req_d = 0;
+    always @(posedge clk_sys) begin
+        if (base_latched) latches++;
+        if (mem_req && !req_d && mem_addr >= 21'(int'(OTHER) << 8)) other_reqs++;   // 新しい要求だけ数える
+        req_d <= mem_req;
+    end
 
     // 出力は x, y の 1 クロック後
     logic [10:0] x_d;
@@ -108,6 +121,20 @@ module tb_fb_scanout;
         if (checked != 2 * H_ACTIVE * V_ACTIVE) begin $display("  checked %0d pixels", checked); errors++; end
         if (underflow_count != 0) begin $display("  unexpected underflow: %0d", underflow_count); errors++; end
         if (requests < 2 * SRC_H) begin $display("  only %0d line requests", requests); errors++; end
+
+        // fb_base をフレームの途中 (ライン 3 の表示中) で変えても、そのフレームの残りは前の面のまま。
+        // 次のフレームのライン 0 から新しい面になる
+        other_reqs = 0;
+        wait (y == 10'd3);
+        fb_base = OTHER;
+        wait (y == 10'(V_ACTIVE));
+        if (other_reqs != 0) begin $display("  fb_base changed mid-frame: %0d requests to the other plane", other_reqs); errors++; end
+        @(posedge frame_start);
+        @(posedge frame_start);
+        if (other_reqs < SRC_H) begin $display("  new plane not used after the frame: %0d requests", other_reqs); errors++; end
+        if (latches < 4) begin $display("  base_latched pulses: %0d", latches); errors++; end
+        fb_base = BASE;
+        @(posedge frame_start);
 
         // メモリが出力 2 ライン分 (22 x 2 x 20ns = 880ns) より遅いと間に合わず、UNDERFLOW が増える
         latency = 200;

@@ -1,7 +1,8 @@
 // SDR SDRAM コントローラ (GW2AR-18 のパッケージ内 64Mbit: 2M ワード x 32bit、4 バンク x 2048 行 x 256 列)
 //
-// 最小構成 (docs/GPU_PLAN.md の M3、M4 で読み出しのバーストを追加):
-//   - 書き込みは 1 ワードずつ: ACTIVE -> WRITE (オートプリチャージ付き) -> 待ち
+// 最小構成 (docs/GPU_PLAN.md の M3、M4 で読み出しのバースト、M5 で書き込みのバーストを追加):
+//   - 書き込みは同じ行の中で len ワード: ACTIVE -> WRITE を毎クロック (最後だけオートプリチャージ付き) -> 待ち。
+//     ワードごとに wmask (1 = そのバイトを書く) を DQM に出すので、ピクセル単位で書き飛ばせる
 //   - 読み出しは同じ行の中で len ワード: ACTIVE -> READ を毎クロック (最後だけオートプリチャージ付き) -> データを待つ
 //   - CAS レイテンシ 2、バースト長 1
 //   - SDRAM のクロックはこのモジュールのクロックの逆相 (180°) を想定。トップが ODDR で出す
@@ -21,13 +22,17 @@ module sdram_ctrl #(
 ) (
     input  logic        clk,
     input  logic        rst,
-    // 利用側: req と we / addr / wdata / len を ack まで保持する。
+    // 利用側: req と we / addr / len を ack まで保持する。
+    // 書き込みは wnext が 1 のクロックの立ち上がりで wdata / wmask を 1 ワード使うので、利用側は同じ立ち上がりで次のワードに進める。
+    // 最後のワードを使ったところで ack。
     // 読み出しは 1 ワードごとに rvalid と rdata が出て、最後のワードのあとに ack。ack のときの rdata は最後のワード
     input  logic        req,
     input  logic        we,
     input  logic [20:0] addr,
     input  logic [31:0] wdata,
-    input  logic [8:0]  len,            // 読み出すワード数 (1..256)。addr[7:0] + len が 256 を超えないこと (行をまたがない)
+    input  logic [3:0]  wmask,          // 書くバイト (1 = 書く)。DQM はこの反転
+    input  logic [8:0]  len,            // ワード数 (1..256)。addr[7:0] + len が 256 を超えないこと (行をまたがない)
+    output logic        wnext,          // この立ち上がりで wdata / wmask を使う (組み合わせ回路)
     output logic        ack,
     output logic        rvalid,
     output logic [31:0] rdata,
@@ -67,7 +72,7 @@ module sdram_ctrl #(
 
     typedef enum logic [3:0] {
         S_INIT_WAIT, S_INIT_PRE, S_INIT_REF, S_INIT_MRS,
-        S_IDLE, S_REF, S_ACT, S_READ, S_READ_DRAIN, S_WAIT
+        S_IDLE, S_REF, S_ACT, S_WRITE, S_READ, S_READ_DRAIN, S_WAIT
     } state_t;
     state_t state;
 
@@ -108,12 +113,14 @@ module sdram_ctrl #(
     // READ を出したら rd_pipe に 1 を入れる。READ を出した立ち上がりを 0 として、立ち上がり floor(h/2)+1 で
     // rd_pipe[floor(h/2)] が 1 になっているので、そこで取り込んだ値 (dq_pos か dq_neg) を読む
     assign rd_push = (state == S_ACT && timer == 0 && !we) || state == S_READ;
+    assign wnext   = (state == S_ACT && timer == 0 && we) || state == S_WRITE;
 
     always_ff @(posedge clk) begin
         cmd         <= CMD_NOP;
         sdram_dq_oe <= 1'b0;
         ack         <= 1'b0;
         rvalid      <= 1'b0;
+        if (init_done) sdram_dqm <= 4'h0;     // 書き込みのクロック以外はマスクしない
         if (timer != 0) timer <= timer - 16'd1;
 
         rd_pipe <= rst ? '0 : {rd_pipe[2:0], rd_push && !rst};
@@ -182,13 +189,21 @@ module sdram_ctrl #(
                 S_REF: if (timer == 0) state <= S_IDLE;
                 S_ACT: if (timer == 0) begin
                     if (we) begin
+                        // 最後の WRITE だけ A10 = 1 (オートプリチャージ)
                         cmd          <= CMD_WRITE;
-                        sdram_addr   <= {1'b1, 2'b00, addr[7:0]};  // A10 = 1: オートプリチャージ
+                        sdram_addr   <= {len == 9'd1, 2'b00, addr[7:0]};
                         sdram_dq_out <= wdata;
                         sdram_dq_oe  <= 1'b1;
-                        timer        <= 16'(T_WR + T_RP);
-                        ack          <= 1'b1;
-                        state        <= S_WAIT;
+                        sdram_dqm    <= ~wmask;
+                        col          <= addr[7:0] + 8'd1;
+                        issued       <= 9'd1;
+                        if (len == 9'd1) begin
+                            timer <= 16'(T_WR + T_RP);
+                            ack   <= 1'b1;
+                            state <= S_WAIT;
+                        end else begin
+                            state <= S_WRITE;
+                        end
                     end else begin
                         // 最後の READ だけ A10 = 1 (オートプリチャージ)
                         cmd        <= CMD_READ;
@@ -198,6 +213,20 @@ module sdram_ctrl #(
                         received   <= '0;
                         if (len == 9'd1) state <= S_READ_DRAIN;
                         else             state <= S_READ;
+                    end
+                end
+                S_WRITE: begin
+                    cmd          <= CMD_WRITE;
+                    sdram_addr   <= {issued == len - 9'd1, 2'b00, col};
+                    sdram_dq_out <= wdata;
+                    sdram_dq_oe  <= 1'b1;
+                    sdram_dqm    <= ~wmask;
+                    col          <= col + 8'd1;
+                    issued       <= issued + 9'd1;
+                    if (issued == len - 9'd1) begin
+                        timer <= 16'(T_WR + T_RP);
+                        ack   <= 1'b1;
+                        state <= S_WAIT;
                     end
                 end
                 S_READ: begin
