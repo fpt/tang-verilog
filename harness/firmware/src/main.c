@@ -7,6 +7,8 @@
 //   ping                 ファームウェア名・版・ボード
 //   status               全ハーネスピンの値、HEARTBEAT / VSYNC / IRQ の周期、ready 判定、カウンタ
 //   spi <hex>            CS を上げて送受信し、受信を hex で返す (最大 4096 バイト)。ready でなければ何も駆動しない
+//   spib <n>             改行 (\n 1 文字) の直後に n バイトの生データを続けて送る。送るだけで、応答は受信の最初の 1 バイト (同期確認用) だけ。
+//                        大きいデータの書き込み用 (16 進にしないので USB の量が半分、受信も送り返さない)。v2 から
 //   freq <hz>            SPI の周波数
 //   reset [ms]           RESET を指定時間 High にする (既定 10ms)
 //   irqwait [ms]         IRQ の立ち上がりを待つ (既定 100ms)
@@ -28,7 +30,7 @@
 #include "pins.h"
 
 #define FW_NAME          "harness-bridge"
-#define FW_VERSION       1
+#define FW_VERSION       2
 #define BRIDGE_SPI       spi0
 #define READY_WINDOW_US  100000u
 #define MAX_SPI_BYTES    4096
@@ -264,6 +266,79 @@ static void cmd_spi(const char *hex) {
     printf("{\"ok\":true,\"rx\":\"%s\"}\n", out);
 }
 
+// ---------------------------------------------------------------- USB からの入力
+// 1 文字ずつではなく、届いている分をまとめて in_buf に読む (v1 は getchar で 1 文字ずつ読んでいて、2KiB の spi に 60ms かかっていた)
+#define IN_BUF_SIZE (LINE_MAX + MAX_SPI_BYTES)
+static uint8_t in_buf[IN_BUF_SIZE];
+static size_t  in_head, in_tail;      // [in_head, in_tail) が未処理
+
+static void in_fill(uint32_t timeout_us) {
+    if (in_head == in_tail) {
+        in_head = in_tail = 0;
+    } else if (in_tail == IN_BUF_SIZE) {
+        memmove(in_buf, in_buf + in_head, in_tail - in_head);
+        in_tail -= in_head;
+        in_head = 0;
+    }
+    if (in_tail == IN_BUF_SIZE) return;
+    int n = stdio_get_until((char *)in_buf + in_tail, (int)(IN_BUF_SIZE - in_tail), make_timeout_time_us(timeout_us));
+    if (n > 0) in_tail += (size_t)n;
+}
+
+// 次の 1 行 (\n か \r まで、改行は含めない)。長すぎる行は *overflow を立てて残りを読み捨てる
+static void in_line(char *line, size_t max, bool *overflow) {
+    size_t len = 0;
+    *overflow = false;
+    while (true) {
+        while (in_head < in_tail) {
+            char c = (char)in_buf[in_head++];
+            if (c == '\n' || c == '\r') {
+                if (len || *overflow) {
+                    line[len] = 0;
+                    return;
+                }
+                continue;                   // 空行
+            }
+            if (len < max - 1) line[len++] = c;
+            else               *overflow = true;
+        }
+        in_fill(100000);
+    }
+}
+
+// n バイトの生データ。timeout_us 以内に揃わなければ false (それまでに読んだ分は捨てる)
+static bool in_bytes(uint8_t *dst, size_t n, uint32_t timeout_us) {
+    absolute_time_t until = make_timeout_time_us(timeout_us);
+    size_t got = 0;
+    while (got < n) {
+        size_t k = in_tail - in_head;
+        if (k > n - got) k = n - got;
+        memcpy(dst + got, in_buf + in_head, k);
+        in_head += k;
+        got += k;
+        if (got < n) {
+            if (time_reached(until)) return false;
+            in_fill(1000);
+        }
+    }
+    return true;
+}
+
+static void cmd_spib(const char *arg) {
+    static uint8_t tx[MAX_SPI_BYTES], rx[MAX_SPI_BYTES];
+    long n = arg ? atol(arg) : 0;
+    if (n < 1 || n > MAX_SPI_BYTES) { reply_error("spib: 1..4096 bytes"); return; }
+    if (!in_bytes(tx, (size_t)n, 2000000)) { reply_error("spib: timeout waiting for data"); return; }
+    if (!fpga_ready()) {
+        n_spi_refused++;
+        reply_error("not ready: HEARTBEAT is not toggling, nothing was driven");
+        return;
+    }
+    spi_xfer(tx, rx, (size_t)n);
+    n_spi_ok++;
+    printf("{\"ok\":true,\"n\":%ld,\"rx0\":\"%02x\"}\n", n, rx[0]);
+}
+
 static void handle(char *line) {
     char *cmd = strtok(line, " \t");
     char *arg = strtok(NULL, " \t");
@@ -273,6 +348,8 @@ static void handle(char *line) {
         printf("{\"ok\":true,\"fw\":\"%s\",\"version\":%d,\"board\":\"%s\"}\n", FW_NAME, FW_VERSION, HARNESS_BOARD);
     } else if (!strcmp(cmd, "status")) {
         cmd_status();
+    } else if (!strcmp(cmd, "spib")) {
+        cmd_spib(arg);
     } else if (!strcmp(cmd, "spi")) {
         cmd_spi(arg ? arg : "");
     } else if (!strcmp(cmd, "freq")) {
@@ -317,24 +394,11 @@ int main(void) {
     monitor_enable();
 
     static char line[LINE_MAX];
-    size_t len = 0;
-    bool overflow = false;
+    bool overflow;
     while (true) {
-        int c = getchar_timeout_us(100000);
-        if (c == PICO_ERROR_TIMEOUT) continue;
-        if (c == '\n' || c == '\r') {
-            if (overflow) reply_error("line too long");
-            else if (len) {
-                line[len] = 0;
-                handle(line);
-            }
-            len = 0;
-            overflow = false;
-        } else if (len < LINE_MAX - 1) {
-            line[len++] = (char)c;
-        } else {
-            overflow = true;
-        }
+        in_line(line, sizeof line, &overflow);
+        if (overflow) reply_error("line too long");
+        else          handle(line);
         stdio_flush();
     }
 }
