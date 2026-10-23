@@ -57,11 +57,15 @@ module gpu_scenario_tb;
 
     logic [15:0] bg_color, bitmap_key;
     logic [2:0]  bitmap_rank;
-    logic [2:0]  layer_ctrl;
+    logic [3:0]  layer_ctrl;
     // タイル レイヤのレジスタと、VRAM / パレットの書き込み (gpu -> line_compositor)
     logic [9:0]  tile_scroll_x, tile_scroll_y;
     logic [13:0] tile_map_base, tile_pat_base, vram_waddr;
     logic [6:0]  tile_ctrl;
+    logic [13:0] spr_pat_base;
+    logic [2:0]  spr_bank;
+    logic [6:0]  spr_line_cols;
+    logic        oam_we;
     logic        vram_we, pal_we;
     logic [31:0] vram_wdata;
     logic [8:0]  pal_waddr;
@@ -73,6 +77,7 @@ module gpu_scenario_tb;
         .clk_sys, .rst_sys(rst), .fb_base, .base_latched,
         .bg_color, .layer_ctrl, .bitmap_key, .bitmap_rank, .mark_req, .mark_toggle, .line_start, .line_num,
         .tile_scroll_x, .tile_scroll_y, .tile_map_base, .tile_pat_base, .tile_ctrl,
+        .spr_pat_base, .spr_bank, .spr_line_cols, .oam_we,
         .vram_we, .vram_waddr, .vram_wdata, .pal_we, .pal_waddr, .pal_wdata,
         .mem_req(fb_req), .mem_addr(fb_addr), .mem_len(fb_len), .mem_ack(fb_ack),
         .mem_rvalid(fb_rvalid), .mem_rdata(m_rdata), .underflow_count,
@@ -86,6 +91,7 @@ module gpu_scenario_tb;
         .fb_base, .base_latched,
         .bg_color, .layer_ctrl, .bitmap_key, .bitmap_rank, .mark_req, .line_start, .line_num, .ready(gpu_ready),
         .tile_scroll_x, .tile_scroll_y, .tile_map_base, .tile_pat_base, .tile_ctrl,
+        .spr_pat_base, .spr_bank, .spr_line_cols, .oam_we,
         .vram_we, .vram_waddr, .vram_wdata, .pal_we, .pal_waddr, .pal_wdata
     );
 

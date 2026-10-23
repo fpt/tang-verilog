@@ -23,11 +23,26 @@ module tb_tile_layer;
     logic [8:0]  px_x;
     logic [15:0] px_color;
 
-    tile_layer #(.SRC_W(SRC_W), .VRAM_WORDS(VW)) dut (
-        .clk, .rst, .vram_we, .vram_waddr, .vram_wdata, .pal_we, .pal_waddr, .pal_wdata,
+    logic [13:0] vram_raddr;
+    logic [31:0] vram_q;
+    logic [8:0]  pal_raddr;
+    logic [15:0] pal_q;
+
+    tile_layer #(.SRC_W(SRC_W)) dut (
+        .clk, .rst, .vram_raddr, .vram_q, .pal_raddr, .pal_q,
         .start, .line, .scroll_x, .scroll_y, .map_base, .pat_base, .ctrl, .busy, .next_word,
         .px_valid, .px_x, .px_opaque, .px_pri, .px_color
     );
+
+    // VRAM とパレット (line_compositor と同じ 1 クロック遅れの読み出し)
+    logic [31:0] vram [0:VW-1];
+    logic [15:0] pal  [0:511];
+    always_ff @(posedge clk) begin
+        if (vram_we) vram[vram_waddr] <= vram_wdata;
+        if (pal_we)  pal[pal_waddr]   <= pal_wdata;
+        vram_q <= vram[vram_raddr];
+        pal_q  <= pal[pal_raddr];
+    end
 
     logic [31:0] vram_ref [0:VW-1];
     logic [15:0] pal_ref  [0:511];

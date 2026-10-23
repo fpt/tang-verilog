@@ -1,7 +1,6 @@
 // タイル レイヤ 1 面 (docs/EMU_GPU_PLAN.md の E2)。line_compositor が 1 ラインごとに start で動かす
 //
-//   VRAM:     VRAM_WORDS x 32bit (既定 16K ワード = 64KiB) の BSRAM。GPU の VRAM_WRITE が書く
-//   パレット: 512 x RGB565 の BSRAM。GPU の PAL_WRITE が書く
+//   VRAM とパレット: line_compositor が持ち、読み出しのポート (アドレスを出した次のクロックにデータ) をスプライトのパスと順番に使う
 //   タイル:   8x8 ピクセル、4bpp。1 行が 1 ワードで、ピクセル i (左から) は [31-4i -: 4]。タイル t の行 r は pat_base + t*8 + r
 //   マップ:   1 エントリ 16bit、1 ワードに 2 つ (下位が偶数の列)。列 c、行 r のエントリは map_base + (r * 幅 + c) / 2。
 //             [10:0] タイル番号、[11] 左右反転、[12] 上下反転、[14:13] パレット、[15] 優先度 (px_pri に出す)
@@ -19,18 +18,15 @@
 //
 //   スクロールなどの入力は start から busy が落ちるまで変えないこと (line_compositor がラインの開始で取り込んだ値を渡す)。
 module tile_layer #(
-    parameter int SRC_W      = 320,
-    parameter int VRAM_WORDS = 16384
+    parameter int SRC_W = 320
 ) (
     input  logic        clk,
     input  logic        rst,
-    // 書き込み (GPU)
-    input  logic        vram_we,
-    input  logic [13:0] vram_waddr,
-    input  logic [31:0] vram_wdata,
-    input  logic        pal_we,
-    input  logic [8:0]  pal_waddr,
-    input  logic [15:0] pal_wdata,
+    // VRAM とパレットの読み出し (1 クロック遅れ)
+    output logic [13:0] vram_raddr,
+    input  logic [31:0] vram_q,
+    output logic [8:0]  pal_raddr,
+    input  logic [15:0] pal_q,
     // 1 ラインの合成
     input  logic        start,
     input  logic [7:0]  line,
@@ -48,26 +44,6 @@ module tile_layer #(
     output logic        px_pri,
     output logic [15:0] px_color
 );
-    localparam int VA_W = $clog2(VRAM_WORDS);
-
-    // ================================================================ メモリ
-    logic [31:0] vram [0:VRAM_WORDS-1];
-    logic [15:0] pal  [0:511];
-
-    logic [13:0] vram_raddr;
-    logic [31:0] vram_q;
-    logic [8:0]  pal_raddr;
-    logic [15:0] pal_q;
-
-    always_ff @(posedge clk) begin
-        if (vram_we) vram[VA_W'(vram_waddr)] <= vram_wdata;
-        vram_q <= vram[VA_W'(vram_raddr)];
-    end
-    always_ff @(posedge clk) begin
-        if (pal_we) pal[pal_waddr] <= pal_wdata;
-        pal_q <= pal[pal_raddr];
-    end
-
     // 出力はパレットを引いた次のクロック
     logic        p_valid, p_opaque, p_pri;
     logic [8:0]  p_x;
