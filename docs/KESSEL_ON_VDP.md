@@ -3,6 +3,7 @@
 [rs-kessel](https://github.com/fpt/rs-kessel) (16bit スタック VM のファンタジーコンソール) を、RP2350 + Tang Nano 20K の VDP で動かすための設計メモ。
 方針は「エンジンをハードに寄せる」。VDP 側に足すものと、Kessel 側で変えるものを分けて書く。
 VDP の現状は [EMU_GPU_PLAN.md](EMU_GPU_PLAN.md) (E4 まで) と [GPU_PLAN.md](GPU_PLAN.md) (M9 まで)。
+コマンドやデータ形式の正確な定義は [SPECIFICATION.md](SPECIFICATION.md)。
 
 ## 0. 結論
 
