@@ -1,0 +1,263 @@
+{
+ "name": "k3_fps",
+ "description": "\u6027\u80fd: 8bpp \u306e\u5168\u753b\u9762\u306e STRETCH_BLIT (160x120 \u2192 320x240) \u3092 1 \u30d5\u30ec\u30fc\u30e0 (SWAP \u306a\u3057) \u306b 20 \u56de\u3002harness.py fps \u306e seconds / (frames x 20) \u304c 1 \u56de\u306e\u6642\u9593",
+ "setup": [
+  {
+   "op": "palette",
+   "kind": "demo",
+   "index": 0,
+   "count": 256
+  },
+  {
+   "op": "reg",
+   "name": "bitmap_fmt",
+   "value": 1
+  },
+  {
+   "op": "upload_image8",
+   "slot": 512
+  }
+ ],
+ "frame": [
+  {
+   "op": "stretch",
+   "src": 146452,
+   "stride": 256,
+   "sw": 160,
+   "w": 320,
+   "h": 240,
+   "x": 0,
+   "y": 0,
+   "sx_step": 32768,
+   "sy_step": 32768
+  },
+  {
+   "op": "stretch",
+   "src": 146452,
+   "stride": 256,
+   "sw": 160,
+   "w": 320,
+   "h": 240,
+   "x": 0,
+   "y": 0,
+   "sx_step": 32768,
+   "sy_step": 32768
+  },
+  {
+   "op": "stretch",
+   "src": 146452,
+   "stride": 256,
+   "sw": 160,
+   "w": 320,
+   "h": 240,
+   "x": 0,
+   "y": 0,
+   "sx_step": 32768,
+   "sy_step": 32768
+  },
+  {
+   "op": "stretch",
+   "src": 146452,
+   "stride": 256,
+   "sw": 160,
+   "w": 320,
+   "h": 240,
+   "x": 0,
+   "y": 0,
+   "sx_step": 32768,
+   "sy_step": 32768
+  },
+  {
+   "op": "stretch",
+   "src": 146452,
+   "stride": 256,
+   "sw": 160,
+   "w": 320,
+   "h": 240,
+   "x": 0,
+   "y": 0,
+   "sx_step": 32768,
+   "sy_step": 32768
+  },
+  {
+   "op": "stretch",
+   "src": 146452,
+   "stride": 256,
+   "sw": 160,
+   "w": 320,
+   "h": 240,
+   "x": 0,
+   "y": 0,
+   "sx_step": 32768,
+   "sy_step": 32768
+  },
+  {
+   "op": "stretch",
+   "src": 146452,
+   "stride": 256,
+   "sw": 160,
+   "w": 320,
+   "h": 240,
+   "x": 0,
+   "y": 0,
+   "sx_step": 32768,
+   "sy_step": 32768
+  },
+  {
+   "op": "stretch",
+   "src": 146452,
+   "stride": 256,
+   "sw": 160,
+   "w": 320,
+   "h": 240,
+   "x": 0,
+   "y": 0,
+   "sx_step": 32768,
+   "sy_step": 32768
+  },
+  {
+   "op": "stretch",
+   "src": 146452,
+   "stride": 256,
+   "sw": 160,
+   "w": 320,
+   "h": 240,
+   "x": 0,
+   "y": 0,
+   "sx_step": 32768,
+   "sy_step": 32768
+  },
+  {
+   "op": "stretch",
+   "src": 146452,
+   "stride": 256,
+   "sw": 160,
+   "w": 320,
+   "h": 240,
+   "x": 0,
+   "y": 0,
+   "sx_step": 32768,
+   "sy_step": 32768
+  },
+  {
+   "op": "stretch",
+   "src": 146452,
+   "stride": 256,
+   "sw": 160,
+   "w": 320,
+   "h": 240,
+   "x": 0,
+   "y": 0,
+   "sx_step": 32768,
+   "sy_step": 32768
+  },
+  {
+   "op": "stretch",
+   "src": 146452,
+   "stride": 256,
+   "sw": 160,
+   "w": 320,
+   "h": 240,
+   "x": 0,
+   "y": 0,
+   "sx_step": 32768,
+   "sy_step": 32768
+  },
+  {
+   "op": "stretch",
+   "src": 146452,
+   "stride": 256,
+   "sw": 160,
+   "w": 320,
+   "h": 240,
+   "x": 0,
+   "y": 0,
+   "sx_step": 32768,
+   "sy_step": 32768
+  },
+  {
+   "op": "stretch",
+   "src": 146452,
+   "stride": 256,
+   "sw": 160,
+   "w": 320,
+   "h": 240,
+   "x": 0,
+   "y": 0,
+   "sx_step": 32768,
+   "sy_step": 32768
+  },
+  {
+   "op": "stretch",
+   "src": 146452,
+   "stride": 256,
+   "sw": 160,
+   "w": 320,
+   "h": 240,
+   "x": 0,
+   "y": 0,
+   "sx_step": 32768,
+   "sy_step": 32768
+  },
+  {
+   "op": "stretch",
+   "src": 146452,
+   "stride": 256,
+   "sw": 160,
+   "w": 320,
+   "h": 240,
+   "x": 0,
+   "y": 0,
+   "sx_step": 32768,
+   "sy_step": 32768
+  },
+  {
+   "op": "stretch",
+   "src": 146452,
+   "stride": 256,
+   "sw": 160,
+   "w": 320,
+   "h": 240,
+   "x": 0,
+   "y": 0,
+   "sx_step": 32768,
+   "sy_step": 32768
+  },
+  {
+   "op": "stretch",
+   "src": 146452,
+   "stride": 256,
+   "sw": 160,
+   "w": 320,
+   "h": 240,
+   "x": 0,
+   "y": 0,
+   "sx_step": 32768,
+   "sy_step": 32768
+  },
+  {
+   "op": "stretch",
+   "src": 146452,
+   "stride": 256,
+   "sw": 160,
+   "w": 320,
+   "h": 240,
+   "x": 0,
+   "y": 0,
+   "sx_step": 32768,
+   "sy_step": 32768
+  },
+  {
+   "op": "stretch",
+   "src": 146452,
+   "stride": 256,
+   "sw": 160,
+   "w": 320,
+   "h": 240,
+   "x": 0,
+   "y": 0,
+   "sx_step": 32768,
+   "sy_step": 32768
+  }
+ ]
+}

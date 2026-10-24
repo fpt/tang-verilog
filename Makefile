@@ -168,6 +168,7 @@ $(BUILD)/$(TOP).json: $(SYN_SRC) $(GOWIN_BB)
 	@mkdir -p $(BUILD)
 	$(FPGA) yosys -m slang -q -l $(BUILD)/$(TOP)_yosys.log \
 		-p "read_slang --top $(TOP) $(SYN_SRC) $(GOWIN_BB); synth_gowin -family gw2a -top $(TOP) -json $@"
+	$(FPGA) python3 scripts/fix_netlist.py $@ $(TOP)
 
 $(BUILD)/$(TOP)_pnr.json: $(BUILD)/$(TOP).json $(CST)
 	$(FPGA) nextpnr-himbaechel -q -l $(BUILD)/$(TOP)_nextpnr.log \

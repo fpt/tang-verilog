@@ -1,4 +1,4 @@
-// コマンド GPU (docs/GPU_PLAN.md の M5〜M7、docs/EMU_GPU_PLAN.md の E1、docs/KESSEL_ON_VDP.md の K1)。コマンド FIFO から 32bit ワードのコマンドを読み、SDRAM のフレームバッファに描く
+// コマンド GPU (docs/GPU_PLAN.md の M5〜M7、docs/EMU_GPU_PLAN.md の E1、docs/KESSEL_ON_VDP.md の K1・K3)。コマンド FIFO から 32bit ワードのコマンドを読み、SDRAM のフレームバッファに描く
 //
 // レジスタ (0x30..0x4F。複数バイトの値はリトルエンディアン):
 //   0x30 CMD        W  コマンドのポート。書いたバイトを 4 つずつ (リトルエンディアン) 1 ワードにして FIFO に入れる。
@@ -50,8 +50,14 @@
 //   0x0C VRAM_WRITE [23:0] ワード数 n、次のワードに VRAM のワードアドレス、そのあとに n ワードのデータ (VRAM は 16K ワードで折り返す)
 //   0x0D PAL_WRITE  [23:0] 色の数 n、次のワードに最初のパレットの番号 (0..511)、そのあとに (n + 1) / 2 ワード。
 //                   1 ワードに 2 色 (下位 16bit が先)。n が奇数なら最後のワードの上位は使わない
+//   0x0E STRETCH_BLIT  BLIT の拡大縮小版 (最近傍)。先頭ワードは BLIT と同じ ([23:16] フラグ、[15:0] 透過色 / バンク)。
+//                   次のワードにソースのワードアドレス、{dh, dw} (描く大きさ、1024 まで)、{y, x} (描く位置、符号付き)、
+//                   {sw, stride} (ソースの幅 (ピクセル) と 1 行のワード数)、sx_step、sy_step (どちらも 16.16 の固定小数点。ソースのピクセル / 描くピクセル)。
+//                   描くピクセル (i, j) (反転の前) のソースは ((sx_step >> 1) + i * sx_step) >> 16 列目、((sy_step >> 1) + j * sy_step) >> 16 行目
+//                   (32bit で計算して折り返す)。ソースの列は sw より小さくなるようにホストが step を選ぶ。左右反転は描く列を右から、上下反転は行を下から。
+//                   ソースの形式・透過・クリップは BLIT と同じ。ソースの 1 行は 256 ワードまで (sw: 565 で 512、8bpp で 1024、4bpp で 2048 まで)
 //   0x0F OAM_WRITE  [23:0] ワード数 n、次のワードに OAM のワードアドレス (エントリ k はワード 2k と 2k+1)、そのあとに n ワード
-//                   (OAM は 256 ワードで折り返す。形式は sprite_layer.sv)。0x0E は STRETCH_BLIT に取っておく
+//                   (OAM は 256 ワードで折り返す。形式は sprite_layer.sv)
 //   それ以外        エラーを立て、1 ワードのコマンドとして読み飛ばす
 //
 // WAIT_LINE のあとの REG_WRITE は、FIFO にすでに入っていれば数クロックで実行されるので、次のラインの合成 (約 63us 後) に間に合う。
@@ -64,6 +70,9 @@
 // BLIT は 1 行ずつ: ソースの 1 行をバーストで読んでライン バッファに置き、描く行をバーストで書く。ライン バッファは偶数番目と奇数番目の
 // ソースのワードを別の BSRAM に置く。書くワードのピクセル (2 か 4 個、ソースでは並んでいる) は多くてもソースの 2 ワードにまたがるだけなので、
 // 隣り合う 2 ワードを 1 クロックで読めば、描く位置がどこでも、左右反転でも、ソースの形式 (565 / 8bpp / 4bpp) がどれでも足りる。
+//
+// STRETCH_BLIT は描く 1 行ずつ: ソースの行が前の行と違えば読み直し (ライン バッファは BLIT と同じ)、1 クロックに 1 ピクセルずつソースを拾って
+// 描く行のワードを組み立てて行バッファ (drow) に置き (ピクセルごとの透過の印つき)、その行をバーストで書く。
 module gpu #(
     parameter int SRC_W = 320,
     parameter int SRC_H = 240,
@@ -136,8 +145,9 @@ module gpu #(
     localparam logic [7:0] OP_NOP = 8'h00, OP_CLEAR = 8'h01, OP_FILL_RECT = 8'h02, OP_SWAP = 8'h03, OP_UPLOAD = 8'h04,
                            OP_POINT = 8'h05, OP_DRAW_LINE = 8'h06, OP_CLIP = 8'h07, OP_BLIT = 8'h08,
                            OP_REG_WRITE = 8'h09, OP_WAIT_LINE = 8'h0A, OP_WAIT_VBLANK = 8'h0B,
-                           OP_VRAM_WRITE = 8'h0C, OP_PAL_WRITE = 8'h0D, OP_OAM_WRITE = 8'h0F;
+                           OP_VRAM_WRITE = 8'h0C, OP_PAL_WRITE = 8'h0D, OP_STRETCH = 8'h0E, OP_OAM_WRITE = 8'h0F;
     localparam int BLIT_MAX_W = 512;      // ライン バッファ (256 ワード) に入る幅
+    localparam int STRETCH_MAX = 1024;    // STRETCH_BLIT の描く大きさの上限
 
     // ================================================================ コマンド FIFO
     logic [31:0]     fifo [0:FIFO_WORDS-1];
@@ -161,15 +171,15 @@ module gpu #(
         S_FETCH, S_FETCH_WAIT, S_DECODE, S_ARG, S_EXEC, S_RECT_BURST, S_SWAP_WAIT,
         S_UPLOAD_WRITE, S_LINE_STEP, S_LINE_PLOT, S_LINE_ADV,
         S_BLIT_SETUP, S_BLIT_SKIP, S_BLIT_READ, S_BLIT_WRITE, S_WAIT_LINE,
+        S_ST_SETUP, S_ST_ROW, S_ST_GEN, S_ST_WRITE,
         S_VRAM_WRITE, S_PAL_WRITE, S_PAL_HI
     } state_t;
     state_t state, after_fetch;
 
     logic [31:0] word;
     logic [7:0]  op;
-    logic [31:0] arg0, arg1, arg2;
-    logic [15:0] arg3;                     // BLIT の stride (下位 16bit だけ使う)
-    logic [1:0]  arg_idx, arg_last;        // 何個目の引数を読んでいるか、最後の引数の番号
+    logic [31:0] arg0, arg1, arg2, arg3, arg4, arg5;
+    logic [2:0]  arg_idx, arg_last;        // 何個目の引数を読んでいるか、最後の引数の番号
     logic [3:0]  flags;                    // 先頭ワードの [19:16] (BLIT: bit0 透過, bit1 左右反転, bit2 上下反転, bit3 4bpp のソース)
     logic [7:0]  flags_raw;                // 先頭ワードの [23:16] (REG_WRITE のレジスタ番号)
     logic        error, overflow, swap_seen;
@@ -261,9 +271,26 @@ module gpu #(
     logic        src4;                      // 4bpp のソース
     assign src4 = flags[3];
 
+    // --- STRETCH_BLIT ---
+    logic               stretch;            // 今の BLIT は STRETCH_BLIT
+    logic [15:0]        st_sw;              // ソースの幅 (ピクセル)
+    logic [31:0]        st_xstep, st_ystep, st_xacc, st_yacc;
+    logic [15:0]        st_j, st_i;         // 描く行 / 行の中のピクセル (反転の前)
+    logic [15:0]        st_row;             // st_ptr が指しているソースの行
+    logic [20:0]        st_ptr;
+    logic [15:0]        st_loaded;          // ライン バッファにあるソースの行 (st_have のとき)
+    logic               st_have;
+    logic signed [18:0] st_x;               // 次に拾うピクセルの描く x
+    logic signed [18:0] st_yd;              // 今の描く行の y
+    logic [15:0]        st_sy;              // 今の描く行のソースの行
+    assign st_yd = flags[2] ? 19'(b_dy) + 19'(b_h) - 19'sd1 - 19'(st_j) : 19'(b_dy) + 19'(st_j);
+    assign st_sy = st_yacc[31:16];
+
     // ソースの 1 行のワード数
-    logic [8:0] src_words;
-    assign src_words = src4 ? 9'((17'(b_w) + 17'd7) >> 3) : fmt8 ? 9'((17'(b_w) + 17'd3) >> 2) : 9'((17'(b_w) + 17'd1) >> 1);
+    logic [15:0] src_px;
+    logic [8:0]  src_words;
+    assign src_px    = stretch ? st_sw : b_w;
+    assign src_words = src4 ? 9'((17'(src_px) + 17'd7) >> 3) : fmt8 ? 9'((17'(src_px) + 17'd3) >> 2) : 9'((17'(src_px) + 17'd1) >> 1);
 
     // ライン バッファ: ソースの 1 行 (256 ワードまで)。偶数番目と奇数番目のワードを別の BSRAM に置く
     logic [31:0] lb_even [0:127];
@@ -287,12 +314,17 @@ module gpu #(
     logic [2:0] boff;
     always_comb begin
         logic signed [18:0] x0, s0, smin;
-        w_rd = (state == S_BLIT_WRITE && mem_wnext) ? w_cur + 8'd1 : w_cur;
+        w_rd = ((state == S_BLIT_WRITE || state == S_ST_WRITE) && mem_wnext) ? w_cur + 8'd1 : w_cur;
         x0   = fmt8 ? $signed({9'b0, w_rd, 2'b0}) : $signed({10'b0, w_rd, 1'b0});
         s0   = flags[1] ? 19'(b_w) - 19'sd1 - (x0 - 19'(b_dx)) : x0 - 19'(b_dx);
         smin = flags[1] ? s0 - (fmt8 ? 19'sd3 : 19'sd1) : s0;
         w0   = src4 ? 8'(smin >>> 3) : fmt8 ? 8'(smin >>> 2) : 8'(smin >>> 1);
         boff = src4 ? smin[2:0] : fmt8 ? {1'b0, smin[1:0]} : {2'b0, smin[0]};
+        // STRETCH_BLIT: 拾うソースのピクセル (st_xacc の整数部) を含むワードを W0 にする
+        if (state == S_ST_GEN) begin
+            w0   = src4 ? st_xacc[26:19] : fmt8 ? st_xacc[25:18] : st_xacc[24:17];
+            boff = src4 ? st_xacc[18:16] : fmt8 ? {1'b0, st_xacc[17:16]} : {2'b0, st_xacc[16]};
+        end
     end
 
     always_ff @(posedge clk) begin
@@ -334,12 +366,68 @@ module gpu #(
         end
     end
 
+    // STRETCH_BLIT の 1 段目: ライン バッファから読んだワード W0 の中の boff 番目のピクセルを、描く x = g_x のところに置く
+    logic               g_v;                // このクロックに置くピクセルがある (クリップの中)
+    logic signed [18:0] g_x;
+    logic [31:0]        g_lane_data;        // そのピクセルを、置くバイトの位置に並べたもの
+    logic [3:0]         g_lane, g_tr;       // 置くバイト、そのうち透過のバイト
+    logic [7:0]         g_widx;             // 置く描くワード
+    always_comb begin
+        logic [31:0] wd;
+        logic [15:0] p16;
+        logic [3:0]  nib;
+        logic [7:0]  v;
+        wd  = b_win[31:0];
+        p16 = wd[{boff_q[0], 4'b0} +: 16];
+        nib = wd[5'd28 - {boff_q, 2'b0} +: 4];
+        v   = src4 ? {color[11:8], nib} : wd[{boff_q[1:0], 3'b0} +: 8];
+        if (!fmt8) begin
+            g_lane_data = {p16, p16};
+            g_lane      = g_x[0] ? 4'b1100 : 4'b0011;
+            g_tr        = (flags[0] && p16 == color) ? g_lane : 4'b0000;
+            g_widx      = 8'(g_x >>> 1);
+        end else begin
+            g_lane_data = {4{v}};
+            g_lane      = 4'b0001 << g_x[1:0];
+            g_tr        = (flags[0] && (src4 ? nib == 4'd0 : v == color[7:0])) ? g_lane : 4'b0000;
+            g_widx      = 8'(g_x >>> 2);
+        end
+    end
+
+    // 組み立て中の描くワード {透過の印, データ}。ワードが変わったら行バッファに書く (印の 1 = 書かない。置いていないバイトも 1)
+    logic        a_on;
+    logic [7:0]  a_idx;
+    logic [31:0] a_data;
+    logic [3:0]  a_tr;
+    logic [31:0] lane_bits;
+    logic [31:0] m_data;
+    logic [3:0]  m_tr;
+    logic        a_same;
+    always_comb begin
+        for (int k = 0; k < 4; k++) lane_bits[8 * k +: 8] = {8{g_lane[k]}};
+        a_same = a_on && a_idx == g_widx;
+        m_data = ((a_same ? a_data : 32'h0) & ~lane_bits) | (g_lane_data & lane_bits);
+        m_tr   = ((a_same ? a_tr : 4'hF) & ~g_lane) | g_tr;
+    end
+
+    // 描く 1 行のバッファ (160 ワード x {透過の印 4bit, データ 32bit})
+    logic [35:0] drow [0:159];
+    logic [35:0] drow_q;
+    logic        drow_we;
+    always_comb drow_we = state == S_ST_GEN && a_on && ((g_v && !a_same) || (!g_v && st_i == b_w));
+    always_ff @(posedge clk) begin
+        if (drow_we) drow[a_idx] <= {a_tr, a_data};
+        drow_q <= drow[w_rd];
+    end
+
     logic [31:0] fill_data;
     assign fill_data = fmt8 ? {4{color[7:0]}} : {color, color};
     assign mem_wmask = (state == S_RECT_BURST) ? cur_mask :
                        (state == S_BLIT_WRITE) ? b_mask :
+                       (state == S_ST_WRITE)   ? cur_mask & ~drow_q[35:32] :
                        (state == S_LINE_PLOT)  ? (fmt8 ? 4'b0001 << lx[1:0] : (lx[0] ? 4'b1100 : 4'b0011)) : 4'hF;
     assign mem_wdata = (state == S_BLIT_WRITE) ? b_data :
+                       (state == S_ST_WRITE)   ? drow_q[31:0] :
                        (state == S_RECT_BURST || state == S_LINE_PLOT) ? fill_data : word;
 
     assign pop = (state == S_FETCH && count != 0 && !flush);
@@ -347,6 +435,7 @@ module gpu #(
     // 引数の数 (先頭ワードのあとに続くワード。UPLOAD は先頭のアドレスだけ数え、データは S_UPLOAD_WRITE で読む)
     function automatic logic [2:0] nargs(input logic [7:0] o);
         unique case (o)
+            OP_STRETCH:                          return 3'd6;
             OP_BLIT:                             return 3'd4;
             OP_FILL_RECT, OP_DRAW_LINE, OP_CLIP: return 3'd2;
             OP_UPLOAD, OP_POINT, OP_VRAM_WRITE, OP_PAL_WRITE, OP_OAM_WRITE: return 3'd1;
@@ -437,9 +526,9 @@ module gpu #(
                     flags_raw <= word[23:16];
                     color   <= word[15:0];
                     up_left <= word[23:0];
-                    arg_idx <= 2'd0;
+                    arg_idx <= 3'd0;
                     if (nargs(word[31:24]) != 3'd0) begin
-                        arg_last    <= 2'(nargs(word[31:24]) - 3'd1);
+                        arg_last    <= nargs(word[31:24]) - 3'd1;
                         state       <= S_FETCH;
                         after_fetch <= S_ARG;
                     end else begin
@@ -448,12 +537,14 @@ module gpu #(
                 end
                 S_ARG: begin
                     unique case (arg_idx)
-                        2'd0: arg0 <= word;
-                        2'd1: arg1 <= word;
-                        2'd2: arg2 <= word;
-                        default: arg3 <= word[15:0];
+                        3'd0: arg0 <= word;
+                        3'd1: arg1 <= word;
+                        3'd2: arg2 <= word;
+                        3'd3: arg3 <= word;
+                        3'd4: arg4 <= word;
+                        default: arg5 <= word;
                     endcase
-                    arg_idx <= arg_idx + 2'd1;
+                    arg_idx <= arg_idx + 3'd1;
                     if (arg_idx == arg_last) begin
                         state       <= S_EXEC;
                         after_fetch <= S_DECODE;
@@ -520,9 +611,26 @@ module gpu #(
                             {b_h, b_w} <= arg1;
                             b_dx     <= 18'(signed'(arg2[15:0]));
                             b_dy     <= 18'(signed'(arg2[31:16]));
-                            b_stride <= arg3;
+                            b_stride <= arg3[15:0];
+                            stretch  <= 1'b0;
                             if (arg1[15:0] > 16'(BLIT_MAX_W) || (flags[3] && !fmt8)) error <= 1'b1;
                             else                                                     state <= S_BLIT_SETUP;
+                        end
+                        OP_STRETCH: begin
+                            b_src    <= arg0[20:0];
+                            {b_h, b_w} <= arg1;
+                            b_dx     <= 18'(signed'(arg2[15:0]));
+                            b_dy     <= 18'(signed'(arg2[31:16]));
+                            b_stride <= arg3[15:0];
+                            st_sw    <= arg3[31:16];
+                            st_xstep <= arg4;
+                            st_ystep <= arg5;
+                            stretch  <= 1'b1;
+                            if (arg1[15:0] > 16'(STRETCH_MAX) || arg1[31:16] > 16'(STRETCH_MAX) || (flags[3] && !fmt8) ||
+                                arg3[31:16] > (flags[3] ? 16'(4 * BLIT_MAX_W) : fmt8 ? 16'(2 * BLIT_MAX_W) : 16'(BLIT_MAX_W)))
+                                error <= 1'b1;
+                            else
+                                state <= S_ST_SETUP;
                         end
                         OP_REG_WRITE: begin
                             unique case (flags_raw)
@@ -641,7 +749,8 @@ module gpu #(
                     if (!mem_req) begin
                         if (b_rd_left == 0) begin
                             w_cur <= w_first;
-                            state <= S_BLIT_WRITE;
+                            if (stretch) state <= S_ST_ROW;
+                            else         state <= S_BLIT_WRITE;
                         end else begin
                             mem_req  <= 1'b1;
                             mem_we   <= 1'b0;
@@ -654,6 +763,90 @@ module gpu #(
                             mem_req   <= 1'b0;
                             b_rd_addr <= b_rd_addr + 21'(mem_len);
                             b_rd_left <= b_rd_left - mem_len;
+                        end
+                    end
+                end
+
+                // ---- STRETCH_BLIT ----
+                S_ST_SETUP: begin
+                    if (b_w == 0 || b_h == 0 || bxs > bxe || bys > bye) begin
+                        state <= S_FETCH;
+                    end else begin
+                        x0_b      <= first_byte(bxs[1:0], fmt8);
+                        x1_b      <= last_byte(bxe[1:0], fmt8);
+                        w_first   <= word_of(17'(bxs), fmt8);
+                        w_last    <= word_of(17'(bxe), fmt8);
+                        st_j      <= '0;
+                        st_yacc   <= st_ystep >> 1;
+                        st_row    <= '0;
+                        st_ptr    <= b_src;
+                        st_have   <= 1'b0;
+                        state     <= S_ST_ROW;
+                    end
+                end
+                // 描く行 st_j: クリップの外なら飛ばす。ソースの行がライン バッファになければ、そこまで進めて読む
+                S_ST_ROW: begin
+                    if (st_j == b_h) begin
+                        state <= S_FETCH;
+                    end else if (st_yd < bys || st_yd > bye) begin
+                        st_j    <= st_j + 16'd1;
+                        st_yacc <= st_yacc + st_ystep;
+                    end else if (st_have && st_loaded == st_sy) begin
+                        y_cur   <= 8'(st_yd);
+                        st_i    <= '0;
+                        st_xacc <= st_xstep >> 1;
+                        st_x    <= flags[1] ? 19'(b_dx) + 19'(b_w) - 19'sd1 : 19'(b_dx);
+                        g_v     <= 1'b0;
+                        a_on    <= 1'b0;
+                        state   <= S_ST_GEN;
+                    end else if (st_row != st_sy) begin
+                        st_ptr  <= st_ptr + 21'(b_stride);
+                        st_row  <= st_row + 16'd1;
+                    end else begin
+                        b_rd_addr <= st_ptr;
+                        b_rd_left <= src_words;
+                        b_widx    <= '0;
+                        st_loaded <= st_sy;
+                        st_have   <= 1'b1;
+                        state     <= S_BLIT_READ;
+                    end
+                end
+                // 1 クロックに 1 ピクセル: ソースのワードを読み (0 段目)、次のクロックに描くワードへ置く (1 段目)
+                S_ST_GEN: begin
+                    g_v <= st_i != b_w && st_x >= bxs && st_x <= bxe;
+                    g_x <= st_x;
+                    if (st_i != b_w) begin
+                        st_i    <= st_i + 16'd1;
+                        st_xacc <= st_xacc + st_xstep;
+                        st_x    <= flags[1] ? st_x - 19'sd1 : st_x + 19'sd1;
+                    end
+                    if (g_v) begin
+                        a_on   <= 1'b1;
+                        a_idx  <= g_widx;
+                        a_data <= m_data;
+                        a_tr   <= m_tr;
+                    end else if (st_i == b_w) begin
+                        // 最後のワードは drow_we で書いた
+                        a_on  <= 1'b0;
+                        w_cur <= w_first;
+                        state <= S_ST_WRITE;
+                    end
+                end
+                S_ST_WRITE: begin
+                    if (!mem_req) begin
+                        mem_req  <= 1'b1;
+                        mem_we   <= 1'b1;
+                        mem_addr <= {draw_base + 13'(y_cur), w_cur};
+                        mem_len  <= burst_len;
+                    end else begin
+                        if (mem_wnext && w_cur != w_last) w_cur <= w_cur + 8'd1;
+                        if (mem_ack) begin
+                            mem_req <= 1'b0;
+                            if (w_cur == w_last) begin
+                                st_j    <= st_j + 16'd1;
+                                st_yacc <= st_yacc + st_ystep;
+                                state   <= S_ST_ROW;
+                            end
                         end
                     end
                 end
