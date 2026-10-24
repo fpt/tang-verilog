@@ -19,11 +19,13 @@ RP2 ──SPI──► spi_slave ──► register bus ──┬─► vdp_regs
                                           └─► gpu        (コマンド FIFO → CLEAR / FILL_RECT / SWAP / UPLOAD     ✅ M5
                                                 │                 / POINT / DRAW_LINE / CLIP            ✅ M6
                                                 │                 / BLIT)                               ✅ M7
+                                                │                 8bpp の面と BLIT4 (4bpp → 8bpp)        ✅ K1
                                                 │                                       (TILEMAP は M8)
                        sdram_ctrl ◄── sdram_arb ◄┴── line_compositor (ラインごとに背景色 + ビットマップ レイヤ        ✅ M4, E1
                                                          + タイル レイヤ (VRAM 64KiB・パレット 512 色、BSRAM) ✅ E2
                                                          + スプライト (OAM 128 個、ライン上限)            ✅ E3
                                                          + 面 B・ウィンドウ・横スクロールの表            ✅ E4
+                                                         + 8bpp のビットマップ (パレット 0..255)         ✅ K1
                                                          を順位付きの作業ラインで合成 → 320x240 を 640x480 で表示) ✅ E2.5
                           │           (表示 > GPU > メモリテスト)
                  パッケージ内 SDRAM 8MiB
@@ -84,8 +86,8 @@ SPI のトランザクションの形式 (同期バイト `0xA5`、アドレス�
 
 GPU のコマンド (`CLEAR` `FILL_RECT` `SWAP` `UPLOAD` `POINT` `DRAW_LINE` `CLIP` `BLIT` `REG_WRITE` `WAIT_LINE` `WAIT_VBLANK`
 `VRAM_WRITE` `PAL_WRITE` `OAM_WRITE`) の形式は [`gpu.sv`](../rtl/vdp/gpu.sv) の先頭にあります。タイル レイヤのレジスタ (スクロール・マップ・タイルの場所・
-マップの大きさ・パレットのバンク)、ビットマップの順位 (`BITMAP_RANK`)、スプライトのレジスタ (タイルの場所・パレットのバンク・1 ラインの上限)、面 B・ウィンドウ・横スクロールの表のレジスタは
-`REG_WRITE` でだけ書けます。VRAM とタイルの形式は [`tile_layer.sv`](../rtl/vdp/tile_layer.sv)、OAM の形式は [`sprite_layer.sv`](../rtl/vdp/sprite_layer.sv) の先頭にあります。
+マップの大きさ・パレットのバンク)、ビットマップの順位 (`BITMAP_RANK`)、スプライトのレジスタ (タイルの場所・パレットのバンク・1 ラインの上限)、面 B・ウィンドウ・横スクロールの表のレジスタ、
+ビットマップの形式 (`BITMAP_FMT`、RGB565 / 8bpp) は `REG_WRITE` でだけ書けます。VRAM とタイルの形式は [`tile_layer.sv`](../rtl/vdp/tile_layer.sv)、OAM の形式は [`sprite_layer.sv`](../rtl/vdp/sprite_layer.sv) の先頭にあります。
 | `0x7D` | `SCRATCH` | 書いた値がそのまま読める | `vdp_regs` |
 | `0x7E` | `ID` | `0x5A` | `vdp_regs` |
 | `0x7F` | `VERSION` | RTL の版 | `vdp_regs` |

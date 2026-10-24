@@ -10,6 +10,8 @@
 //     負の x / y、2 タイル幅の左右反転、ラインの上限 (列の数)
 //   - 面 B: 低優先は面 A (低) の下、高優先は面 A (低) の上。ウィンドウ (ライン全体) は面 A を隠して別のマップを出す。
 //     横スクロールの表 (ラインごと) で面 A と面 B を別々にずらす
+//   - 8bpp のビットマップ (K1): 1 ワードに 4 ピクセルのパレットの番号を、パレット (0..255) を引いて出す。透過色 (番号) のところは
+//     背景色、順位 3 ならタイル (低) の上で、透過色のところからタイルが見える
 //   - メモリが遅すぎると UNDERFLOW を数える
 `timescale 1ns/1ps
 module tb_line_compositor;
@@ -42,6 +44,7 @@ module tb_line_compositor;
     logic [1:0]  hs_mode = '0;
     localparam logic [13:0] BMAP = 14'd64, WMAP = 14'd128, HSB = 14'd256;
     logic [2:0]  bitmap_rank = 3'd1;
+    logic        bitmap_fmt = 1'b0;
     logic        vram_we = 0, pal_we = 0;
     logic [13:0] vram_waddr = '0;
     logic [31:0] vram_wdata = '0;
@@ -60,7 +63,7 @@ module tb_line_compositor;
     logic [23:0] rgb;
 
     line_compositor #(.SRC_W(SRC_W), .SRC_H(SRC_H), .V_TOTAL(V_TOTAL), .VRAM_WORDS(1024)) dut (
-        .clk_sys, .rst_sys(rst), .fb_base, .base_latched, .bg_color, .layer_ctrl, .bitmap_key, .bitmap_rank,
+        .clk_sys, .rst_sys(rst), .fb_base, .base_latched, .bg_color, .layer_ctrl, .bitmap_key, .bitmap_rank, .bitmap_fmt,
         .tile_scroll_x(10'd0), .tile_scroll_y(10'd0), .tile_map_base(14'd0), .tile_pat_base(PAT), .tile_ctrl(8'd0),
         .tileb_scroll_x(10'd0), .tileb_scroll_y(10'd0), .tileb_map_base, .tileb_pat_base(PAT), .tileb_ctrl(8'd0),
         .win_h(6'd0), .win_v, .win_map_base(WMAP), .hs_mode, .hs_base(HSB),
@@ -77,6 +80,13 @@ module tb_line_compositor;
     endfunction
     function automatic logic [23:0] expand(input logic [15:0] p);
         return {p[15:11], p[15:13], p[10:5], p[10:9], p[4:0], p[4:2]};
+    endfunction
+    // 8bpp のビットマップ: ピクセルのパレットの番号と、パレットの色
+    function automatic logic [7:0] idx8(input int px, input int py);
+        return 8'((py * 8 + px) * 29 + 3);
+    endfunction
+    function automatic logic [15:0] pal8(input int i);
+        return 16'(i * 16'h0123 ^ 16'h5A5A);
     endfunction
     function automatic logic [15:0] line_color(input int n);
         return 16'(16'h1111 * (n + 1));
@@ -182,14 +192,16 @@ module tb_line_compositor;
             line = int'(mem_addr >> 8) - int'(BASE);
             if (mem_addr >= 21'(int'(OTHER) << 8)) line = int'(mem_addr >> 8) - int'(OTHER) + 100;   // もう 1 つの面
             // リセット直後、最初にライン 0 で fb_base を取り込むまではフレームの面が決まっていないので見ない
-            if (latches > 0 && (mem_addr[7:0] != 0 || mem_len != 9'(SRC_W / 2) || line < 0 || (line >= SRC_H && line < 100))) begin
+            if (latches > 0 && (mem_addr[7:0] != 0 || (mem_len != 9'(SRC_W / 2) && mem_len != 9'(SRC_W / 4)) || line < 0 ||
+                                (line >= SRC_H && line < 100))) begin
                 $display("  bad request: addr %h len %0d", mem_addr, mem_len);
                 errors++;
             end
             repeat (latency) @(negedge clk_sys);
-            for (i = 0; i < SRC_W / 2; i++) begin
+            for (i = 0; i < int'(mem_len); i++) begin            // 8bpp なら SRC_W / 4 ワード
                 mem_rvalid = 1;
-                mem_rdata  = {pixel(2 * i + 1, line), pixel(2 * i, line)};
+                mem_rdata  = (mem_len == 9'(SRC_W / 4)) ? {idx8(4 * i + 3, line), idx8(4 * i + 2, line), idx8(4 * i + 1, line), idx8(4 * i, line)}
+                                                        : {pixel(2 * i + 1, line), pixel(2 * i, line)};
                 @(negedge clk_sys);
             end
             mem_rvalid = 0;
@@ -226,13 +238,15 @@ module tb_line_compositor;
 
     // 出力は x, y の 1 クロック後。mode: 0 = ビットマップ、1 = 背景色だけ (ラインごと)、2 = 透過色あり、
     // 3 = タイル + ビットマップ、4 = タイル + 背景色、5 = ビットマップ (透過色あり) が上でタイルが下、
-    // 6 = スプライト + タイル + ビットマップ (mixed)、7 = 面 A + 面 B (+ ウィンドウ、横スクロールの表) + 背景色 (planes)
+    // 6 = スプライト + タイル + ビットマップ (mixed)、7 = 面 A + 面 B (+ ウィンドウ、横スクロールの表) + 背景色 (planes)、
+    // 8 = 8bpp のビットマップ (透過色の番号 key8 は背景色)、9 = 8bpp (順位 3、透過色あり) が上でタイル (低) が下
     logic [10:0] x_d;
     logic [9:0]  y_d;
     logic        de_d;
     bit          check_on = 0;
     int          mode = 0, checked = 0;
     logic [15:0] key_px;
+    logic [7:0]  key8;
     always @(posedge clk_pix) begin
         if (check_on && de_d) begin
             logic [15:0] e;
@@ -247,6 +261,9 @@ module tb_line_compositor;
                 4: e = (tile_nib(sx, sy) != 0) ? 16'h7C00 + 16'(tile_nib(sx, sy)) : 16'h0123;
                 6: e = mixed(sx, sy);
                 7: e = planes(sx, sy);
+                8: e = (idx8(sx, sy) == key8) ? 16'h0123 : pal8(idx8(sx, sy));
+                9: e = (idx8(sx, sy) != key8) ? pal8(idx8(sx, sy)) :
+                       (tile_nib(sx, sy) != 0) ? pal8(tile_nib(sx, sy)) : 16'h0123;
                 default: e = (pixel(sx, sy) != key_px) ? pixel(sx, sy) :
                              (tile_nib(sx, sy) != 0) ? 16'h7C00 + 16'(tile_nib(sx, sy)) : 16'h0123;
             endcase
@@ -410,6 +427,24 @@ module tb_line_compositor;
         win_on = 1; win_v = 6'b100000;
         check_frames(7, 2);           // ウィンドウ (下、位置 0 = 全ライン)
         win_on = 0; win_v = '0;
+        layer_ctrl = 5'b00001;
+
+        // 8bpp のビットマップ: パレット 0..255 を書き、透過色をピクセル (1,1) の番号にする
+        for (int i = 0; i < 256; i++) begin
+            @(negedge clk_sys); pal_we = 1; pal_waddr = 9'(i); pal_wdata = pal8(i);
+        end
+        @(negedge clk_sys); pal_we = 0;
+        key8 = idx8(1, 1);
+        bitmap_key = {8'hFF, key8};            // 上位は使わない
+        bitmap_fmt = 1;
+        layer_ctrl = 5'b00011;
+        check_frames(8, 2);
+        write_map(32'h0);                      // タイル 0 (低優先) の上に、順位 3 で
+        bitmap_rank = 3'd3;
+        layer_ctrl = 5'b00111;
+        check_frames(9, 2);
+        bitmap_rank = 3'd1;
+        bitmap_fmt = 0;
         layer_ctrl = 5'b00001;
 
         // line_start の順番と、印 (次のライン 0 で 1 回だけ)

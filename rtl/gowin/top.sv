@@ -219,6 +219,7 @@ module top (
     // 合成のレジスタと、ラインの合成の開始 (WAIT_LINE 用)・フレームの印
     logic [15:0] bg_color, bitmap_key;
     logic [2:0]  bitmap_rank;
+    logic        bitmap_fmt;
     logic [4:0]  layer_ctrl;
     logic [9:0]  tileb_scroll_x, tileb_scroll_y;
     logic [13:0] tileb_map_base, tileb_pat_base, win_map_base, hs_base;
@@ -242,7 +243,7 @@ module top (
 
     line_compositor u_comp (
         .clk_sys, .rst_sys, .fb_base, .base_latched,
-        .bg_color, .layer_ctrl, .bitmap_key, .bitmap_rank, .mark_req, .mark_toggle, .line_start, .line_num,
+        .bg_color, .layer_ctrl, .bitmap_key, .bitmap_rank, .bitmap_fmt, .mark_req, .mark_toggle, .line_start, .line_num,
         .tile_scroll_x, .tile_scroll_y, .tile_map_base, .tile_pat_base, .tile_ctrl,
         .spr_pat_base, .spr_bank, .spr_line_cols, .oam_we,
         .tileb_scroll_x, .tileb_scroll_y, .tileb_map_base, .tileb_pat_base, .tileb_ctrl, .win_h, .win_v, .win_map_base, .hs_mode, .hs_base,
@@ -258,7 +259,7 @@ module top (
         .mem_req(g_req), .mem_we(g_we), .mem_addr(g_addr), .mem_wdata(g_wdata), .mem_wmask(g_wmask),
         .mem_len(g_len), .mem_ack(g_ack), .mem_wnext(g_wnext), .mem_rvalid(g_rvalid), .mem_rdata(mem_rdata32),
         .fb_base, .base_latched,
-        .bg_color, .layer_ctrl, .bitmap_key, .bitmap_rank, .mark_req, .line_start, .line_num, .ready(gpu_ready),
+        .bg_color, .layer_ctrl, .bitmap_key, .bitmap_rank, .bitmap_fmt, .mark_req, .line_start, .line_num, .ready(gpu_ready),
         .tile_scroll_x, .tile_scroll_y, .tile_map_base, .tile_pat_base, .tile_ctrl,
         .spr_pat_base, .spr_bank, .spr_line_cols, .oam_we,
         .tileb_scroll_x, .tileb_scroll_y, .tileb_map_base, .tileb_pat_base, .tileb_ctrl, .win_h, .win_v, .win_map_base, .hs_mode, .hs_base,

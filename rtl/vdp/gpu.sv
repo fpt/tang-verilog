@@ -1,4 +1,4 @@
-// コマンド GPU (docs/GPU_PLAN.md の M5〜M7、docs/EMU_GPU_PLAN.md の E1)。コマンド FIFO から 32bit ワードのコマンドを読み、SDRAM のフレームバッファに描く
+// コマンド GPU (docs/GPU_PLAN.md の M5〜M7、docs/EMU_GPU_PLAN.md の E1、docs/KESSEL_ON_VDP.md の K1)。コマンド FIFO から 32bit ワードのコマンドを読み、SDRAM のフレームバッファに描く
 //
 // レジスタ (0x30..0x4F。複数バイトの値はリトルエンディアン):
 //   0x30 CMD        W  コマンドのポート。書いたバイトを 4 つずつ (リトルエンディアン) 1 ワードにして FIFO に入れる。
@@ -25,10 +25,14 @@
 //                   クリップ矩形の外のピクセルは飛ばす (画面の外から始まる線もよい)
 //   0x07 CLIP       次のワード {y0, x0}、次のワード {y1, x1} (符号なし、両端を含む)。以降の FILL_RECT / POINT / DRAW_LINE を
 //                   この矩形の中だけにする。画面の外は画面の端に丸める。x0 > x1 などなら何も描かなくなる。既定は画面全体
-//   0x08 BLIT       [23:16] フラグ (bit0: 透過, bit1: 左右反転, bit2: 上下反転)、[15:0] 透過色 (RGB565)、
+//   0x08 BLIT       [23:16] フラグ (bit0: 透過, bit1: 左右反転, bit2: 上下反転, bit3: 4bpp のソース (8bpp のときだけ))、[15:0] 透過色 (RGB565)、
 //                   次のワードにソースのワードアドレス、次のワード {h, w} (w は 512 まで)、次のワード {y, x} (描く位置、符号付き)、
 //                   次のワードにソースの 1 行のワード数 (stride)。ソースは SDRAM の RGB565 の画像で、各行はワードの先頭 (偶数のピクセル) から始まる。
-//                   透過のときは透過色のピクセルを書かない。クリップ矩形の外は描かない
+//                   透過のときは透過色のピクセルを書かない。クリップ矩形の外は描かない。
+//                   8bpp (BITMAP_FMT = 1) のとき: ソースは 8bpp (1 ワードに 4 ピクセル)、透過色は [7:0]。
+//                   4bpp のソース (bit3) は 1 ワードに 8 ピクセルで、ピクセル i は [31-4i -: 4] (タイルの 1 行と同じ並び。VRAM のタイルを
+//                   そのまま SDRAM に置けば stride 1 で描ける)。書く値は {[11:8] のバンク, ピクセルの値}、透過のときは値 0 を書かない (BLIT4)。
+//                   RGB565 のときに bit3 を立てるとエラー (何も描かない)
 //   0x09 REG_WRITE  [23:16] レジスタ番号、[15:0] 値。合成のレジスタを書く (タイル レイヤの意味は tile_layer.sv、
 //                   ウィンドウと横スクロールの表は line_compositor.sv)。
 //                   0: BG_COLOR, 1: LAYER_CTRL, 2: BITMAP_KEY, 3: TILE_SCROLL_X (10bit), 4: TILE_SCROLL_Y (10bit),
@@ -37,7 +41,8 @@
 //                   10: SPR_BANK (3bit、スプライトのパレットのバンク)、11: SPR_LINE_PX (10bit、1 ラインのスプライトのピクセル数の上限。
 //                   8 の倍数に切り捨て。sprite_layer.sv)、12〜16: 面 B の TILEB_SCROLL_X / TILEB_SCROLL_Y / TILEB_MAP_BASE /
 //                   TILEB_PAT_BASE / TILEB_CTRL (面 A と同じ形)、17: WIN_H ([7] 右, [4:0] 位置 x 16 ピクセル)、
-//                   18: WIN_V ([7] 下, [4:0] 位置 x 8 ライン)、19: WIN_MAP_BASE、20: HSCROLL_MODE (2bit)、21: HSCROLL_BASE (14bit)。
+//                   18: WIN_V ([7] 下, [4:0] 位置 x 8 ライン)、19: WIN_MAP_BASE、20: HSCROLL_MODE (2bit)、21: HSCROLL_BASE (14bit)、
+//                   22: BITMAP_FMT (1bit、0 = RGB565、1 = 8bpp。描くコマンドにはすぐ、表示には次のラインから効く)。
 //                   どれも既定 0 (LAYER_CTRL と BITMAP_RANK は 1、SPR_LINE_PX は 320)
 //   0x0A WAIT_LINE  [7:0] ライン n。以降の REG_WRITE がライン n から効くところ (ライン n-1 の合成が始まったところ) まで待つ
 //   0x0B WAIT_VBLANK  WAIT_LINE 0 と同じ (以降の REG_WRITE が次のフレームのライン 0 から効く)。
@@ -52,11 +57,13 @@
 // WAIT_LINE のあとの REG_WRITE は、FIFO にすでに入っていれば数クロックで実行されるので、次のラインの合成 (約 63us 後) に間に合う。
 // ホストは 1 フレームぶんのコマンドを先に送っておく (FIFO が空になって遅れると、効くラインがずれる)。
 //
-// 1 ワードに 2 ピクセル (下位 16bit が偶数の x)。矩形の端が奇数の x で始まる / 終わるとき、線と点の 1 ピクセル、BLIT の透過色は、
-// SDRAM のバイトマスク (DQM) で片方のピクセルだけを書く (読み‐修正‐書きはしない)。矩形と BLIT の書き込みは 1 行の中で 64 ワードずつのバースト。
+// RGB565 は 1 ワードに 2 ピクセル (下位 16bit が偶数の x)。8bpp (BITMAP_FMT = 1) は 1 ワードに 4 ピクセル (ピクセル x はバイト x % 4、
+// 色はパレットの番号 0..255 で、コマンドの色の [7:0])。矩形の端がワードの途中で始まる / 終わるとき、線と点の 1 ピクセル、BLIT の透過色は、
+// SDRAM のバイトマスク (DQM) で書くピクセルだけを書く (読み‐修正‐書きはしない)。矩形と BLIT の書き込みは 1 行の中で 64 ワードずつのバースト。
 //
 // BLIT は 1 行ずつ: ソースの 1 行をバーストで読んでライン バッファに置き、描く行をバーストで書く。ライン バッファは偶数番目と奇数番目の
-// ピクセルを別の BSRAM に置くので、描く位置が奇数でも、左右反転でも、書くワードの 2 ピクセルを 1 クロックで読める。
+// ソースのワードを別の BSRAM に置く。書くワードのピクセル (2 か 4 個、ソースでは並んでいる) は多くてもソースの 2 ワードにまたがるだけなので、
+// 隣り合う 2 ワードを 1 クロックで読めば、描く位置がどこでも、左右反転でも、ソースの形式 (565 / 8bpp / 4bpp) がどれでも足りる。
 module gpu #(
     parameter int SRC_W = 320,
     parameter int SRC_H = 240,
@@ -89,6 +96,7 @@ module gpu #(
     output logic [4:0]  layer_ctrl,
     output logic [15:0] bitmap_key,
     output logic [2:0]  bitmap_rank,
+    output logic        bitmap_fmt,      // 0 = RGB565、1 = 8bpp
     output logic [9:0]  tile_scroll_x,
     output logic [9:0]  tile_scroll_y,
     output logic [13:0] tile_map_base,
@@ -162,7 +170,7 @@ module gpu #(
     logic [31:0] arg0, arg1, arg2;
     logic [15:0] arg3;                     // BLIT の stride (下位 16bit だけ使う)
     logic [1:0]  arg_idx, arg_last;        // 何個目の引数を読んでいるか、最後の引数の番号
-    logic [2:0]  flags;                    // 先頭ワードの [18:16] (BLIT: bit0 透過, bit1 左右反転, bit2 上下反転)
+    logic [3:0]  flags;                    // 先頭ワードの [19:16] (BLIT: bit0 透過, bit1 左右反転, bit2 上下反転, bit3 4bpp のソース)
     logic [7:0]  flags_raw;                // 先頭ワードの [23:16] (REG_WRITE のレジスタ番号)
     logic        error, overflow, swap_seen;
     logic [7:0]  wait_target;              // WAIT_LINE: このラインの合成が始まるのを待つ
@@ -192,16 +200,28 @@ module gpu #(
     assign ye         = (ry_end < 17'(by1)) ? ry_end : 17'(by1);
     assign rect_empty = rw == 0 || rh == 0 || xs > xe || ys > ye;
 
-    logic        x0_odd, x1_odd;           // 塗る範囲の最初 / 最後 (含む) のピクセルの x が奇数か
+    logic        fmt8;                     // 8bpp で描く
+    assign fmt8 = bitmap_fmt;
+    logic [1:0]  x0_b, x1_b;               // 塗る範囲の最初 / 最後 (含む) のピクセルの、ワードの中の最初 / 最後のバイト
     logic [7:0]  y_cur, y_last;
     logic [7:0]  w_first, w_last, w_cur;   // ワード単位
 
-    // バーストの中の今のワードのマスク: 最初のワードは x0 が奇数なら上位 (奇数のピクセル) だけ、最後のワードは x1 が偶数なら下位だけ
+    // ピクセル x のワード、最初 / 最後のバイト (565 は 2 バイトで 1 ピクセル)
+    function automatic logic [7:0] word_of(input logic [16:0] px, input logic f8);
+        return f8 ? 8'(px >> 2) : 8'(px >> 1);
+    endfunction
+    function automatic logic [1:0] first_byte(input logic [1:0] px, input logic f8);    // px は x の下位 2bit
+        return f8 ? px : {px[0], 1'b0};
+    endfunction
+    function automatic logic [1:0] last_byte(input logic [1:0] px, input logic f8);
+        return f8 ? px : {px[0], 1'b1};
+    endfunction
+
+    // バーストの中の今のワードのマスク: 最初のワードは x0_b より前のバイトを、最後のワードは x1_b より後のバイトを書かない
     logic [3:0] cur_mask;
     always_comb begin
-        cur_mask = 4'hF;
-        if (w_cur == w_first && x0_odd)  cur_mask = cur_mask & 4'b1100;
-        if (w_cur == w_last  && !x1_odd) cur_mask = cur_mask & 4'b0011;
+        for (int k = 0; k < 4; k++)
+            cur_mask[k] = !(w_cur == w_first && 2'(k) < x0_b) && !(w_cur == w_last && 2'(k) > x1_b);
     end
 
     logic [8:0] burst_len;
@@ -238,54 +258,89 @@ module gpu #(
         bye = (ye_raw < $signed({11'b0, cy1})) ? ye_raw : $signed({11'b0, cy1});
     end
 
-    // ライン バッファ: ソースの 1 行。偶数番目のピクセルと奇数番目のピクセルを別の BSRAM に置く
-    logic [15:0] lb_even [0:255];
-    logic [15:0] lb_odd  [0:255];
-    logic [15:0] lb_even_q, lb_odd_q;
-    logic        s0_odd_q;
+    logic        src4;                      // 4bpp のソース
+    assign src4 = flags[3];
+
+    // ソースの 1 行のワード数
+    logic [8:0] src_words;
+    assign src_words = src4 ? 9'((17'(b_w) + 17'd7) >> 3) : fmt8 ? 9'((17'(b_w) + 17'd3) >> 2) : 9'((17'(b_w) + 17'd1) >> 1);
+
+    // ライン バッファ: ソースの 1 行 (256 ワードまで)。偶数番目と奇数番目のワードを別の BSRAM に置く
+    logic [31:0] lb_even [0:127];
+    logic [31:0] lb_odd  [0:127];
+    logic [31:0] lb_even_q, lb_odd_q;
+    logic        w0_odd_q;
+    logic [2:0]  boff_q;
 
     always_ff @(posedge clk) begin
         if (state == S_BLIT_READ && mem_req && mem_rvalid) begin
-            lb_even[b_widx] <= mem_rdata[15:0];
-            lb_odd[b_widx]  <= mem_rdata[31:16];
+            if (b_widx[0]) lb_odd[b_widx[7:1]]  <= mem_rdata;
+            else           lb_even[b_widx[7:1]] <= mem_rdata;
         end
     end
 
-    // 書くワード (wnext で使われるなら次のワードを先読み) の 2 ピクセルのソースでの番号: s0 (下位 = 偶数の x)、s1 (上位)。
-    // 左右反転なら s = (w - 1) - (x - dx)。s0 と s1 は 1 違いなので、片方が偶数、片方が奇数になる
-    // (ライン バッファの番地と偶奇しか使わないので下位 9bit だけ持つ。負の値でも下位ビットは正しい)
+    // 書くワード (wnext で使われるなら次のワードを先読み) の最初のピクセル (x0) のソースでの番号 s0。左右反転なら s = (w - 1) - (x - dx)。
+    // このワードのピクセル (N = 2 か 4 個) はソースの smin .. smin + N - 1 (反転なら smin = s0 - (N - 1))。
+    // smin を含むソースのワード W0 と W0 + 1 を読み、W0 の中の smin の位置を boff に残す (負の値でも下位ビットは正しい。その分は書かない)
     logic [7:0] w_rd;
-    logic [8:0] s0;
-    logic [7:0] s1h;                        // s1 の番地 (s1 >> 1)。s1 の偶奇は s0 の逆
+    logic [7:0] w0;
+    logic [2:0] boff;
     always_comb begin
-        logic signed [18:0] x0;
+        logic signed [18:0] x0, s0, smin;
         w_rd = (state == S_BLIT_WRITE && mem_wnext) ? w_cur + 8'd1 : w_cur;
-        x0   = $signed({10'b0, w_rd, 1'b0});
-        s0   = 9'(flags[1] ? 19'(b_w) - 19'sd1 - (x0 - 19'(b_dx)) : x0 - 19'(b_dx));
-        s1h  = 8'((flags[1] ? s0 - 9'd1 : s0 + 9'd1) >> 1);
+        x0   = fmt8 ? $signed({9'b0, w_rd, 2'b0}) : $signed({10'b0, w_rd, 1'b0});
+        s0   = flags[1] ? 19'(b_w) - 19'sd1 - (x0 - 19'(b_dx)) : x0 - 19'(b_dx);
+        smin = flags[1] ? s0 - (fmt8 ? 19'sd3 : 19'sd1) : s0;
+        w0   = src4 ? 8'(smin >>> 3) : fmt8 ? 8'(smin >>> 2) : 8'(smin >>> 1);
+        boff = src4 ? smin[2:0] : fmt8 ? {1'b0, smin[1:0]} : {2'b0, smin[0]};
     end
 
     always_ff @(posedge clk) begin
-        lb_even_q <= lb_even[s0[0] ? s1h : s0[8:1]];
-        lb_odd_q  <= lb_odd[s0[0] ? s0[8:1] : s1h];
-        s0_odd_q  <= s0[0];
+        lb_even_q <= lb_even[7'((9'(w0) + 9'(w0[0])) >> 1)];
+        lb_odd_q  <= lb_odd[w0[7:1]];
+        w0_odd_q  <= w0[0];
+        boff_q    <= boff;
     end
 
-    logic [15:0] b_lo, b_hi;               // 書くワードの下位 (偶数の x) / 上位 (奇数の x) のピクセル
+    // 読んだ 2 ワード {W0 + 1, W0} から、書くワードのピクセル k (k = 0 が下位 = 左) を取り出す。
+    // ピクセル k はウィンドウの中で boff + k (反転なら boff + N - 1 - k) 番目
+    logic [63:0] b_win;
+    logic [31:0] b_data;
     logic [3:0]  b_mask;
-    assign b_lo = s0_odd_q ? lb_odd_q : lb_even_q;
-    assign b_hi = s0_odd_q ? lb_even_q : lb_odd_q;
+    assign b_win = w0_odd_q ? {lb_even_q, lb_odd_q} : {lb_odd_q, lb_even_q};
     always_comb begin
+        logic [1:0]  o2;
+        logic [15:0] p;
+        logic [3:0]  o4, nib;
+        logic [7:0]  v;
         b_mask = cur_mask;
-        if (flags[0] && b_lo == color) b_mask[1:0] = 2'b00;    // 透過色は書かない
-        if (flags[0] && b_hi == color) b_mask[3:2] = 2'b00;
+        b_data = '0;
+        o2 = '0; p = '0; o4 = '0; nib = '0; v = '0;
+        if (!fmt8) begin
+            for (int k = 0; k < 2; k++) begin
+                o2 = 2'(boff_q) + (flags[1] ? 2'(1 - k) : 2'(k));
+                p  = b_win[16 * o2 +: 16];
+                b_data[16 * k +: 16] = p;
+                if (flags[0] && p == color) b_mask[2 * k +: 2] = 2'b00;      // 透過色は書かない
+            end
+        end else begin
+            for (int k = 0; k < 4; k++) begin
+                o4  = 4'(boff_q) + (flags[1] ? 4'(3 - k) : 4'(k));
+                nib = b_win[{o4[3], 5'b0} + 6'd28 - {1'b0, o4[2:0], 2'b0} +: 4];   // 4bpp: ワードの中は上位のニブルが左
+                v   = src4 ? {color[11:8], nib} : b_win[{o4[2:0], 3'b0} +: 8];
+                b_data[8 * k +: 8] = v;
+                if (flags[0] && (src4 ? nib == 4'd0 : v == color[7:0])) b_mask[k] = 1'b0;
+            end
+        end
     end
 
+    logic [31:0] fill_data;
+    assign fill_data = fmt8 ? {4{color[7:0]}} : {color, color};
     assign mem_wmask = (state == S_RECT_BURST) ? cur_mask :
                        (state == S_BLIT_WRITE) ? b_mask :
-                       (state == S_LINE_PLOT)  ? (lx[0] ? 4'b1100 : 4'b0011) : 4'hF;
-    assign mem_wdata = (state == S_BLIT_WRITE) ? {b_hi, b_lo} :
-                       (state == S_RECT_BURST || state == S_LINE_PLOT) ? {color, color} : word;
+                       (state == S_LINE_PLOT)  ? (fmt8 ? 4'b0001 << lx[1:0] : (lx[0] ? 4'b1100 : 4'b0011)) : 4'hF;
+    assign mem_wdata = (state == S_BLIT_WRITE) ? b_data :
+                       (state == S_RECT_BURST || state == S_LINE_PLOT) ? fill_data : word;
 
     assign pop = (state == S_FETCH && count != 0 && !flush);
 
@@ -317,6 +372,7 @@ module gpu #(
             layer_ctrl  <= 5'b00001;
             bitmap_key  <= 16'h0000;
             bitmap_rank <= 3'd1;
+            bitmap_fmt  <= 1'b0;
             tile_scroll_x <= '0;
             tile_scroll_y <= '0;
             tile_map_base <= '0;
@@ -377,7 +433,7 @@ module gpu #(
                 // 先頭ワード: 引数があれば読んでから S_EXEC、なければすぐ実行
                 S_DECODE: begin
                     op      <= word[31:24];
-                    flags   <= word[18:16];
+                    flags   <= word[19:16];
                     flags_raw <= word[23:16];
                     color   <= word[15:0];
                     up_left <= word[23:0];
@@ -465,8 +521,8 @@ module gpu #(
                             b_dx     <= 18'(signed'(arg2[15:0]));
                             b_dy     <= 18'(signed'(arg2[31:16]));
                             b_stride <= arg3;
-                            if (arg1[15:0] > 16'(BLIT_MAX_W)) error <= 1'b1;
-                            else                             state <= S_BLIT_SETUP;
+                            if (arg1[15:0] > 16'(BLIT_MAX_W) || (flags[3] && !fmt8)) error <= 1'b1;
+                            else                                                     state <= S_BLIT_SETUP;
                         end
                         OP_REG_WRITE: begin
                             unique case (flags_raw)
@@ -492,6 +548,7 @@ module gpu #(
                                 8'd19: win_map_base   <= color[13:0];
                                 8'd20: hs_mode        <= color[1:0];
                                 8'd21: hs_base        <= color[13:0];
+                                8'd22: bitmap_fmt     <= color[0];
                                 default: error <= 1'b1;
                             endcase
                         end
@@ -559,10 +616,10 @@ module gpu #(
                     end else begin
                         y_cur   <= 8'(bys);
                         y_last  <= 8'(bye);
-                        x0_odd  <= bxs[0];
-                        x1_odd  <= bxe[0];
-                        w_first <= 8'(bxs >>> 1);
-                        w_last  <= 8'(bxe >>> 1);
+                        x0_b    <= first_byte(bxs[1:0], fmt8);
+                        x1_b    <= last_byte(bxe[1:0], fmt8);
+                        w_first <= word_of(17'(bxs), fmt8);
+                        w_last  <= word_of(17'(bxe), fmt8);
                         b_skip  <= flags[2] ? 16'(19'(b_h) - 19'sd1 - (bys - 19'(b_dy))) : 16'(bys - 19'(b_dy));
                         state   <= S_BLIT_SKIP;
                     end
@@ -574,7 +631,7 @@ module gpu #(
                         b_skip <= b_skip - 16'd1;
                     end else begin
                         b_rd_addr <= b_src;
-                        b_rd_left <= 9'((17'(b_w) + 17'd1) >> 1);
+                        b_rd_left <= src_words;
                         b_widx    <= '0;
                         state     <= S_BLIT_READ;
                     end
@@ -618,7 +675,7 @@ module gpu #(
                                     y_cur     <= y_cur + 8'd1;
                                     b_src     <= flags[2] ? b_src - 21'(b_stride) : b_src + 21'(b_stride);
                                     b_rd_addr <= flags[2] ? b_src - 21'(b_stride) : b_src + 21'(b_stride);
-                                    b_rd_left <= 9'((17'(b_w) + 17'd1) >> 1);
+                                    b_rd_left <= src_words;
                                     b_widx    <= '0;
                                     state     <= S_BLIT_READ;
                                 end
@@ -635,13 +692,13 @@ module gpu #(
                             if (rect_empty) begin
                                 state <= S_FETCH;
                             end else begin
-                                x0_odd  <= xs[0];
-                                x1_odd  <= xe[0];
+                                x0_b    <= first_byte(xs[1:0], fmt8);
+                                x1_b    <= last_byte(xe[1:0], fmt8);
                                 y_cur   <= 8'(ys);
                                 y_last  <= 8'(ye);
-                                w_first <= 8'(xs >> 1);
-                                w_last  <= 8'(xe >> 1);
-                                w_cur   <= 8'(xs >> 1);
+                                w_first <= word_of(xs, fmt8);
+                                w_last  <= word_of(xe, fmt8);
+                                w_cur   <= word_of(xs, fmt8);
                             end
                             rw <= 16'd0;
                             rh <= 16'd0;
@@ -693,7 +750,7 @@ module gpu #(
                     if (in_clip) begin
                         mem_req  <= 1'b1;
                         mem_we   <= 1'b1;
-                        mem_addr <= {draw_base + 13'(ly[7:0]), lx[8:1]};
+                        mem_addr <= {draw_base + 13'(ly[7:0]), fmt8 ? lx[9:2] : lx[8:1]};
                         mem_len  <= 9'd1;
                         state    <= S_LINE_PLOT;
                     end else begin
