@@ -20,12 +20,14 @@ RP2 ──SPI──► spi_slave ──► register bus ──┬─► vdp_regs
                                                 │                 / POINT / DRAW_LINE / CLIP            ✅ M6
                                                 │                 / BLIT)                               ✅ M7
                                                 │                 8bpp の面と BLIT4 (4bpp → 8bpp)        ✅ K1
+                                                │                 STRETCH_BLIT                          ✅ K3
                                                 │                                       (TILEMAP は M8)
                        sdram_ctrl ◄── sdram_arb ◄┴── line_compositor (ラインごとに背景色 + ビットマップ レイヤ        ✅ M4, E1
                                                          + タイル レイヤ (VRAM 64KiB・パレット 512 色、BSRAM) ✅ E2
                                                          + スプライト (OAM 128 個、ライン上限)            ✅ E3
                                                          + 面 B・ウィンドウ・横スクロールの表            ✅ E4
                                                          + 8bpp のビットマップ (パレット 0..255)         ✅ K1
+                                                         + ライトマップ (8x8 のセルごとの RGB の倍率)     ✅ K4
                                                          を順位付きの作業ラインで合成 → 320x240 を 640x480 で表示) ✅ E2.5
                           │           (表示 > GPU > メモリテスト)
                  パッケージ内 SDRAM 8MiB

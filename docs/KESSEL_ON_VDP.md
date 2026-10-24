@@ -30,7 +30,7 @@ VDP の現状は [EMU_GPU_PLAN.md](EMU_GPU_PLAN.md) (E4 まで)、[GPU_PLAN.md](
 | `map(tx,ty,sx,sy,tw,th)` + `camera` | タイルブロックの即時描画 | **面 A / B** (スクロール = `tx*8 - sx + camera`)。3 回目以降は BLIT4 | あり |
 | `mget/mset/fget/fset` | VM の RAM | VM 側のまま。ダーティ行だけ `VRAM_WRITE` で面のマップへ | — |
 | `text` `number` (3x5 フォント) | 即時描画 | フォントをタイルの形式で SDRAM に置いて BLIT4 | — |
-| `ambient` `light` `light_rect` `shadow_rect` | ピクセル単位の RGB 乗算 | **セル単位のライトマップ** (5 章) | 要追加 |
+| `ambient` `light` `light_rect` `shadow_rect` | ピクセル単位の RGB 乗算 | **セル単位のライトマップ** (5 章) | ✅ K4 |
 | Square240 / Landscape320 / Portrait320 | 3 画面 | 320x240 そのまま / 左右に額縁 / 限定対応 (6 章) | — |
 | フレームベクタ、200,000 命令/フレーム | 毎フレームの呼び出し | RP2350 で VM を回し、`WAIT_VBLANK` で区切る | — |
 | 音 (イベントログ + シンセ) | ホスト側 | RP2350 のもう片方のコアでシンセ、PCM を HSTX で送って I2S へ | 要追加 (FPGA の I2S 出力) |
@@ -143,7 +143,7 @@ LCD が 800x480 なら、VDP に 400x240 を足して Kessel にも `Wide400` �
 | K1 | VDP ✅: 8bpp ビットマップ (透過色のインデックス)、`CLEAR` / `FILL_RECT` / `DRAW_LINE` / `POINT` / `BLIT` の 8bpp 版、BLIT4。Kessel: スクリーンの trait 化と VDP バックエンド (即時描画のみ、`map` も BLIT4) | `paint` `snake` `brick` `2048` `swarm` |
 | K2 | Kessel: 深さ 3 段の規則、`map` → 面 A/B、`camera`、フォント。VDP ✅: セル順 2、スプライトごとのバンク 4bit | `platform` `shooter` `spectrum` |
 | K3 | VDP ✅: `STRETCH_BLIT` (4bpp ソース) | `outrun` `tetris` `sokoban` (光なし) |
-| K4 | VDP: ライトマップ。Kessel: セル単位の光 | `rogue` `sokoban` `dnb` `piano` `popn` |
+| K4 | VDP ✅: ライトマップ。Kessel: セル単位の光 | `rogue` `sokoban` `dnb` `piano` `popn` |
 | K5 | 音: FPGA の I2S + PCM FIFO、RP2350 のシンセ、ハードスプライトの `actor` API | 全部、音付き |
 
 
@@ -196,3 +196,18 @@ LCD が 800x480 なら、VDP に 400x240 を足して Kessel にも `Wide400` �
 - 合成の回避策: yosys が `STRETCH_BLIT` の累算器のレジスタと名前の付いたワイヤのあいだに `$buf` を残し、nextpnr が置けなかった (E4 の `tpass` と同じ現象)。
   `bufnorm -conn` は SDRAM の IO の名前を変えてしまうので使えず、合成のあとに [`scripts/fix_netlist.py`](../scripts/fix_netlist.py) で
   トップの `$buf` を接続に置き換える (ポートにつながるものはエラーにする)。`make synth` が毎回通す
+
+## K4 の結果 (VDP 側)
+
+- **ライトマップ**: 40 x 30 セル (8 x 8 ピクセル) x {R, G, B} の倍率 6bit (16 = 1 倍)。BSRAM 2 個。`LIGHT_WRITE` (`0x10`) で書き、セル `cy * 40 + cx` から n セル、
+  1 ワードに 1 セル (`[5:0]` R、`[13:8]` G、`[21:16]` B)。全体の書き換えは 1,202 ワード (4.7KiB)
+- **掛け方**: `LAYER_CTRL` bit5 のラインで、合成の出力 (背景色を含む全部) の各色に `min(最大値, (c * L) >> 4)`。出力のパスで作業ラインと同じクロックにセルを読むので、
+  1 ラインの合成の時間は変わらない。ラインごとに切り替えられる (HUD だけ光なし)
+- Kessel 側は 5 章のまま: `ambient` / `light` / `shadow_rect` をセルの中心で評価し、倍率を `>> 2` して `LIGHT_WRITE`
+- 検証: シナリオ `k4_light` (8bpp の場面 + 面 A + スプライトに ambient・色付きの点光源 3 つ (1 つは上限で切れる)・影の矩形 /
+  ライン 224 から光を切る印付きフレーム / RGB565 のテスト画像にセルごとに違う倍率 (1,200 セルの番号の確かめ)) が モデル = Verilator = 実機。
+  前からのシナリオ 15 個も 3 通り一致。`tb_line_compositor` に倍率 (0、1 倍、上限で切れる値、背景色) のモード、`tb_gpu` に `LIGHT_WRITE` (2048 で折り返す) を足した
+- 実機: selftest 通過、`fps m7_fps` 60.1、`demo` 59.8 fps。1 ラインの合成の最長は 2,057 クロックのまま
+- 資源 (K3 → K4): LUT4 8,434 → 8,636 (+202)、DFF 3,515 → 3,522、BSRAM 42 → 44 / 46。乗算 6 個 (1 クロックに 2 ピクセル x 3 色) は LUT で組まれた (DSP は使っていない)。
+  Fmax clk_sys 93MHz、clk_pix 115MHz (目標 63 / 25.2MHz)。5 章の見積もり (LUT 500〜800、BSRAM 2) より少ない
+- 残りの BSRAM は 2 個。K5 の PCM の FIFO (1 個) で 45 / 46 になる

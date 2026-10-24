@@ -21,6 +21,7 @@ rtl/vdp/gpu.sv と同じ規則でコマンドを解釈し、表示される面�
       {"op": "stretch", "src": 196608, "stride": 8, "sw": 16, "w": 40, "h": 24, "x": 10, "y": 20,
        "sx_step": 26214, "sy_step": 43690, ...},  # STRETCH_BLIT。step は 16.16 (省略すると sw / w と 1.0 から作る:
                                                  # "sh" を書けば sh / h)。ほかのキーは blit と同じ
+      {"op": "light_write", "addr": 0, "cells": [[16, 16, 16], ...]},   # ライトマップ (セル cy * 40 + cx、[R, G, B] の倍率 0..63、16 = 1 倍)
       {"op": "upload_image8", "slot": 512},      # 8bpp のテスト画像 (下の test_image8) を slot の面へ
       {"op": "upload_tiles", "kind": "sheet", "addr": 196608},   # tile_words を SDRAM に (4bpp の BLIT のソース。タイル t は addr + 8t、stride 1)
       {"op": "reg", "name": "bg_color", "value": "#rrggbb"},   # 合成のレジスタ (LAYER_REGS の名前)
@@ -54,6 +55,8 @@ OP_NOP, OP_CLEAR, OP_FILL_RECT, OP_SWAP, OP_UPLOAD = 0x00, 0x01, 0x02, 0x03, 0x0
 OP_POINT, OP_DRAW_LINE, OP_CLIP, OP_BLIT = 0x05, 0x06, 0x07, 0x08
 OP_REG_WRITE, OP_WAIT_LINE, OP_WAIT_VBLANK = 0x09, 0x0A, 0x0B
 OP_VRAM_WRITE, OP_PAL_WRITE, OP_STRETCH, OP_OAM_WRITE = 0x0C, 0x0D, 0x0E, 0x0F
+OP_LIGHT_WRITE = 0x10
+LIGHT_W = SRC_W // 8      # ライトマップの 1 行のセル数 (40)
 # 合成のレジスタ: 名前 -> (REG_WRITE の番号, ビットの幅のマスク)
 LAYER_REGS = {"bg_color": 0, "layer_ctrl": 1, "bitmap_key": 2, "tile_scroll_x": 3, "tile_scroll_y": 4,
               "tile_map_base": 5, "tile_pat_base": 6, "tile_ctrl": 7, "bitmap_rank": 8,
@@ -61,7 +64,7 @@ LAYER_REGS = {"bg_color": 0, "layer_ctrl": 1, "bitmap_key": 2, "tile_scroll_x": 
               "tileb_scroll_x": 12, "tileb_scroll_y": 13, "tileb_map_base": 14, "tileb_pat_base": 15, "tileb_ctrl": 16,
               "win_h": 17, "win_v": 18, "win_map_base": 19, "hscroll_mode": 20, "hscroll_base": 21,
               "bitmap_fmt": 22}
-LAYER_MASK = {"bg_color": 0xFFFF, "layer_ctrl": 0x1F, "bitmap_key": 0xFFFF, "tile_scroll_x": 0x3FF, "tile_scroll_y": 0x3FF,
+LAYER_MASK = {"bg_color": 0xFFFF, "layer_ctrl": 0x3F, "bitmap_key": 0xFFFF, "tile_scroll_x": 0x3FF, "tile_scroll_y": 0x3FF,
               "tile_map_base": 0x3FFF, "tile_pat_base": 0x3FFF, "tile_ctrl": 0xFF, "bitmap_rank": 0x7,
               "spr_pat_base": 0x3FFF, "spr_bank": 0xF, "spr_line_px": 0x3FF,
               "tileb_scroll_x": 0x3FF, "tileb_scroll_y": 0x3FF, "tileb_map_base": 0x3FFF, "tileb_pat_base": 0x3FFF,
@@ -129,6 +132,8 @@ def encode(step):
         ys = step.get("sy_step", step["sh"] * 65536 // step["h"] if "sh" in step else 65536)
         return [OP_STRETCH << 24 | flags << 16 | key, step["src"], (step["h"] & 0xFFFF) << 16 | (step["w"] & 0xFFFF),
                 xy(step["x"], step["y"]), (step["sw"] & 0xFFFF) << 16 | (step["stride"] & 0xFFFF), xs & 0xFFFFFFFF, ys & 0xFFFFFFFF]
+    if op == "light_write":
+        return light_write_words(step["addr"], step["cells"])
     if op == "upload_image8":
         img = test_image8()
         out = []
@@ -185,6 +190,18 @@ def layer_reset_words():
 
 def vram_write_words(addr, words):
     return [OP_VRAM_WRITE << 24 | len(words), addr] + list(words)
+
+
+def light_write_words(addr, cells):
+    """ライトマップのセル ([R, G, B] の倍率) を LIGHT_WRITE に"""
+    words = [(r & 63) | (g & 63) << 8 | (b & 63) << 16 for r, g, b in cells]
+    return [OP_LIGHT_WRITE << 24 | len(words), addr] + words
+
+
+def lit(c, cell):
+    """line_compositor.sv と同じ: RGB565 の各色に倍率 (16 = 1 倍) を掛けて >> 4、最大値で切る"""
+    r, g, b = cell
+    return (min(31, (c >> 11) * r >> 4) << 11 | min(63, (c >> 5 & 63) * g >> 4) << 5 | min(31, (c & 31) * b >> 4))
 
 
 def oam_write_words(addr, words):
@@ -435,6 +452,7 @@ class Model:
         self.vram = {}                                # VRAM: ワードアドレス -> 32bit (書いていないワードは None)
         self.pal = {}                                 # パレット: 番号 -> RGB565
         self.oam = {}                                 # OAM: ワードアドレス -> 32bit
+        self.light = {}                               # ライトマップ: セルの番号 -> (R, G, B) の倍率
         # 印を付けたフレーム: {"line_regs": {ライン: レジスタ}, "fb_base": ..} と、記録中かどうか・今のライン
         self.marked = None
         self.recording = False
@@ -610,6 +628,12 @@ class Model:
                 for k in range(n):
                     self.vram[(addr + k) % VRAM_WORDS] = words[i + 2 + k]
                 i += 2 + n
+            elif op == OP_LIGHT_WRITE:
+                n, addr = w & 0xFFFFFF, words[i + 1]
+                for k in range(n):
+                    d = words[i + 2 + k]
+                    self.light[(addr + k) % 2048] = (d & 63, d >> 8 & 63, d >> 16 & 63)
+                i += 2 + n
             elif op == OP_OAM_WRITE:
                 n, addr = w & 0xFFFFFF, words[i + 1]
                 for k in range(n):
@@ -773,7 +797,14 @@ class Model:
                 for k, p in enumerate((w & 0xFFFF, w >> 16)):
                     if not (ctrl & 2 and p == key) and rank > line[2 * x + k][0]:
                         line[2 * x + k] = (rank, p)
-        return [bg if r == 0 else c for r, c in line]
+        out = [bg if r == 0 else c for r, c in line]
+        if ctrl & 32:                             # ライトマップ (K4): 背景色にも掛かる
+            for x in range(SRC_W):
+                cell = self.light.get(y // 8 * LIGHT_W + x // 8)
+                if cell is None:
+                    raise ValueError(f"lightmap cell ({x // 8},{y // 8}) is unwritten")
+                out[x] = lit(out[x], cell)
+        return out
 
     def displayed565(self):
         """今表示されている画面 (レジスタは今の値が全ラインに効いている) の 320x240 RGB565"""

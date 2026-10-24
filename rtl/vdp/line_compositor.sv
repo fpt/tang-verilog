@@ -16,7 +16,8 @@
 //            透過色が有効なら、透過色のピクセルは書かない。
 //            8bpp (bitmap_fmt = 1) のときは行 (80 ワード) をいったん bm_buf に読み、1 クロックに 1 ピクセルずつパレット (0..255) を引いて書く。
 //            透過色は bitmap_key[7:0] (パレットの番号)
-//         4. 出力: 作業ラインをライン バッファに写し (順位 0 = どのレイヤも書かなかったところは背景色)、作業ラインを空に戻す
+//         4. 出力: 作業ラインをライン バッファに写し (順位 0 = どのレイヤも書かなかったところは背景色)、作業ラインを空に戻す。
+//            ライトマップが有効 (layer_ctrl[5]) なら、ここで色にセルの倍率を掛ける (K4、下の「ライトマップ」)
 //         2 と 3 は「不透明で、順位が今の値より大きいピクセルだけ」書くので、パスの順番によらず順位の高いものが残る (同じ順位なら先のパス)。
 //         順位 (3bit): 0 背景色、1 面 B (低)、2 面 A (低)、3 スプライト (低)、4 面 B (高)、5 面 A (高)、6 スプライト (高)。
 //   横スクロールの表 (hs_mode != 0): ラインを始めるときに VRAM の hs_base + 番号 の 1 ワードを読み、[25:16] を面 A、[9:0] を面 B の
@@ -36,6 +37,9 @@
 //   印:           mark_req を受けると、次にライン 0 から合成するフレームに印を付ける (mark_toggle を反転)。
 //                 frame_crc がそのフレームの CRC を MARK_CRC に残す。ラインごとにレジスタを変えたフレームを比べるため。
 //
+//   ライトマップ: 8 x 8 ピクセルのセルごとの R, G, B の倍率 (6bit ずつ、16 = 1 倍、63 = 3.94 倍)。セル (cx, cy) は番号 cy * (SRC_W / 8) + cx
+//                 (320 x 240 なら 40 x 30 = 1,200 セル)。出力のパスで、ピクセル (x, y) の各色 c に
+//                 セル (x / 8, y / 8) の倍率 L を掛けて min(最大値, (c * L) >> 4) にする (背景色にも掛かる)。GPU の LIGHT_WRITE が書く
 //   クロック: ピクセル側 (clk_pix) が「次のライン」をトグルで頼み、システム側 (clk_sys) が合成する。
 //            頼むライン番号はトグルの前に確定し、次に頼むまで (出力 2 ライン以上) 変わらない。
 //            表示 (vdp_video の fb_en) にかかわらず、映像のタイミングが動いていれば合成し続ける (WAIT_LINE が止まらないように)。
@@ -51,8 +55,8 @@ module line_compositor #(
     input  logic [12:0] fb_base,          // 256 ワード単位。ライン 0 を合成し始めるときに取り込む
     output logic        base_latched,     // fb_base を取り込んだとき 1 クロック
     input  logic [15:0] bg_color,         // 背景色 (RGB565)
-    input  logic [4:0]  layer_ctrl,       // bit0: ビットマップ レイヤ有効, bit1: ビットマップの透過色を有効, bit2: 面 A (とウィンドウ) 有効,
-                                          // bit3: スプライト有効, bit4: 面 B 有効
+    input  logic [5:0]  layer_ctrl,       // bit0: ビットマップ レイヤ有効, bit1: ビットマップの透過色を有効, bit2: 面 A (とウィンドウ) 有効,
+                                          // bit3: スプライト有効, bit4: 面 B 有効, bit5: ライトマップを掛ける
     input  logic [15:0] bitmap_key,       // ビットマップの透過色
     input  logic [2:0]  bitmap_rank,      // ビットマップ レイヤの順位 (既定 1)
     input  logic        bitmap_fmt,       // ビットマップの形式: 0 = RGB565、1 = 8bpp (パレットの番号)
@@ -81,6 +85,7 @@ module line_compositor #(
     input  logic [8:0]  pal_waddr,
     input  logic [15:0] pal_wdata,
     input  logic        oam_we,
+    input  logic        light_we,         // ライトマップの書き込み: vram_waddr[10:0] のセルに {vram_wdata[21:16], [13:8], [5:0]}
     input  logic        mark_req,         // 次のフレームに印を付ける (1 クロック)
     output logic        mark_toggle,      // 印を付けたフレームの合成を始めるたびに反転
     output logic        line_start,       // ラインの合成を始めたとき 1 クロック
@@ -175,7 +180,7 @@ module line_compositor #(
     logic [7:0]  oidx;           // 出力のパスで書くワード
     // このラインのレジスタ (合成を始めるときに取り込む)
     logic [15:0] l_bg, l_key;
-    logic        l_key_en, l_bm_en, l_tile_en, l_b_en, l_spr_en, l_fmt8;
+    logic        l_key_en, l_bm_en, l_tile_en, l_b_en, l_spr_en, l_fmt8, l_light;
     logic [2:0]  l_bm_rank;
     logic [9:0]  l_sx, l_sy;
     logic [13:0] l_map, l_pat;
@@ -373,9 +378,32 @@ module line_compositor #(
     end
 
     // 出力のパス: 作業ラインをライン バッファに写す。順位 0 (どのレイヤも書かなかった) は背景色
+    // ライトマップ: 作業ラインを読むワード (wl_rd_addr、2 ピクセル) のセルを同じクロックに読むので、出力のパスでは作業ラインの値とそろう
+    localparam int LM_W = SRC_W / 8;
+    logic [17:0] lm [0:2047];
+    logic [17:0] lm_q;
+    logic [10:0] lm_raddr;
+    assign lm_raddr = 11'(line_num[7:3]) * 11'(LM_W) + 11'(wl_rd_addr[7:2]);
+    always_ff @(posedge clk_sys) begin
+        if (light_we) lm[vram_waddr[10:0]] <= {vram_wdata[21:16], vram_wdata[13:8], vram_wdata[5:0]};
+        lm_q <= lm[lm_raddr];
+    end
+
+    // 色 c (RGB565) にセルの倍率 l ({B, G, R}) を掛ける: 各色 min(最大値, (c * L) >> 4)
+    function automatic logic [15:0] lit(input logic [15:0] c, input logic [17:0] l);
+        logic [6:0] r, b;
+        logic [7:0] g;
+        r = 7'((11'(c[15:11]) * 11'(l[5:0])) >> 4);
+        g = 8'((12'(c[10:5])  * 12'(l[11:6])) >> 4);
+        b = 7'((11'(c[4:0])   * 11'(l[17:12])) >> 4);
+        return {(r[6:5] != 2'd0) ? 5'd31 : r[4:0], (g[7:6] != 2'd0) ? 6'd63 : g[5:0], (b[6:5] != 2'd0) ? 5'd31 : b[4:0]};
+    endfunction
+
+    logic [15:0] out_lo, out_hi;
     logic [31:0] out_word;
-    assign out_word = {(wl_q_odd[18:16] == 3'd0) ? l_bg : wl_q_odd[15:0],
-                       (wl_q_even[18:16] == 3'd0) ? l_bg : wl_q_even[15:0]};
+    assign out_lo   = (wl_q_even[18:16] == 3'd0) ? l_bg : wl_q_even[15:0];
+    assign out_hi   = (wl_q_odd[18:16] == 3'd0) ? l_bg : wl_q_odd[15:0];
+    assign out_word = l_light ? {lit(out_hi, lm_q), lit(out_lo, lm_q)} : {out_hi, out_lo};
     always_ff @(posedge clk_sys) if (phase == P_OUT) line_buf[{line_bank, oidx}] <= out_word;
 
     assign mem_len = l_fmt8 ? 9'(SRC_W / 4) : 9'(WORDS);
@@ -421,6 +449,7 @@ module line_compositor #(
                     l_tile_en  <= layer_ctrl[2];
                     l_spr_en   <= layer_ctrl[3];
                     l_b_en     <= layer_ctrl[4];
+                    l_light    <= layer_ctrl[5];
                     l_bsx      <= tileb_scroll_x;
                     l_bsy      <= tileb_scroll_y;
                     l_bmap     <= tileb_map_base;

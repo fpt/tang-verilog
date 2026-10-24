@@ -12,6 +12,7 @@
 //     横スクロールの表 (ラインごと) で面 A と面 B を別々にずらす
 //   - 8bpp のビットマップ (K1): 1 ワードに 4 ピクセルのパレットの番号を、パレット (0..255) を引いて出す。透過色 (番号) のところは
 //     背景色、順位 3 ならタイル (低) の上で、透過色のところからタイルが見える
+//   - ライトマップ (K4): 出力の色に、セルの R, G, B の倍率を掛ける (min(最大値, (c * L) >> 4))。倍率 0・1 倍・上限で切れる値、背景色にも掛かる
 //   - メモリが遅すぎると UNDERFLOW を数える
 `timescale 1ns/1ps
 module tb_line_compositor;
@@ -38,7 +39,8 @@ module tb_line_compositor;
     logic [12:0] fb_base = BASE;
     logic        base_latched;
     logic [15:0] bg_color = 16'h0000, bitmap_key = 16'h0000;
-    logic [4:0]  layer_ctrl = 5'b00001;
+    logic [5:0]  layer_ctrl = 6'b000001;
+    logic        light_we = 0;
     logic [13:0] tileb_map_base = 14'd64;
     logic [5:0]  win_v = '0;
     logic [1:0]  hs_mode = '0;
@@ -68,7 +70,7 @@ module tb_line_compositor;
         .tileb_scroll_x(10'd0), .tileb_scroll_y(10'd0), .tileb_map_base, .tileb_pat_base(PAT), .tileb_ctrl(8'd0),
         .win_h(6'd0), .win_v, .win_map_base(WMAP), .hs_mode, .hs_base(HSB),
         .spr_pat_base(PAT), .spr_bank(4'd1), .spr_line_cols(spr_line_px[9:3]),
-        .vram_we, .vram_waddr, .vram_wdata, .pal_we, .pal_waddr, .pal_wdata, .oam_we,
+        .vram_we, .vram_waddr, .vram_wdata, .pal_we, .pal_waddr, .pal_wdata, .oam_we, .light_we,
         .mark_req, .mark_toggle, .line_start, .line_num,
         .mem_req, .mem_addr, .mem_len, .mem_ack, .mem_rvalid, .mem_rdata, .underflow_count,
         .clk_pix, .rst_pix(rst), .x, .y, .rgb
@@ -88,6 +90,20 @@ module tb_line_compositor;
     function automatic logic [15:0] pal8(input int i);
         return 16'(i * 16'h0123 ^ 16'h5A5A);
     endfunction
+    // ライトマップの参照 (line_compositor.sv と同じ式)。l = {B, G, R} の倍率
+    logic [17:0] light_l;
+    function automatic logic [15:0] lit(input logic [15:0] c, input logic [17:0] l);
+        int r, g, b;
+        r = (int'(c[15:11]) * int'(l[5:0])) >> 4;
+        g = (int'(c[10:5]) * int'(l[11:6])) >> 4;
+        b = (int'(c[4:0]) * int'(l[17:12])) >> 4;
+        return {5'((r > 31) ? 31 : r), 6'((g > 63) ? 63 : g), 5'((b > 31) ? 31 : b)};
+    endfunction
+    task automatic write_light(input logic [17:0] l);         // セル 0 (この小さい画面はセル 1 つ)
+        @(negedge clk_sys); light_we = 1; vram_waddr = 14'd0; vram_wdata = {10'd0, l[17:12], 2'd0, l[11:6], 2'd0, l[5:0]};
+        @(negedge clk_sys); light_we = 0;
+        light_l = l;
+    endtask
     function automatic logic [15:0] line_color(input int n);
         return 16'(16'h1111 * (n + 1));
     endfunction
@@ -239,7 +255,8 @@ module tb_line_compositor;
     // 出力は x, y の 1 クロック後。mode: 0 = ビットマップ、1 = 背景色だけ (ラインごと)、2 = 透過色あり、
     // 3 = タイル + ビットマップ、4 = タイル + 背景色、5 = ビットマップ (透過色あり) が上でタイルが下、
     // 6 = スプライト + タイル + ビットマップ (mixed)、7 = 面 A + 面 B (+ ウィンドウ、横スクロールの表) + 背景色 (planes)、
-    // 8 = 8bpp のビットマップ (透過色の番号 key8 は背景色)、9 = 8bpp (順位 3、透過色あり) が上でタイル (低) が下
+    // 8 = 8bpp のビットマップ (透過色の番号 key8 は背景色)、9 = 8bpp (順位 3、透過色あり) が上でタイル (低) が下、
+    // 10 = RGB565 のビットマップにライトマップ、11 = 背景色にライトマップ
     logic [10:0] x_d;
     logic [9:0]  y_d;
     logic        de_d;
@@ -264,6 +281,8 @@ module tb_line_compositor;
                 8: e = (idx8(sx, sy) == key8) ? 16'h0123 : pal8(idx8(sx, sy));
                 9: e = (idx8(sx, sy) != key8) ? pal8(idx8(sx, sy)) :
                        (tile_nib(sx, sy) != 0) ? pal8(tile_nib(sx, sy)) : 16'h0123;
+                10: e = lit(pixel(sx, sy), light_l);
+                11: e = lit(16'hABCD, light_l);
                 default: e = (pixel(sx, sy) != key_px) ? pixel(sx, sy) :
                              (tile_nib(sx, sy) != 0) ? 16'h7C00 + 16'(tile_nib(sx, sy)) : 16'h0123;
             endcase
@@ -445,7 +464,19 @@ module tb_line_compositor;
         check_frames(9, 2);
         bitmap_rank = 3'd1;
         bitmap_fmt = 0;
-        layer_ctrl = 5'b00001;
+        layer_ctrl = 6'b000001;
+
+        // ライトマップ: 倍率 {B, G, R}。上限で切れる R、1 倍の G、半分の B / 0 / 端数
+        layer_ctrl = 6'b100001;
+        write_light({6'd8, 6'd16, 6'd63});
+        check_frames(10, 2);
+        write_light({6'd0, 6'd41, 6'd23});
+        check_frames(10, 2);
+        bg_color = 16'hABCD;
+        layer_ctrl = 6'b100000;
+        write_light({6'd63, 6'd7, 6'd16});
+        check_frames(11, 2);
+        layer_ctrl = 6'b000001;
 
         // line_start の順番と、印 (次のライン 0 で 1 回だけ)
         if (line_order_errors != 0) begin $display("  line_start out of order: %0d", line_order_errors); errors++; end

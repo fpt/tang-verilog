@@ -1,4 +1,4 @@
-// コマンド GPU (docs/GPU_PLAN.md の M5〜M7、docs/EMU_GPU_PLAN.md の E1、docs/KESSEL_ON_VDP.md の K1・K3)。コマンド FIFO から 32bit ワードのコマンドを読み、SDRAM のフレームバッファに描く
+// コマンド GPU (docs/GPU_PLAN.md の M5〜M7、docs/EMU_GPU_PLAN.md の E1、docs/KESSEL_ON_VDP.md の K1・K3・K4)。コマンド FIFO から 32bit ワードのコマンドを読み、SDRAM のフレームバッファに描く
 //
 // レジスタ (0x30..0x4F。複数バイトの値はリトルエンディアン):
 //   0x30 CMD        W  コマンドのポート。書いたバイトを 4 つずつ (リトルエンディアン) 1 ワードにして FIFO に入れる。
@@ -11,7 +11,7 @@
 //   0x46 DRAW_BASE  RW 描くフレームバッファの先頭 (同じ単位、0x46..0x47)。既定 256 (= 0x040000 バイト)
 //   0x48 BG_COLOR   RW 背景色 (RGB565、0x48..0x49)。既定 0。line_compositor がラインごとに取り込む
 //   0x4A LAYER_CTRL RW bit0: ビットマップ レイヤ有効 (既定 1), bit1: ビットマップの透過色を有効 (既定 0), bit2: タイル レイヤ有効 (既定 0),
-//                      bit3: スプライト有効 (既定 0), bit4: 面 B 有効 (既定 0)
+//                      bit3: スプライト有効 (既定 0), bit4: 面 B 有効 (既定 0), bit5: ライトマップを掛ける (既定 0、K4)
 //   0x4C BITMAP_KEY RW ビットマップの透過色 (RGB565、0x4C..0x4D)。既定 0
 //
 // コマンド (先頭ワードの [31:24] がコマンド番号。座標の組は {y[15:0], x[15:0]}):
@@ -58,6 +58,8 @@
 //                   ソースの形式・透過・クリップは BLIT と同じ。ソースの 1 行は 256 ワードまで (sw: 565 で 512、8bpp で 1024、4bpp で 2048 まで)
 //   0x0F OAM_WRITE  [23:0] ワード数 n、次のワードに OAM のワードアドレス (エントリ k はワード 2k と 2k+1)、そのあとに n ワード
 //                   (OAM は 256 ワードで折り返す。形式は sprite_layer.sv)
+//   0x10 LIGHT_WRITE [23:0] ワード数 n、次のワードにライトマップのセルの番号 (cy * 40 + cx、2048 で折り返す)、そのあとに n ワード。
+//                   1 ワードに 1 セル: [5:0] R、[13:8] G、[21:16] B の倍率 (16 = 1 倍、0..63)。使い方は line_compositor.sv
 //   それ以外        エラーを立て、1 ワードのコマンドとして読み飛ばす
 //
 // WAIT_LINE のあとの REG_WRITE は、FIFO にすでに入っていれば数クロックで実行されるので、次のラインの合成 (約 63us 後) に間に合う。
@@ -102,7 +104,7 @@ module gpu #(
     input  logic        base_latched,    // line_compositor が fb_base を取り込んだとき 1 クロック
     // 合成のレジスタ (line_compositor がラインごとに取り込む)
     output logic [15:0] bg_color,
-    output logic [4:0]  layer_ctrl,
+    output logic [5:0]  layer_ctrl,
     output logic [15:0] bitmap_key,
     output logic [2:0]  bitmap_rank,
     output logic        bitmap_fmt,      // 0 = RGB565、1 = 8bpp
@@ -132,6 +134,7 @@ module gpu #(
     output logic [8:0]  pal_waddr,
     output logic [15:0] pal_wdata,
     output logic        oam_we,
+    output logic        light_we,        // ライトマップの書き込み (vram_waddr[10:0] と vram_wdata の {[21:16], [13:8], [5:0]} を使う)
     output logic        mark_req,        // WAIT_VBLANK (印付き) が終わったとき 1 クロック
     input  logic        line_start,      // line_compositor がラインの合成を始めたとき 1 クロック
     input  logic [7:0]  line_num,
@@ -145,7 +148,8 @@ module gpu #(
     localparam logic [7:0] OP_NOP = 8'h00, OP_CLEAR = 8'h01, OP_FILL_RECT = 8'h02, OP_SWAP = 8'h03, OP_UPLOAD = 8'h04,
                            OP_POINT = 8'h05, OP_DRAW_LINE = 8'h06, OP_CLIP = 8'h07, OP_BLIT = 8'h08,
                            OP_REG_WRITE = 8'h09, OP_WAIT_LINE = 8'h0A, OP_WAIT_VBLANK = 8'h0B,
-                           OP_VRAM_WRITE = 8'h0C, OP_PAL_WRITE = 8'h0D, OP_STRETCH = 8'h0E, OP_OAM_WRITE = 8'h0F;
+                           OP_VRAM_WRITE = 8'h0C, OP_PAL_WRITE = 8'h0D, OP_STRETCH = 8'h0E, OP_OAM_WRITE = 8'h0F,
+                           OP_LIGHT_WRITE = 8'h10;
     localparam int BLIT_MAX_W = 512;      // ライン バッファ (256 ワード) に入る幅
     localparam int STRETCH_MAX = 1024;    // STRETCH_BLIT の描く大きさの上限
 
@@ -188,7 +192,7 @@ module gpu #(
     logic [12:0] draw_base;
     logic [15:0] color;
     logic [23:0] up_left;
-    logic        w_oam;                    // S_VRAM_WRITE が OAM に書く (OAM_WRITE)
+    logic [1:0]  w_tgt;                    // S_VRAM_WRITE が書く先: 0 VRAM、1 OAM (OAM_WRITE)、2 ライトマップ (LIGHT_WRITE)
     logic [20:0] up_addr;
 
     // クリップ矩形 (両端を含む)。FILL_RECT / POINT / DRAW_LINE に効く
@@ -438,7 +442,7 @@ module gpu #(
             OP_STRETCH:                          return 3'd6;
             OP_BLIT:                             return 3'd4;
             OP_FILL_RECT, OP_DRAW_LINE, OP_CLIP: return 3'd2;
-            OP_UPLOAD, OP_POINT, OP_VRAM_WRITE, OP_PAL_WRITE, OP_OAM_WRITE: return 3'd1;
+            OP_UPLOAD, OP_POINT, OP_VRAM_WRITE, OP_PAL_WRITE, OP_OAM_WRITE, OP_LIGHT_WRITE: return 3'd1;
             default:                             return 3'd0;
         endcase
     endfunction
@@ -458,7 +462,7 @@ module gpu #(
             cx0 <= 9'd0; cx1 <= 9'(SRC_W - 1);
             cy0 <= 8'd0; cy1 <= 8'(SRC_H - 1);
             bg_color    <= 16'h0000;
-            layer_ctrl  <= 5'b00001;
+            layer_ctrl  <= 6'b000001;
             bitmap_key  <= 16'h0000;
             bitmap_rank <= 3'd1;
             bitmap_fmt  <= 1'b0;
@@ -481,6 +485,7 @@ module gpu #(
             spr_bank      <= '0;
             spr_line_cols <= 7'd40;
             oam_we      <= 1'b0;
+            light_we    <= 1'b0;
             mark_req    <= 1'b0;
             vram_we     <= 1'b0;
             pal_we      <= 1'b0;
@@ -489,6 +494,7 @@ module gpu #(
             vram_we  <= 1'b0;
             pal_we   <= 1'b0;
             oam_we   <= 1'b0;
+            light_we <= 1'b0;
             if (flush) rd_ptr <= wr_ptr;
             if (re && addr == A_STATUS) error <= 1'b0;
 
@@ -501,7 +507,7 @@ module gpu #(
                     7'h47: draw_base[12:8] <= wdata[4:0];
                     7'h48: bg_color[7:0]   <= wdata;
                     7'h49: bg_color[15:8]  <= wdata;
-                    7'h4A: layer_ctrl      <= wdata[4:0];
+                    7'h4A: layer_ctrl      <= wdata[5:0];
                     7'h4C: bitmap_key[7:0] <= wdata;
                     7'h4D: bitmap_key[15:8] <= wdata;
                     default: ;
@@ -635,7 +641,7 @@ module gpu #(
                         OP_REG_WRITE: begin
                             unique case (flags_raw)
                                 8'd0: bg_color   <= color;
-                                8'd1: layer_ctrl <= color[4:0];
+                                8'd1: layer_ctrl <= color[5:0];
                                 8'd2: bitmap_key <= color;
                                 8'd3: tile_scroll_x <= color[9:0];
                                 8'd4: tile_scroll_y <= color[9:0];
@@ -660,8 +666,8 @@ module gpu #(
                                 default: error <= 1'b1;
                             endcase
                         end
-                        OP_VRAM_WRITE, OP_OAM_WRITE: begin
-                            w_oam      <= op == OP_OAM_WRITE;
+                        OP_VRAM_WRITE, OP_OAM_WRITE, OP_LIGHT_WRITE: begin
+                            w_tgt      <= (op == OP_OAM_WRITE) ? 2'd1 : (op == OP_LIGHT_WRITE) ? 2'd2 : 2'd0;
                             vram_waddr <= arg0[13:0] - 14'd1;      // S_VRAM_WRITE が先に 1 進める
                             if (up_left != 0) after_fetch <= S_VRAM_WRITE;
                         end
@@ -682,10 +688,11 @@ module gpu #(
                     endcase
                 end
 
-                // VRAM_WRITE / OAM_WRITE / PAL_WRITE: FIFO から読んだワードを 1 クロックで書く (PAL_WRITE は 1 ワードに 2 色)
+                // VRAM_WRITE / OAM_WRITE / LIGHT_WRITE / PAL_WRITE: FIFO から読んだワードを 1 クロックで書く (PAL_WRITE は 1 ワードに 2 色)
                 S_VRAM_WRITE: begin
-                    vram_we    <= !w_oam;
-                    oam_we     <= w_oam;
+                    vram_we    <= w_tgt == 2'd0;
+                    oam_we     <= w_tgt == 2'd1;
+                    light_we   <= w_tgt == 2'd2;
                     vram_waddr <= vram_waddr + 14'd1;
                     vram_wdata <= word;
                     up_left    <= up_left - 24'd1;
@@ -1025,7 +1032,7 @@ module gpu #(
             7'h47:    rdata = {3'b0, draw_base[12:8]};
             7'h48:    rdata = bg_color[7:0];
             7'h49:    rdata = bg_color[15:8];
-            7'h4A:    rdata = {3'b0, layer_ctrl};
+            7'h4A:    rdata = {2'b0, layer_ctrl};
             7'h4C:    rdata = bitmap_key[7:0];
             7'h4D:    rdata = bitmap_key[15:8];
             default:  rdata = 8'h00;
