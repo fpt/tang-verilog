@@ -13,7 +13,9 @@
 //            ウィンドウの範囲 (メガドラと同じ): win_v ([5] 下, [4:0] 位置 x 8 ライン) でラインの上 / 下、
 //            win_h ([5] 右, [4:0] 位置 x 16 ピクセル) で左 / 右。ラインが縦の範囲に入ればライン全体、でなければ横の範囲
 //         3. ビットマップ レイヤ (有効なら): SDRAM のフレームバッファの行をバーストで読む。順位は bitmap_rank (既定 1)。
-//            透過色が有効なら、透過色のピクセルは書かない
+//            透過色が有効なら、透過色のピクセルは書かない。
+//            8bpp (bitmap_fmt = 1) のときは行 (80 ワード) をいったん bm_buf に読み、1 クロックに 1 ピクセルずつパレット (0..255) を引いて書く。
+//            透過色は bitmap_key[7:0] (パレットの番号)
 //         4. 出力: 作業ラインをライン バッファに写し (順位 0 = どのレイヤも書かなかったところは背景色)、作業ラインを空に戻す
 //         2 と 3 は「不透明で、順位が今の値より大きいピクセルだけ」書くので、パスの順番によらず順位の高いものが残る (同じ順位なら先のパス)。
 //         順位 (3bit): 0 背景色、1 面 B (低)、2 面 A (低)、3 スプライト (低)、4 面 B (高)、5 面 A (高)、6 スプライト (高)。
@@ -24,8 +26,9 @@
 //   レジスタはラインの合成を始めるときに取り込むので、GPU の WAIT_LINE n のあとの REG_WRITE はライン n から効く。
 //   そのために、合成を始めるたびに line_start とライン番号 line_num を出す。
 //
-//   ビットマップ: ソースのライン y はワードアドレス (fb_base + y) * 256 から SRC_W / 2 ワード。
-//                 1 ワードに 2 ピクセル (下位 16bit が偶数の x)。RGB565 = {R5, G6, B5}
+//   ビットマップ: ソースのライン y はワードアドレス (fb_base + y) * 256 から SRC_W / 2 ワード (8bpp は SRC_W / 4 ワード)。
+//                 RGB565 は 1 ワードに 2 ピクセル (下位 16bit が偶数の x)、RGB565 = {R5, G6, B5}。
+//                 8bpp は 1 ワードに 4 ピクセル (ピクセル x はバイト x % 4)
 //   動き方:       ソースのライン n を表示しているあいだ (出力 2 ライン分) に、ライン n+1 を合成して 2 ライン分のライン バッファの
 //                 空いているほうに書く。ライン 0 は最後から 2 本目のブランキング ラインで合成する (ほかのラインと同じく出力 2 ライン分の時間がある)。
 //                 表示が始まるときに合成が終わっていなかったら underflow_count を 1 増やす。
@@ -52,6 +55,7 @@ module line_compositor #(
                                           // bit3: スプライト有効, bit4: 面 B 有効
     input  logic [15:0] bitmap_key,       // ビットマップの透過色
     input  logic [2:0]  bitmap_rank,      // ビットマップ レイヤの順位 (既定 1)
+    input  logic        bitmap_fmt,       // ビットマップの形式: 0 = RGB565、1 = 8bpp (パレットの番号)
     input  logic [9:0]  tile_scroll_x,    // 面 A (tile_layer.sv)
     input  logic [9:0]  tile_scroll_y,
     input  logic [13:0] tile_map_base,
@@ -160,7 +164,7 @@ module line_compositor #(
     end
 
     typedef enum logic [1:0] {TP_B, TP_A, TP_W, TP_NONE} tpass_t;      // タイルのパス
-    typedef enum logic [3:0] {P_IDLE, P_HS, P_HS_DATA, P_SPRITE, P_TILE, P_ISSUE, P_BITMAP, P_OUT_PRE, P_OUT} phase_t;
+    typedef enum logic [3:0] {P_IDLE, P_HS, P_HS_DATA, P_SPRITE, P_TILE, P_ISSUE, P_BITMAP, P_BM8, P_OUT_PRE, P_OUT} phase_t;
     phase_t phase;
 
     logic [2:0]  req_s;
@@ -171,7 +175,7 @@ module line_compositor #(
     logic [7:0]  oidx;           // 出力のパスで書くワード
     // このラインのレジスタ (合成を始めるときに取り込む)
     logic [15:0] l_bg, l_key;
-    logic        l_key_en, l_bm_en, l_tile_en, l_b_en, l_spr_en;
+    logic        l_key_en, l_bm_en, l_tile_en, l_b_en, l_spr_en, l_fmt8;
     logic [2:0]  l_bm_rank;
     logic [9:0]  l_sx, l_sy;
     logic [13:0] l_map, l_pat;
@@ -222,7 +226,20 @@ module line_compositor #(
         endcase
     end
     assign vram_raddr = (phase == P_SPRITE) ? s_vram_raddr : (phase == P_HS) ? hs_addr : t_vram_raddr;
-    assign pal_raddr  = (phase == P_SPRITE) ? s_pal_raddr  : t_pal_raddr;
+    // 8bpp のビットマップ: 行を読んでおくバッファと、パレットを引くパイプライン
+    //   bi のクロック: bm_buf を読む → 1 段目 (p1): バイトを選んでパレットと作業ラインを読む → 2 段目 (p2): 作業ラインに書く
+    logic [31:0] bm_buf [0:127];
+    logic [31:0] bm_q;
+    logic [8:0]  bi, p1_x, p2_x;
+    logic        p1_v, p2_v, p2_tr;
+    logic [7:0]  p1_idx;
+    always_ff @(posedge clk_sys) begin
+        if (phase == P_BITMAP && mem_rvalid) bm_buf[widx[6:0]] <= mem_rdata;
+        bm_q <= bm_buf[bi[8:2]];
+    end
+    assign p1_idx = bm_q[{p1_x[1:0], 3'b0} +: 8];
+
+    assign pal_raddr  = (phase == P_SPRITE) ? s_pal_raddr : (phase == P_BM8) ? {1'b0, p1_idx} : t_pal_raddr;
 
     always_ff @(posedge clk_sys) begin
         if (vram_we) vram[VA_W'(vram_waddr)] <= vram_wdata;
@@ -283,12 +300,17 @@ module line_compositor #(
     tpass_t     tp_first, tp_after;
     logic       en_w;
     assign en_w     = l_tile_en && win_run;
-    assign tp_first = l_b_en ? TP_B : l_tile_en ? TP_A : en_w ? TP_W : TP_NONE;
+    // (Icarus Verilog は enum の三項演算子の代入を受け付けないので if で書く)
     always_comb begin
+        if (l_b_en)         tp_first = TP_B;
+        else if (l_tile_en) tp_first = TP_A;
+        else if (en_w)      tp_first = TP_W;
+        else                tp_first = TP_NONE;
+        tp_after = TP_NONE;
         unique case (tpass)
-            TP_B:    tp_after = l_tile_en ? TP_A : en_w ? TP_W : TP_NONE;
-            TP_A:    tp_after = en_w ? TP_W : TP_NONE;
-            default: tp_after = TP_NONE;
+            TP_B: if (l_tile_en) tp_after = TP_A; else if (en_w) tp_after = TP_W;
+            TP_A: if (en_w) tp_after = TP_W;
+            default: ;
         endcase
     end
 
@@ -300,6 +322,7 @@ module line_compositor #(
             P_SPRITE: wl_rd_addr = s_next;
             P_TILE:   wl_rd_addr = t_next;
             P_BITMAP: wl_rd_addr = mem_rvalid ? widx + 8'd1 : widx;
+            P_BM8:    wl_rd_addr = p1_x[8:1];
             P_OUT:    wl_rd_addr = oidx + 8'd1;
             default:  wl_rd_addr = 8'd0;
         endcase
@@ -331,8 +354,14 @@ module line_compositor #(
                 wl_we_odd  = t_ok &&  t_x[0] && t_rank > wl_q_odd[18:16];
             end
             P_BITMAP: begin
-                wl_we_even = mem_rvalid && bm_lo_ok;
-                wl_we_odd  = mem_rvalid && bm_hi_ok;
+                wl_we_even = mem_rvalid && bm_lo_ok && !l_fmt8;
+                wl_we_odd  = mem_rvalid && bm_hi_ok && !l_fmt8;
+            end
+            P_BM8: begin
+                wl_wa_even = p2_x[8:1];  wl_wd_even = {l_bm_rank, pal_q};
+                wl_wa_odd  = p2_x[8:1];  wl_wd_odd  = {l_bm_rank, pal_q};
+                wl_we_even = p2_v && !p2_tr && !p2_x[0] && l_bm_rank > wl_q_even[18:16];
+                wl_we_odd  = p2_v && !p2_tr &&  p2_x[0] && l_bm_rank > wl_q_odd[18:16];
             end
             P_OUT: begin
                 // 写したところを空 (順位 0) に戻して、次のラインに備える
@@ -349,7 +378,7 @@ module line_compositor #(
                        (wl_q_even[18:16] == 3'd0) ? l_bg : wl_q_even[15:0]};
     always_ff @(posedge clk_sys) if (phase == P_OUT) line_buf[{line_bank, oidx}] <= out_word;
 
-    assign mem_len = 9'(WORDS);
+    assign mem_len = l_fmt8 ? 9'(SRC_W / 4) : 9'(WORDS);
 
     always_ff @(posedge clk_sys) begin
         if (rst_sys) begin
@@ -403,6 +432,7 @@ module line_compositor #(
                     l_hs_mode  <= hs_mode;
                     l_hs_base  <= hs_base;
                     l_bm_rank  <= bitmap_rank;
+                    l_fmt8     <= bitmap_fmt;
                     l_sx       <= tile_scroll_x;
                     l_sy       <= tile_scroll_y;
                     l_map      <= tile_map_base;
@@ -470,8 +500,22 @@ module line_compositor #(
                     if (mem_rvalid) widx <= widx + 8'd1;
                     if (mem_ack) begin
                         mem_req <= 1'b0;
-                        phase   <= P_OUT_PRE;
+                        bi      <= '0;
+                        p1_v    <= 1'b0;
+                        p2_v    <= 1'b0;
+                        if (l_fmt8) phase <= P_BM8;
+                        else        phase <= P_OUT_PRE;
                     end
+                end
+                // 8bpp: 1 クロックに 1 ピクセル。最後のピクセル (SRC_W - 1) は bi = SRC_W + 1 のクロックで書く
+                P_BM8: begin
+                    bi    <= bi + 9'd1;
+                    p1_v  <= bi < 9'(SRC_W);
+                    p1_x  <= bi;
+                    p2_v  <= p1_v;
+                    p2_x  <= p1_x;
+                    p2_tr <= l_key_en && p1_idx == l_key[7:0];
+                    if (bi == 9'(SRC_W + 1)) phase <= P_OUT_PRE;
                 end
                 // 作業ラインのワード 0 を読むための 1 クロック
                 P_OUT_PRE: begin

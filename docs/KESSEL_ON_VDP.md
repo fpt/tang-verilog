@@ -17,17 +17,18 @@ VDP の現状は [EMU_GPU_PLAN.md](EMU_GPU_PLAN.md) (E4 まで) と [GPU_PLAN.md
 
 | Kessel | 意味 | VDP での実現 | 状態 |
 |---|---|---|---|
-| フレームバッファ 8bpp、256 色パレット | 全部インデックス | **8bpp ビットマップレイヤ** (2 章) | 要追加 |
+| フレームバッファ 8bpp、256 色パレット | 全部インデックス | **8bpp ビットマップレイヤ** (2 章) | ✅ K1 |
 | `pal(i,r,g,b)` | パレット書き換え、描き直しなし | `PAL_WRITE` (RGB888 → 565 の丸めを 1 つに決める) | あり |
-| `cls(c)` | 全面塗り | `CLEAR` (8bpp 版) | 要 8bpp 版 |
-| `pset` `hline` `vline` `rect` | 即時描画 | `POINT` `DRAW_LINE` `FILL_RECT` (8bpp 版) | 要 8bpp 版 |
-| `spr(id,x,y,flags)` 4bpp + `sprbank` | 即時描画 | **BLIT4** (4bpp ソース + バンク → 8bpp 宛先、透過 = 0) | 要追加 |
+| `cls(c)` | 全面塗り | `CLEAR` (8bpp 版) | ✅ K1 |
+| `pset` `hline` `vline` `rect` | 即時描画 | `POINT` `DRAW_LINE` `FILL_RECT` (8bpp 版) | ✅ K1 |
+| `clip()` 相当、Square240 の額縁 | 描く範囲 | `CLIP` (`0x07`、M6 からある) | あり |
+| `spr(id,x,y,flags)` 4bpp + `sprbank` | 即時描画 | **BLIT4** (4bpp ソース + バンク → 8bpp 宛先、透過 = 0) | ✅ K1 |
 | `sprn` (w x h タイル、`id + row*w + col`) | 多タイル | BLIT4 をタイルごとに、またはハードスプライトのセル順 2 | 要追加 (4 章) |
 | `spr_scaled` (8.8 固定、最近傍) | 拡大縮小 | `STRETCH_BLIT` (4bpp ソース) | 未着手 (pre_E3_review の 3) |
-| `sspr(addr,…)` | メモリ上の生タイル | VRAM に置いて BLIT4 | — |
+| `sspr(addr,…)` | メモリ上の生タイル | SDRAM に置いて BLIT4 | — |
 | `map(tx,ty,sx,sy,tw,th)` + `camera` | タイルブロックの即時描画 | **面 A / B** (スクロール = `tx*8 - sx + camera`)。3 回目以降は BLIT4 | あり |
 | `mget/mset/fget/fset` | VM の RAM | VM 側のまま。ダーティ行だけ `VRAM_WRITE` で面のマップへ | — |
-| `text` `number` (3x5 フォント) | 即時描画 | フォントを VRAM のタイルにして BLIT4 | — |
+| `text` `number` (3x5 フォント) | 即時描画 | フォントをタイルの形式で SDRAM に置いて BLIT4 | — |
 | `ambient` `light` `light_rect` `shadow_rect` | ピクセル単位の RGB 乗算 | **セル単位のライトマップ** (5 章) | 要追加 |
 | Square240 / Landscape320 / Portrait320 | 3 画面 | 320x240 そのまま / 左右に額縁 / 限定対応 (6 章) | — |
 | フレームベクタ、200,000 命令/フレーム | 毎フレームの呼び出し | RP2350 で VM を回し、`WAIT_VBLANK` で区切る | — |
@@ -50,9 +51,12 @@ VDP の現状は [EMU_GPU_PLAN.md](EMU_GPU_PLAN.md) (E4 まで) と [GPU_PLAN.md
   - そのフレームに面 (`map`) がなければ **透過を切る**。`cls(c)` はビットマップへの `CLEAR c` で、色 0 も普通に塗れる
   - 面があるフレームだけ透過を入れる。`cls(c)` は背景色レジスタ + `CLEAR` (透過色) になり、透過色のインデックスで描いたものは透ける。
     ホストはそのフレームで使われていないインデックスを透過色に選べる (`BITMAP_KEY` を変えるだけ)。全部使われていれば 0 にして、観測レコードに出す
-- **クリップ矩形** `CLIP_X0/Y0/X1/Y1` (`REG_WRITE`) を足し、`FILL_RECT` `DRAW_LINE` `POINT` `BLIT` `BLIT4` `STRETCH_BLIT` の書き込みをその中に限る
-  (描画エンジンの書き込みの手前で比較するだけ。数十 LUT)。Square240 の額縁と Kessel の `clip()` 相当に使う。ホストで線や BLIT を切るより簡単
-- コマンドの 8bpp 版: `CLEAR` `FILL_RECT` `DRAW_LINE` `POINT` は色が 8bit になるだけ。`BLIT` は 8bpp ソース → 8bpp 宛先。**BLIT4**: 4bpp ソース (VRAM の BSRAM か SDRAM) + バンク 4bit → 8bpp 宛先、値 0 を書き飛ばす
+- **クリップ矩形は今の `CLIP` (`0x07`)** をそのまま使う。`FILL_RECT` `DRAW_LINE` `POINT` `BLIT` (8bpp・4bpp のソースも) に効き、`CLEAR` には効かない。
+  Square240 の額縁と Kessel の `clip()` 相当に使う
+- コマンドの 8bpp 版: `CLEAR` `FILL_RECT` `DRAW_LINE` `POINT` は色が 8bit (コマンドの色の `[7:0]`) になるだけ。`BLIT` は 8bpp ソース → 8bpp 宛先 (透過色は `[7:0]`)。
+  **BLIT4** は `BLIT` のフラグ bit3: 4bpp ソース + バンク (`[11:8]`) → 8bpp 宛先、透過のときは値 0 を書き飛ばす。
+  4bpp のソースの並びはタイルの 1 行と同じ (1 ワードに 8 ピクセル、ピクセル i は `[31-4i -: 4]`) なので、タイルのシートを SDRAM に置けばタイル t は
+  `src = base + 8t`、stride 1 の 8x8 の BLIT4 になる。ソースは SDRAM だけ (VRAM は合成器の中にあり、描画エンジンからは読めない)
 - `STRETCH_BLIT` も 4bpp ソース版を主にする (Kessel の `spr_scaled` はシートのタイルを拡大する)
 - 塗り速度の目安 (63MHz): 全画面 `CLEAR` 約 20k クロック (0.3ms)、8x8 の BLIT4 1 個 約 100〜150 クロック、200 個で 0.5ms。全画面 `STRETCH_BLIT` 約 2.7ms
 - 資源: ビットマップのパスにパレット引きの段が 1 つ増えるだけ。BSRAM は増えない
@@ -136,10 +140,27 @@ LCD が 800x480 なら、VDP に 400x240 を足して Kessel にも `Wide400` �
 
 | # | 内容 | 動くようになるゲーム |
 |---|---|---|
-| K1 | VDP: 8bpp ビットマップ (透過色のインデックス)、`CLEAR` / `FILL_RECT` / `DRAW_LINE` / `POINT` の 8bpp 版、BLIT4、クリップ矩形。Kessel: スクリーンの trait 化と VDP バックエンド (即時描画のみ、`map` も BLIT4) | `paint` `snake` `brick` `2048` `swarm` |
+| K1 | VDP ✅: 8bpp ビットマップ (透過色のインデックス)、`CLEAR` / `FILL_RECT` / `DRAW_LINE` / `POINT` / `BLIT` の 8bpp 版、BLIT4。Kessel: スクリーンの trait 化と VDP バックエンド (即時描画のみ、`map` も BLIT4) | `paint` `snake` `brick` `2048` `swarm` |
 | K2 | Kessel: 深さ 3 段の規則、`map` → 面 A/B、`camera`、フォント。VDP: セル順 2、スプライトごとのバンク 4bit | `platform` `shooter` `spectrum` |
 | K3 | VDP: `STRETCH_BLIT` (4bpp ソース) | `outrun` `tetris` `sokoban` (光なし) |
 | K4 | VDP: ライトマップ。Kessel: セル単位の光 | `rogue` `sokoban` `dnb` `piano` `popn` |
 | K5 | 音: FPGA の I2S + PCM FIFO、RP2350 のシンセ、ハードスプライトの `actor` API | 全部、音付き |
 
 K1 の VDP 側は E4.5 (pre_E5_review.md、これから書く) と並行できる (どちらも合成器とコマンドの追加で、ぶつからない)。
+
+## K1 の結果 (VDP 側)
+
+- `REG_WRITE 22` = `BITMAP_FMT` (0 = RGB565、1 = 8bpp)。描くコマンドにはすぐ効き、表示はラインを始めるときに取り込む (ラインごとに変えられる)
+- 8bpp の面: 1 ワードに 4 ピクセル (ピクセル x はバイト x % 4)、1 ラインは 80 ワード。合成器は行を `bm_buf` (BSRAM 1 個) に読み、
+  1 クロックに 1 ピクセルずつパレット 0..255 を引いて作業ラインに書く (順位と透過の規則は RGB565 と同じ。透過色は `BITMAP_KEY[7:0]`)。パレットを引くパスが 1 ラインに約 320 クロック増え、読むバーストは 80 ワード短くなる
+- 描くコマンド: `CLEAR` / `FILL_RECT` / `POINT` / `DRAW_LINE` は色の `[7:0]`、端はバイトマスク。`BLIT` は 8bpp のソース (透過色 `[7:0]`) と、
+  フラグ bit3 で 4bpp のソース (BLIT4、値は `{[11:8], ピクセル}`、透過は値 0)。RGB565 のときの bit3 はエラー
+- BLIT のライン バッファはソースの**ワード**を偶数・奇数で分けて置くように変えた。書く 1 ワードのピクセルはソースの隣り合う 2 ワードに収まるので、
+  565 / 8bpp / 4bpp のどれでも、描く位置・左右反転によらず 1 クロックに 1 ワード書ける (BSRAM は増えない)
+- 検証: シナリオ `k1_8bpp` (8bpp の BLIT・矩形・線・点・クリップ・BLIT4 64 個 / 面 A < ビットマップ (順位 6) < 高優先のスプライト /
+  ライン 120 で RGB565 → 8bpp に切り替える印付きフレーム) が モデル = Verilator = 実機。前からのシナリオ 12 個も CRC が変わらず 3 通り一致。
+  `tb_gpu` に 8bpp の確認 (ワードの中の 4 つの位置、反転、透過、はみ出し、クリップ、SDRAM の行をまたぐソース)、`tb_line_compositor` に 8bpp のモードを足した
+- 実機: selftest 通過、`fps m7_fps` 59.8、`demo` 59.9 fps、`fbtest` 99.7%。1 ラインの合成の最長は 2,057 クロック (e3 の上限 1023 のとき、前と同じ)、k1 は 1,233
+- 資源 (E4 → K1): LUT4 6,636 → 7,496、DFF 3,009 → 3,055、BSRAM 40 → 41 / 46。Fmax clk_sys 99MHz、clk_pix 87MHz (目標 63 / 25.2MHz)。
+  LUT の増分の多くは BLIT の取り出し (64bit の窓から 4 ピクセル) と矩形のマスクの一般化
+- ついでに直したもの: Icarus Verilog が E4 の `line_compositor.sv` (enum の三項演算子) を読めなくなっていたので if に書き換えた

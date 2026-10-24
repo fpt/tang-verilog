@@ -3,7 +3,8 @@
 // DRAW_LINE (8 方向・水平・垂直・1 点・画面の外から)、POINT、CLIP (CLEAR には効かない)、
 // BLIT (偶数 / 奇数の位置、左右・上下反転、透過、画面の外、クリップ、SDRAM の行をまたぐソース)、
 // 合成のレジスタ (REG_WRITE)、WAIT_LINE / WAIT_VBLANK (印)、READY、VRAM_WRITE / PAL_WRITE とタイル レイヤのレジスタ (E2)、
-//   OAM_WRITE とスプライトのレジスタ (E3)、面 B・ウィンドウ・横スクロールの表のレジスタ (E4) を確認
+//   OAM_WRITE とスプライトのレジスタ (E3)、面 B・ウィンドウ・横スクロールの表のレジスタ (E4)、
+//   8bpp (K1: CLEAR / FILL_RECT / 線 / 点 / BLIT の 8bpp と 4bpp のソースを、ワードの中の 4 つの位置、反転、透過、クリップ、はみ出しで) を確認
 `timescale 1ns/1ps
 module tb_gpu;
     localparam int SRC_W = 320, SRC_H = 16, FIFO_WORDS = 16;
@@ -22,6 +23,7 @@ module tb_gpu;
     logic [5:0]  win_h, win_v;
     logic [1:0]  hs_mode;
     logic [2:0]  bitmap_rank, spr_bank;
+    logic        bitmap_fmt;
     logic [13:0] spr_pat_base;
     logic [6:0]  spr_line_cols;
     logic        oam_we;
@@ -54,7 +56,7 @@ module tb_gpu;
         .clk, .rst, .addr, .wdata, .we, .re, .rdata,
         .mem_req, .mem_we, .mem_addr, .mem_wdata, .mem_wmask, .mem_len, .mem_ack, .mem_wnext, .mem_rvalid,
         .mem_rdata(rdata32),
-        .fb_base, .base_latched, .bg_color, .layer_ctrl, .bitmap_key, .bitmap_rank,
+        .fb_base, .base_latched, .bg_color, .layer_ctrl, .bitmap_key, .bitmap_rank, .bitmap_fmt,
         .tile_scroll_x, .tile_scroll_y, .tile_map_base, .tile_pat_base, .tile_ctrl,
         .spr_pat_base, .spr_bank, .spr_line_cols, .oam_we,
         .tileb_scroll_x, .tileb_scroll_y, .tileb_map_base, .tileb_pat_base, .tileb_ctrl, .win_h, .win_v, .win_map_base, .hs_mode, .hs_base,
@@ -226,16 +228,64 @@ module tb_gpu;
             end
     endtask
 
+    // 8bpp の面のピクセル (x, y)
+    function automatic logic [7:0] pixel8(input logic [12:0] base, input int x, input int y);
+        logic [31:0] w;
+        w = mem_word({base + 13'(y), 8'(x / 4)});
+        return w[8 * (x % 4) +: 8];
+    endfunction
+
+    bit f8 = 0;       // 8bpp で比べる (期待値は exp_px の下位 8bit)
     task automatic check_all(input string name);
         int bad;
+        logic [15:0] got;
         bad = 0;
         for (int yy = 0; yy < SRC_H; yy++)
-            for (int xx = 0; xx < SRC_W; xx++)
-                if (pixel(13'd256, xx, yy) !== exp_px[yy][xx]) begin
-                    if (bad < 8) $display("  %s (%0d,%0d): got %04h, expected %04h", name, xx, yy, pixel(13'd256, xx, yy), exp_px[yy][xx]);
+            for (int xx = 0; xx < SRC_W; xx++) begin
+                got = f8 ? {8'h00, pixel8(13'd256, xx, yy)} : pixel(13'd256, xx, yy);
+                if (got !== (f8 ? {8'h00, exp_px[yy][xx][7:0]} : exp_px[yy][xx])) begin
+                    if (bad < 8) $display("  %s (%0d,%0d): got %04h, expected %04h", name, xx, yy, got, exp_px[yy][xx]);
                     bad++;
                 end
+            end
         if (bad != 0) begin $display("  %s: %0d pixels differ", name, bad); errors++; end
+    endtask
+
+    // ---- 8bpp の BLIT 用: 8bpp のソース (値 src8_px、KEY8 を混ぜる) と 4bpp のソース (タイルの行と同じ並び、値 0 を混ぜる) ----
+    localparam logic [7:0] KEY8 = 8'h2A;
+    function automatic logic [7:0] src8_px(input int i, input int j);
+        return ((i + j) % 5 == 0) ? KEY8 : 8'(i * 7 + j * 31 + 5);
+    endfunction
+    function automatic logic [3:0] src4_px(input int i, input int j);
+        return 4'(i + 3 * j);
+    endfunction
+    task automatic upload_src8(input bit four, input logic [20:0] a, input int stride, input int w, input int h);
+        logic [31:0] d;
+        cmd({8'h04, 24'(stride * h)}); cmd({11'b0, a});
+        for (int j = 0; j < h; j++)
+            for (int k = 0; k < stride; k++) begin
+                d = '0;
+                if (four) for (int n = 0; n < 8; n++) begin if (8 * k + n < w) d[28 - 4 * n +: 4] = src4_px(8 * k + n, j); end
+                else      for (int n = 0; n < 4; n++) begin if (4 * k + n < w) d[8 * n +: 8] = src8_px(4 * k + n, j); end
+                cmd(d);
+            end
+    endtask
+    // fl: bit0 透過, bit1 左右反転, bit2 上下反転, bit3 4bpp。4bpp の値は {bank, ピクセル}
+    task automatic blit8(input logic [20:0] a, input int stride, input int w, input int h,
+                         input int bx, input int by, input logic [3:0] fl, input logic [3:0] bank);
+        logic [7:0] v;
+        logic [3:0] nib;
+        int si, sj;
+        cmd({8'h08, 4'b0, fl, 4'h0, bank, KEY8}); cmd({11'b0, a}); cmd({16'(h), 16'(w)}); cmd({16'(by), 16'(bx)}); cmd(32'(stride));
+        for (int j = 0; j < h; j++)
+            for (int i = 0; i < w; i++) begin
+                si = fl[1] ? w - 1 - i : i;
+                sj = fl[2] ? h - 1 - j : j;
+                nib = src4_px(si, sj);
+                v = fl[3] ? {bank, nib} : src8_px(si, sj);
+                if (!(fl[0] && (fl[3] ? nib == 0 : v == KEY8)) && bx + i >= 0 && bx + i < SRC_W && by + j >= 0 && by + j < SRC_H)
+                    exp_plot(bx + i, by + j, {8'h00, v});
+            end
     endtask
 
     // +trace で GPU の BLIT の動きを表示する (調べもの用)
@@ -413,6 +463,71 @@ module tb_gpu;
         clip(0, 0, 319, 239);
         wait_idle();
         check_all("BLIT with clip");
+
+        // ---- 8bpp (K1) ----
+        // RGB565 のときに 4bpp のソースを頼むとエラーで、何も描かない
+        cmd({8'h08, 8'h08, 16'h0}); cmd(32'h30000); cmd({16'd5, 16'd7}); cmd({16'd0, 16'd0}); cmd(32'd4);
+        wait_idle();
+        rd_re(7'h40, d);
+        if (!d[1]) begin $display("  4bpp BLIT in RGB565 mode did not set error"); errors++; end
+        check_all("4bpp BLIT in RGB565 mode draws nothing");
+        if (bitmap_fmt !== 1'b0) begin $display("  BITMAP_FMT after reset: %b", bitmap_fmt); errors++; end
+        cmd(32'h0916_FFFF);
+        wait_idle();
+        if (bitmap_fmt !== 1'b1) begin $display("  BITMAP_FMT: %b", bitmap_fmt); errors++; end
+        f8 = 1;
+        cmd(32'h0100_FF11);                        // 色は [7:0]
+        exp_clear(16'h0011);
+        wait_idle(); check_all("8bpp CLEAR");
+        // 矩形: 端がワードの 4 つの位置のどれでも
+        fill(3, 1, 8, 2, 16'h0022);  fill(13, 1, 1, 1, 16'h0023); fill(18, 1, 2, 1, 16'h0024); fill(25, 1, 6, 3, 16'h0025);
+        fill(36, 0, 5, 16, 16'h0026); fill(316, 14, 10, 7, 16'h0027); fill(1, 5, 318, 1, 16'h0028);
+        wait_idle(); check_all("8bpp FILL_RECT");
+        line(160, 8, 190, 13, 16'h0031); line(160, 8, 155, 15, 16'h0032); line(160, 8, 130, 3, 16'h0033);
+        line(-20, -3, 340, 20, 16'h0034); line(50, 0, 50, 15, 16'h0035);
+        point(0, 0, 16'h0036); point(319, 15, 16'h0037); point(201, 9, 16'h0038); point(202, 9, 16'h0039); point(203, 9, 16'h003A);
+        wait_idle(); check_all("8bpp lines and points");
+        clip(101, 2, 198, 10);
+        fill(90, 0, 30, 16, 16'h0041); line(50, 0, 250, 15, 16'h0042);
+        clip(0, 0, 319, 239);
+        wait_idle(); check_all("8bpp clip");
+
+        // BLIT: 8bpp のソース 7x5 (stride 2)、4bpp のソース 13x6 (stride 2)、SDRAM の行の境目をまたぐ 8bpp の 34x3 (stride 9)
+        // と 4bpp の 70x2 (stride 9)
+        upload_src8(0, 21'h30000, 2, 7, 5);
+        upload_src8(1, 21'h30100, 2, 13, 6);
+        upload_src8(0, 21'h200FB, 9, 34, 3);
+        upload_src8(1, 21'h201FC, 9, 70, 2);
+        cmd(32'h0100_0003);
+        exp_clear(16'h0003);
+        for (int k = 0; k < 4; k++) begin                         // 描く位置の x % 4 = 0..3
+            blit8(21'h30000, 2, 7, 5, 8 + 12 * k + k, 0, 4'b0000, 4'h0);
+            blit8(21'h30000, 2, 7, 5, 60 + 12 * k + k, 0, 4'b0011, 4'h0);
+            blit8(21'h30000, 2, 7, 5, 110 + 12 * k + k, 5, 4'b0101, 4'h0);
+            blit8(21'h30100, 2, 13, 6, 8 + 16 * k + k, 6, 4'b1000, 4'h5);
+            blit8(21'h30100, 2, 13, 6, 80 + 16 * k + k, 10, 4'b1011, 4'hA);
+            blit8(21'h30100, 2, 13, 6, 160 + 16 * k + k, 10, 4'b1111, 4'hF);
+        end
+        wait_idle(); check_all("8bpp / 4bpp BLIT at each alignment");
+        cmd(32'h0100_0003);
+        exp_clear(16'h0003);
+        blit8(21'h30000, 2, 7, 5, -3, -2, 4'b0001, 4'h0);        // 左上にはみ出す
+        blit8(21'h30100, 2, 13, 6, 314, 12, 4'b1011, 4'h3);       // 右下にはみ出す
+        blit8(21'h30100, 2, 13, 6, -5, 9, 4'b1001, 4'h7);
+        blit8(21'h200FB, 9, 34, 3, 150, 1, 4'b0000, 4'h0);        // 行をまたぐソース
+        blit8(21'h200FB, 9, 34, 3, 191, 6, 4'b0011, 4'h0);
+        blit8(21'h201FC, 9, 70, 2, 101, 12, 4'b1000, 4'h9);
+        blit8(21'h201FC, 9, 70, 2, 230, 13, 4'b1011, 4'h2);
+        clip(200, 0, 206, 15);                                    // クリップ
+        blit8(21'h30000, 2, 7, 5, 197, 9, 4'b0000, 4'h0);
+        blit8(21'h30100, 2, 13, 6, 203, 2, 4'b1010, 4'h6);
+        clip(0, 0, 319, 239);
+        wait_idle(); check_all("8bpp / 4bpp BLIT clipped and across SDRAM rows");
+        rd_re(7'h40, d);
+        if (d[1]) begin $display("  error after 8bpp commands"); errors++; end
+        cmd(32'h0916_0000);
+        f8 = 0;
+        wait_idle();
 
         // ---- 合成のレジスタと WAIT_LINE / WAIT_VBLANK (E1) ----
         if (bg_color !== 16'h0000 || layer_ctrl !== 5'b00001 || bitmap_key !== 16'h0000) begin

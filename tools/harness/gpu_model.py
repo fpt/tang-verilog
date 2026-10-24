@@ -16,6 +16,10 @@ rtl/vdp/gpu.sv と同じ規則でコマンドを解釈し、表示される面�
       {"op": "upload_sprite", "kind": "arrow", "addr": 196608, "w": 16, "h": 16, "stride": 8},   # 下の sprite_pixels
       {"op": "blit", "src": 196608, "stride": 8, "w": 16, "h": 16, "x": 10, "y": 20,
        "transparent": true, "hflip": false, "vflip": false, "key": "#ff00ff"},
+                                                 # 8bpp (bitmap_fmt = 1) のとき: "key" は番号 (0..255)、"src4": true で 4bpp のソース、
+                                                 # "bank": 0..15 (4bpp の値の上位)
+      {"op": "upload_image8", "slot": 512},      # 8bpp のテスト画像 (下の test_image8) を slot の面へ
+      {"op": "upload_tiles", "kind": "sheet", "addr": 196608},   # tile_words を SDRAM に (4bpp の BLIT のソース。タイル t は addr + 8t、stride 1)
       {"op": "reg", "name": "bg_color", "value": "#rrggbb"},   # 合成のレジスタ (LAYER_REGS の名前)
       {"op": "wait_line", "line": 100},          # 以降の reg がライン 100 から効く
       {"op": "wait_vblank", "mark": true},       # 以降の reg が次のフレームのライン 0 から効く。mark なら次のフレームに印
@@ -35,7 +39,7 @@ rtl/vdp/gpu.sv と同じ規則でコマンドを解釈し、表示される面�
   ]}
 タイル レイヤの形式は rtl/vdp/tile_layer.sv、スプライト (OAM) は rtl/vdp/sprite_layer.sv。VRAM・パレット・OAM は、
 印を付けたフレームの記録中には書かないこと (モデルは最後の内容で合成する)。
-色は "#rrggbb" (RGB565 に丸める) か、RGB565 の整数。
+色は "#rrggbb" (RGB565 に丸める) か、RGB565 の整数。8bpp (bitmap_fmt = 1) で描くコマンドの色はパレットの番号 (整数、下位 8bit)。
 """
 import json
 
@@ -51,18 +55,19 @@ LAYER_REGS = {"bg_color": 0, "layer_ctrl": 1, "bitmap_key": 2, "tile_scroll_x": 
               "tile_map_base": 5, "tile_pat_base": 6, "tile_ctrl": 7, "bitmap_rank": 8,
               "spr_pat_base": 9, "spr_bank": 10, "spr_line_px": 11,
               "tileb_scroll_x": 12, "tileb_scroll_y": 13, "tileb_map_base": 14, "tileb_pat_base": 15, "tileb_ctrl": 16,
-              "win_h": 17, "win_v": 18, "win_map_base": 19, "hscroll_mode": 20, "hscroll_base": 21}
+              "win_h": 17, "win_v": 18, "win_map_base": 19, "hscroll_mode": 20, "hscroll_base": 21,
+              "bitmap_fmt": 22}
 LAYER_MASK = {"bg_color": 0xFFFF, "layer_ctrl": 0x1F, "bitmap_key": 0xFFFF, "tile_scroll_x": 0x3FF, "tile_scroll_y": 0x3FF,
               "tile_map_base": 0x3FFF, "tile_pat_base": 0x3FFF, "tile_ctrl": 0xFF, "bitmap_rank": 0x7,
               "spr_pat_base": 0x3FFF, "spr_bank": 0x7, "spr_line_px": 0x3FF,
               "tileb_scroll_x": 0x3FF, "tileb_scroll_y": 0x3FF, "tileb_map_base": 0x3FFF, "tileb_pat_base": 0x3FFF,
               "tileb_ctrl": 0xFF, "win_h": 0x9F, "win_v": 0x9F, "win_map_base": 0x3FFF, "hscroll_mode": 0x3,
-              "hscroll_base": 0x3FFF}
+              "hscroll_base": 0x3FFF, "bitmap_fmt": 0x1}
 LAYER_RESET = {"bg_color": 0x0000, "layer_ctrl": 0x01, "bitmap_key": 0x0000, "tile_scroll_x": 0, "tile_scroll_y": 0,
                "tile_map_base": 0, "tile_pat_base": 0, "tile_ctrl": 0, "bitmap_rank": 1,
                "spr_pat_base": 0, "spr_bank": 0, "spr_line_px": 320,
                "tileb_scroll_x": 0, "tileb_scroll_y": 0, "tileb_map_base": 0, "tileb_pat_base": 0, "tileb_ctrl": 0,
-               "win_h": 0, "win_v": 0, "win_map_base": 0, "hscroll_mode": 0, "hscroll_base": 0}
+               "win_h": 0, "win_v": 0, "win_map_base": 0, "hscroll_mode": 0, "hscroll_base": 0, "bitmap_fmt": 0}
 # 合成の順位 (line_compositor.sv): 0 背景色、面 B は優先度ビットで 1 か 4、面 A (とウィンドウ) は 2 か 5、スプライトは 3 か 6、
 # ビットマップは bitmap_rank
 RANK_B_LO, RANK_B_HI = 1, 4
@@ -106,9 +111,21 @@ def encode(step):
     if op == "clip":
         return [OP_CLIP << 24, xy(step["x0"], step["y0"]), xy(step["x1"], step["y1"])]
     if op == "blit":
-        flags = (1 if step.get("transparent") else 0) | (2 if step.get("hflip") else 0) | (4 if step.get("vflip") else 0)
-        return [OP_BLIT << 24 | flags << 16 | color565(step.get("key", SPRITE_KEY)), step["src"],
+        flags = ((1 if step.get("transparent") else 0) | (2 if step.get("hflip") else 0) | (4 if step.get("vflip") else 0)
+                 | (8 if step.get("src4") else 0))
+        key = (step.get("bank", 0) & 15) << 8 if step.get("src4") else color565(step.get("key", SPRITE_KEY))
+        return [OP_BLIT << 24 | flags << 16 | key, step["src"],
                 (step["h"] & 0xFFFF) << 16 | (step["w"] & 0xFFFF), xy(step["x"], step["y"]), step["stride"] & 0xFFFF]
+    if op == "upload_image8":
+        img = test_image8()
+        out = []
+        for y in range(SRC_H):
+            words = [sum(img[y * SRC_W + 4 * k + n] << 8 * n for n in range(4)) for k in range(SRC_W // 4)]
+            out += [OP_UPLOAD << 24 | len(words), (step["slot"] + y) * fbmodel.WORDS_PER_LINE] + words
+        return out
+    if op == "upload_tiles":
+        words = tile_words(step["kind"])
+        return [OP_UPLOAD << 24 | len(words), step["addr"]] + words
     if op == "upload_sprite":
         px = sprite_pixels(step["kind"], step["w"], step["h"])
         return image_words(px, step["w"], step["h"], step["stride"], step["addr"])
@@ -355,11 +372,28 @@ def sprite_pixels(kind, w, h):
     return out
 
 
+def test_image8(w=SRC_W, h=SRC_H):
+    """8bpp のテスト画像 (パレットの番号、行優先)。帯ごとに違う模様: 横の階調、8 色の縦縞、市松、番号 0 の格子"""
+    out = []
+    for y in range(h):
+        for x in range(w):
+            if y < 60:
+                v = (x * 255 // (w - 1)) & 0xFF
+            elif y < 120:
+                v = 16 * (x * 8 // w) + 3
+            elif y < 180:
+                v = 200 + ((x // 8) + (y // 8)) % 2 * 17
+            else:
+                v = 0 if x % 16 == 0 or y % 16 == 0 else (x * 3 + y * 5) & 0xFF
+            out.append(v)
+    return out
+
+
 def image_words(px, w, h, stride, addr):
     """w x h のピクセルを、各行 stride ワードで addr から置く UPLOAD (行ごとに 1 コマンド)"""
     out = []
     for y in range(h):
-        row = px[y * w:(y + 1) * w] + [0] * (2 * stride - w)
+        row = [p & 0xFFFF for p in px[y * w:(y + 1) * w]] + [0] * (2 * stride - w)     # 1 ピクセル 16bit (色の計算のはみ出しを切る)
         words = [row[2 * k] | row[2 * k + 1] << 16 for k in range(stride)]
         out += [OP_UPLOAD << 24 | stride, addr + y * stride] + words
     return out
@@ -393,6 +427,12 @@ class Model:
         self.cursor = 0
 
     def put_pixel(self, base, x, y, c):
+        """RGB565 は 1 ワードに 2 ピクセル、8bpp (bitmap_fmt) は 4 ピクセル (色の下位 8bit)"""
+        if self.regs["bitmap_fmt"]:
+            a = (base + y) * 256 + x // 4
+            sh = 8 * (x % 4)
+            self.mem[a] = (self.mem.get(a, 0) & ~(0xFF << sh) & 0xFFFFFFFF) | (c & 0xFF) << sh
+            return
         a = (base + y) * 256 + x // 2
         w = self.mem.get(a, 0)
         w = (w & 0x0000FFFF) | c << 16 if x % 2 else (w & 0xFFFF0000) | c
@@ -413,19 +453,34 @@ class Model:
             self.put_pixel(self.draw_base, x, y, c)
 
     def blit(self, src, stride, w, h, x, y, flags, key):
-        """gpu.sv の BLIT と同じ: ソースの各行はワードの先頭から。透過・左右反転・上下反転、クリップ"""
-        if w == 0 or h == 0 or w > BLIT_MAX_W:
+        """gpu.sv の BLIT と同じ: ソースの各行はワードの先頭から。透過・左右反転・上下反転、クリップ。
+        8bpp のとき: ソースは 8bpp (透過色は key の下位 8bit)、flags bit3 なら 4bpp (タイルの行と同じ並び、値は {key[11:8], ピクセル}、
+        透過は値 0)。RGB565 で bit3 はエラー (何も描かない)"""
+        f8 = self.regs["bitmap_fmt"]
+        if w == 0 or h == 0 or w > BLIT_MAX_W or (flags & 8 and not f8):
             return
+        ppw = 8 if flags & 8 else 4 if f8 else 2              # ソースの 1 ワードのピクセル数
         for j in range(h):
             sj = h - 1 - j if flags & 4 else j
             for i in range(w):
                 si = w - 1 - i if flags & 2 else i
-                word = self.mem.get(src + sj * stride + si // 2)
+                a = src + sj * stride + si // ppw
+                word = self.mem.get(a)
                 if word is None:
-                    raise ValueError(f"BLIT reads unwritten word {src + sj * stride + si // 2:#x}")
-                p = word >> 16 if si % 2 else word & 0xFFFF
-                if flags & 1 and p == key:
-                    continue
+                    raise ValueError(f"BLIT reads unwritten word {a:#x}")
+                if flags & 8:
+                    nib = word >> (28 - 4 * (si % 8)) & 15
+                    if flags & 1 and nib == 0:
+                        continue
+                    p = (key >> 8 & 15) << 4 | nib
+                elif f8:
+                    p = word >> 8 * (si % 4) & 0xFF
+                    if flags & 1 and p == key & 0xFF:
+                        continue
+                else:
+                    p = word >> 16 if si % 2 else word & 0xFFFF
+                    if flags & 1 and p == key:
+                        continue
                 self.plot(x + i, y + j, p)
 
     def set_clip(self, x0, y0, x1, y1):
@@ -459,7 +514,7 @@ class Model:
             elif op == OP_BLIT:
                 src, hw, a2, stride = words[i + 1:i + 5]
                 self.blit(src & 0x1FFFFF, stride & 0xFFFF, hw & 0xFFFF, hw >> 16, s16(a2), s16(a2 >> 16),
-                          (w >> 16) & 7, w & 0xFFFF)
+                          (w >> 16) & 15, w & 0xFFFF)
                 i += 5
             elif op == OP_REG_WRITE:
                 name = {v: k for k, v in LAYER_REGS.items()}.get((w >> 16) & 0xFF)
@@ -633,7 +688,20 @@ class Model:
                         rank = RANK_A_HI if t[1] else RANK_A_LO
                         if rank > line[x][0]:
                             line[x] = (rank, t[0])
-        if ctrl & 1:
+        if ctrl & 1 and regs["bitmap_fmt"]:
+            # 8bpp: パレットの番号 (0..255)。透過色は bitmap_key の下位 8bit
+            rank = regs["bitmap_rank"]
+            for x in range(SRC_W // 4):
+                w = self.mem.get((base + y) * 256 + x)
+                if w is None:
+                    raise ValueError(f"displayed plane {base} has unwritten pixels at ({4 * x},{y})")
+                for k in range(4):
+                    i = w >> 8 * k & 0xFF
+                    if not (ctrl & 2 and i == key & 0xFF) and rank > line[4 * x + k][0]:
+                        if i not in self.pal:
+                            raise ValueError(f"8bpp bitmap uses unwritten palette entry {i}")
+                        line[4 * x + k] = (rank, self.pal[i])
+        elif ctrl & 1:
             rank = regs["bitmap_rank"]
             for x in range(SRC_W // 2):
                 w = self.mem.get((base + y) * 256 + x)
