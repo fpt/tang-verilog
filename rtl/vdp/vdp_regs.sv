@@ -76,14 +76,20 @@ module vdp_regs #(
     logic [31:0] crc;
     logic [15:0] crc_frame, crc_frame_snap;
     logic [31:8] crc_snap;     // 0x05 (下位バイト) はその場で返すので、残りの 3 バイトだけ取っておく
+    // spi_slave は rdata (0x05) を取り込んだ次のクロックに re を出すので、1 クロック前の値 (_d) を取っておく
+    // (re のクロックの値を取ると、そのクロックで crc が替わったとき下位だけ前のフレームになる)
+    logic [31:8] crc_d;
+    logic [15:0] crc_frame_d;
     always_ff @(posedge clk) begin
         if (crc_s[2] != crc_s[1]) begin
             crc       <= crc_async;
             crc_frame <= crc_frame_async;
         end
+        crc_d       <= crc[31:8];
+        crc_frame_d <= crc_frame;
         if (re && addr == A_FRAME_CRC) begin
-            crc_snap       <= crc[31:8];
-            crc_frame_snap <= crc_frame;
+            crc_snap       <= crc_d;
+            crc_frame_snap <= crc_frame_d;
         end
     end
     logic vblank;

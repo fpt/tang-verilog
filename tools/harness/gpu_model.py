@@ -22,6 +22,7 @@ rtl/vdp/gpu.sv と同じ規則でコマンドを解釈し、表示される面�
        "sx_step": 26214, "sy_step": 43690, ...},  # STRETCH_BLIT。step は 16.16 (省略すると sw / w と 1.0 から作る:
                                                  # "sh" を書けば sh / h)。ほかのキーは blit と同じ
       {"op": "light_write", "addr": 0, "cells": [[16, 16, 16], ...]},   # ライトマップ (セル cy * 40 + cx、[R, G, B] の倍率 0..63、16 = 1 倍)
+      {"op": "pcm_tone", "addr": 2088960, "n": 2048, "tone": 1000},   # 正弦波の PCM (左右同じ、48kHz) を SDRAM に (音のリング用。画には効かない)
       {"op": "upload_image8", "slot": 512},      # 8bpp のテスト画像 (下の test_image8) を slot の面へ
       {"op": "upload_tiles", "kind": "sheet", "addr": 196608},   # tile_words を SDRAM に (4bpp の BLIT のソース。タイル t は addr + 8t、stride 1)
       {"op": "reg", "name": "bg_color", "value": "#rrggbb"},   # 合成のレジスタ (LAYER_REGS の名前)
@@ -63,18 +64,21 @@ LAYER_REGS = {"bg_color": 0, "layer_ctrl": 1, "bitmap_key": 2, "tile_scroll_x": 
               "spr_pat_base": 9, "spr_bank": 10, "spr_line_px": 11,
               "tileb_scroll_x": 12, "tileb_scroll_y": 13, "tileb_map_base": 14, "tileb_pat_base": 15, "tileb_ctrl": 16,
               "win_h": 17, "win_v": 18, "win_map_base": 19, "hscroll_mode": 20, "hscroll_base": 21,
-              "bitmap_fmt": 22}
+              "bitmap_fmt": 22, "audio_ctrl": 23, "pcm_base": 24, "pcm_size": 25, "pcm_wr": 26}
 LAYER_MASK = {"bg_color": 0xFFFF, "layer_ctrl": 0x3F, "bitmap_key": 0xFFFF, "tile_scroll_x": 0x3FF, "tile_scroll_y": 0x3FF,
               "tile_map_base": 0x3FFF, "tile_pat_base": 0x3FFF, "tile_ctrl": 0xFF, "bitmap_rank": 0x7,
               "spr_pat_base": 0x3FFF, "spr_bank": 0xF, "spr_line_px": 0x3FF,
               "tileb_scroll_x": 0x3FF, "tileb_scroll_y": 0x3FF, "tileb_map_base": 0x3FFF, "tileb_pat_base": 0x3FFF,
               "tileb_ctrl": 0xFF, "win_h": 0x9F, "win_v": 0x9F, "win_map_base": 0x3FFF, "hscroll_mode": 0x3,
-              "hscroll_base": 0x3FFF, "bitmap_fmt": 0x1}
+              "hscroll_base": 0x3FFF, "bitmap_fmt": 0x1, "audio_ctrl": 0x3, "pcm_base": 0x1FFF, "pcm_size": 0xF,
+              "pcm_wr": 0xFFFF}
 LAYER_RESET = {"bg_color": 0x0000, "layer_ctrl": 0x01, "bitmap_key": 0x0000, "tile_scroll_x": 0, "tile_scroll_y": 0,
                "tile_map_base": 0, "tile_pat_base": 0, "tile_ctrl": 0, "bitmap_rank": 1,
                "spr_pat_base": 0, "spr_bank": 0, "spr_line_px": 320,
                "tileb_scroll_x": 0, "tileb_scroll_y": 0, "tileb_map_base": 0, "tileb_pat_base": 0, "tileb_ctrl": 0,
-               "win_h": 0, "win_v": 0, "win_map_base": 0, "hscroll_mode": 0, "hscroll_base": 0, "bitmap_fmt": 0}
+               "win_h": 0, "win_v": 0, "win_map_base": 0, "hscroll_mode": 0, "hscroll_base": 0, "bitmap_fmt": 0,
+               "audio_ctrl": 0, "pcm_base": 0x1FE0, "pcm_size": 11, "pcm_wr": 0}
+# 音のレジスタ (audio_ctrl 〜 pcm_wr) は画に効かない。参照モデルは値を持つだけ (音は audio_out.sv と harness.py audio で確かめる)
 # 合成の順位 (line_compositor.sv): 0 背景色、面 B は優先度ビットで 1 か 4、面 A (とウィンドウ) は 2 か 5、スプライトは 3 か 6、
 # ビットマップは bitmap_rank
 RANK_B_LO, RANK_B_HI = 1, 4
@@ -134,6 +138,13 @@ def encode(step):
                 xy(step["x"], step["y"]), (step["sw"] & 0xFFFF) << 16 | (step["stride"] & 0xFFFF), xs & 0xFFFFFFFF, ys & 0xFFFFFFFF]
     if op == "light_write":
         return light_write_words(step["addr"], step["cells"])
+    if op == "pcm_tone":
+        import math
+        words = []
+        for k in range(step["n"]):
+            v = int(round(8000 * math.sin(2 * math.pi * step["tone"] * k / 48000))) & 0xFFFF
+            words.append(v << 16 | v)
+        return [OP_UPLOAD << 24 | len(words), step["addr"]] + words
     if op == "upload_image8":
         img = test_image8()
         out = []

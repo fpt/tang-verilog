@@ -92,6 +92,13 @@ module gpu_scenario_tb;
         .clk_pix, .rst_pix(rst), .x(vx), .y(vy), .rgb(fb_rgb)
     );
 
+    // 音のレジスタ (gpu -> audio_out)
+    logic        audio_en, audio_clear, p_req, p_ack, p_rvalid;
+    logic [12:0] pcm_base;
+    logic [3:0]  pcm_size;
+    logic [15:0] pcm_wr;
+    logic [20:0] p_addr;
+
     gpu u_gpu (
         .clk(clk_sys), .rst, .addr, .wdata, .we, .re, .rdata,
         .mem_req(g_req), .mem_we(g_we), .mem_addr(g_addr), .mem_wdata(g_wdata), .mem_wmask(g_wmask),
@@ -101,8 +108,19 @@ module gpu_scenario_tb;
         .tile_scroll_x, .tile_scroll_y, .tile_map_base, .tile_pat_base, .tile_ctrl,
         .spr_pat_base, .spr_bank, .spr_line_cols, .oam_we, .light_we,
         .tileb_scroll_x, .tileb_scroll_y, .tileb_map_base, .tileb_pat_base, .tileb_ctrl, .win_h, .win_v, .win_map_base, .hs_mode, .hs_base,
-        .vram_we, .vram_waddr, .vram_wdata, .pal_we, .pal_waddr, .pal_wdata
+        .vram_we, .vram_waddr, .vram_wdata, .pal_we, .pal_waddr, .pal_wdata,
+        .audio_en, .audio_clear, .pcm_base, .pcm_size, .pcm_wr
     );
+
+    // 音 (K5a): 実機と同じく SDRAM の PCM のリングを読む (I2S の出力は見ない。表示の読み出しの待ちに効かないことを数える)
+    audio_out u_audio (
+        .clk(clk_sys), .rst, .enable(audio_en), .clear(audio_clear), .base(pcm_base), .size_log2(pcm_size), .wr(pcm_wr),
+        .addr(4'd0), .re(1'b0), .rdata(),
+        .mem_req(p_req), .mem_addr(p_addr), .mem_ack(p_ack), .mem_rvalid(p_rvalid), .mem_rdata(m_rdata),
+        .bck(), .ws(), .din(), .pa_en()
+    );
+
+    final $display("  audio: %0d samples played, %0d underruns", u_audio.rd, u_audio.underrun);
 
     sdram_arb u_arb (
         .clk(clk_sys), .rst,
@@ -112,6 +130,7 @@ module gpu_scenario_tb;
         .b_ack(g_ack), .b_rvalid(g_rvalid), .b_wnext(g_wnext),
         .c_req(1'b0), .c_we(1'b0), .c_addr(21'h0), .c_wdata(32'h0), .c_wmask(4'h0), .c_len(9'd1),
         .c_ack(), .c_rvalid(), .c_wnext(),
+        .d_req(p_req), .d_addr(p_addr), .d_len(9'd1), .d_ack(p_ack), .d_rvalid(p_rvalid),
         .m_req, .m_we, .m_addr, .m_wdata, .m_wmask, .m_len, .m_ack, .m_rvalid, .m_wnext
     );
 

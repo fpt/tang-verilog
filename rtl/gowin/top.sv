@@ -34,7 +34,12 @@ module top (
     output logic [1:0]  O_sdram_ba,
     output logic [10:0] O_sdram_addr,
     output logic [3:0]  O_sdram_dqm,
-    inout  wire  [31:0] IO_sdram_dq
+    inout  wire  [31:0] IO_sdram_dq,
+    // 基板の音のアンプ (MAX98357A、I2S)。K5a
+    output logic        hp_bck,
+    output logic        hp_ws,
+    output logic        hp_din,
+    output logic        pa_en
 );
     // --- クロック生成 ---
     logic clk_ser, clk_pix, clk_sys, clk_sdram, pll_lock, pll_sys_lock;
@@ -167,10 +172,13 @@ module top (
     assign vdp_irq = control[4] ? gpu_ready : irq_vblank;
 
     // 0x10..0x2F は SDRAM のテスト (mem_test)、0x30..0x4F は GPU、それ以外は vdp_regs
-    logic sel_mem, sel_gpu;
+    // 0x50..0x5F は音 (audio_out、読み出しだけ)
+    logic sel_mem, sel_gpu, sel_audio;
+    logic [7:0] audio_rdata;
     assign sel_mem   = reg_addr >= 7'h10 && reg_addr <= 7'h2F;
     assign sel_gpu   = reg_addr >= 7'h30 && reg_addr <= 7'h4F;
-    assign reg_rdata = sel_mem ? mem_rdata : sel_gpu ? gpu_rdata : vdp_rdata;
+    assign sel_audio = reg_addr >= 7'h50 && reg_addr <= 7'h5F;
+    assign reg_rdata = sel_mem ? mem_rdata : sel_gpu ? gpu_rdata : sel_audio ? audio_rdata : vdp_rdata;
 
     spi_slave u_spi (
         .clk(clk_sys), .rst(rst_sys),
@@ -181,7 +189,7 @@ module top (
 
     vdp_regs u_regs (
         .clk(clk_sys), .rst(rst_sys),
-        .addr(reg_addr), .wdata(reg_wdata), .we(reg_we && !sel_mem && !sel_gpu), .re(reg_re && !sel_mem && !sel_gpu),
+        .addr(reg_addr), .wdata(reg_wdata), .we(reg_we && !sel_mem && !sel_gpu && !sel_audio), .re(reg_re && !sel_mem && !sel_gpu && !sel_audio),
         .rdata(vdp_rdata),
         .vblank_async(vblank), .frame_toggle_async(heartbeat),
         .crc_async(frame_crc_value), .crc_frame_async(frame_crc_frame), .crc_toggle_async(frame_crc_toggle),
@@ -254,6 +262,12 @@ module top (
         .clk_pix, .rst_pix(rst), .x(vx), .y(vy), .rgb(fb_rgb)
     );
 
+    // 音のレジスタ (gpu -> audio_out)
+    logic        audio_en, audio_clear;
+    logic [12:0] pcm_base;
+    logic [3:0]  pcm_size;
+    logic [15:0] pcm_wr;
+
     gpu u_gpu (
         .clk(clk_sys), .rst(rst_sys),
         .addr(reg_addr), .wdata(reg_wdata), .we(reg_we && sel_gpu), .re(reg_re && sel_gpu), .rdata(gpu_rdata),
@@ -264,7 +278,19 @@ module top (
         .tile_scroll_x, .tile_scroll_y, .tile_map_base, .tile_pat_base, .tile_ctrl,
         .spr_pat_base, .spr_bank, .spr_line_cols, .oam_we, .light_we,
         .tileb_scroll_x, .tileb_scroll_y, .tileb_map_base, .tileb_pat_base, .tileb_ctrl, .win_h, .win_v, .win_map_base, .hs_mode, .hs_base,
-        .vram_we, .vram_waddr, .vram_wdata, .pal_we, .pal_waddr, .pal_wdata
+        .vram_we, .vram_waddr, .vram_wdata, .pal_we, .pal_waddr, .pal_wdata,
+        .audio_en, .audio_clear, .pcm_base, .pcm_size, .pcm_wr
+    );
+
+    // 音: PCM のリング (SDRAM) -> I2S
+    logic        p_req, p_ack, p_rvalid;
+    logic [20:0] p_addr;
+    audio_out u_audio (
+        .clk(clk_sys), .rst(rst_sys),
+        .enable(audio_en), .clear(audio_clear), .base(pcm_base), .size_log2(pcm_size), .wr(pcm_wr),
+        .addr(reg_addr[3:0]), .re(reg_re && sel_audio), .rdata(audio_rdata),
+        .mem_req(p_req), .mem_addr(p_addr), .mem_ack(p_ack), .mem_rvalid(p_rvalid), .mem_rdata(mem_rdata32),
+        .bck(hp_bck), .ws(hp_ws), .din(hp_din), .pa_en
     );
 
     mem_test u_mem_test (
@@ -283,6 +309,7 @@ module top (
         .b_ack(g_ack), .b_rvalid(g_rvalid), .b_wnext(g_wnext),
         .c_req(t_req), .c_we(t_we), .c_addr(t_addr), .c_wdata(t_wdata), .c_wmask(t_wmask), .c_len(t_len),
         .c_ack(t_ack), .c_rvalid(t_rvalid), .c_wnext(),
+        .d_req(p_req), .d_addr(p_addr), .d_len(9'd1), .d_ack(p_ack), .d_rvalid(p_rvalid),
         .m_req(mem_req), .m_we(mem_we), .m_addr(mem_addr), .m_wdata(mem_wdata), .m_wmask(mem_wmask), .m_len(mem_len),
         .m_ack(mem_ack), .m_rvalid(mem_rvalid), .m_wnext(mem_wnext)
     );

@@ -123,6 +123,7 @@ lint:
 	$(FPGA) verilator --lint-only -Wall --top-module line_compositor $(VDP_SRC)
 	$(FPGA) verilator --lint-only -Wall --top-module tile_layer $(VDP_SRC)
 	$(FPGA) verilator --lint-only -Wall --top-module sprite_layer $(VDP_SRC)
+	$(FPGA) verilator --lint-only -Wall --top-module audio_out $(VDP_SRC)
 	$(FPGA) verilator --lint-only -Wall --top-module gpu $(VDP_SRC)
 
 sim: $(addprefix sim-,$(TBS))
@@ -173,10 +174,10 @@ $(BUILD)/$(TOP).json: $(SYN_SRC) $(GOWIN_BB)
 $(BUILD)/$(TOP)_pnr.json: $(BUILD)/$(TOP).json $(CST)
 	$(FPGA) nextpnr-himbaechel -q -l $(BUILD)/$(TOP)_nextpnr.log \
 		--json $< --write $@ --device $(DEVICE) \
-		--vopt family=$(FAMILY) --vopt cst=$(CST)
+		--vopt family=$(FAMILY) --vopt cst=$(CST) --vopt sspi_as_gpio
 
 $(BUILD)/$(TOP).fs: $(BUILD)/$(TOP)_pnr.json
-	$(FPGA) gowin_pack -d $(FAMILY) -o $@ $<
+	$(FPGA) gowin_pack -d $(FAMILY) --sspi_as_gpio -o $@ $<
 	@grep -A30 'Device utilisation' $(BUILD)/$(TOP)_nextpnr.log | grep -E 'LUT|DFF|BSRAM|PLL|OSER|IOB' || true
 	@grep -E 'Max frequency' $(BUILD)/$(TOP)_nextpnr.log | tail -n 4 || true
 

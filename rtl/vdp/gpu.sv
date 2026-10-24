@@ -1,4 +1,4 @@
-// コマンド GPU (docs/GPU_PLAN.md の M5〜M7、docs/EMU_GPU_PLAN.md の E1、docs/KESSEL_ON_VDP.md の K1・K3・K4)。コマンド FIFO から 32bit ワードのコマンドを読み、SDRAM のフレームバッファに描く
+// コマンド GPU (docs/GPU_PLAN.md の M5〜M7、docs/EMU_GPU_PLAN.md の E1、docs/KESSEL_ON_VDP.md の K1・K3・K4・K5a)。コマンド FIFO から 32bit ワードのコマンドを読み、SDRAM のフレームバッファに描く
 //
 // レジスタ (0x30..0x4F。複数バイトの値はリトルエンディアン):
 //   0x30 CMD        W  コマンドのポート。書いたバイトを 4 つずつ (リトルエンディアン) 1 ワードにして FIFO に入れる。
@@ -42,7 +42,10 @@
 //                   8 の倍数に切り捨て。sprite_layer.sv)、12〜16: 面 B の TILEB_SCROLL_X / TILEB_SCROLL_Y / TILEB_MAP_BASE /
 //                   TILEB_PAT_BASE / TILEB_CTRL (面 A と同じ形)、17: WIN_H ([7] 右, [4:0] 位置 x 16 ピクセル)、
 //                   18: WIN_V ([7] 下, [4:0] 位置 x 8 ライン)、19: WIN_MAP_BASE、20: HSCROLL_MODE (2bit)、21: HSCROLL_BASE (14bit)、
-//                   22: BITMAP_FMT (1bit、0 = RGB565、1 = 8bpp。描くコマンドにはすぐ、表示には次のラインから効く)。
+//                   22: BITMAP_FMT (1bit、0 = RGB565、1 = 8bpp。描くコマンドにはすぐ、表示には次のラインから効く)、
+//                   23: AUDIO_CTRL ([0] 音を出す、[1] に 1 を書くと PCM_RD と UNDERRUN と先読みを空にする)、24: PCM_BASE (13bit、PCM のリングの
+//                   SDRAM の先頭、256 ワード単位。既定 0x1FE0)、25: PCM_SIZE (4bit、リングは 1 << n ワード。既定 11)、26: PCM_WR (16bit、ホストが書いた標本の数)。
+//                   音のレジスタはすぐ効く (ラインに合わせない)。音の動き方は audio_out.sv
 //                   どれも既定 0 (LAYER_CTRL と BITMAP_RANK は 1、SPR_LINE_PX は 320)
 //   0x0A WAIT_LINE  [7:0] ライン n。以降の REG_WRITE がライン n から効くところ (ライン n-1 の合成が始まったところ) まで待つ
 //   0x0B WAIT_VBLANK  WAIT_LINE 0 と同じ (以降の REG_WRITE が次のフレームのライン 0 から効く)。
@@ -126,6 +129,12 @@ module gpu #(
     output logic [13:0] spr_pat_base,
     output logic [3:0]  spr_bank,
     output logic [6:0]  spr_line_cols,   // SPR_LINE_PX / 8
+    // 音 (audio_out)
+    output logic        audio_en,
+    output logic        audio_clear,     // AUDIO_CTRL の [1] を書いたとき 1 クロック
+    output logic [12:0] pcm_base,
+    output logic [3:0]  pcm_size,
+    output logic [15:0] pcm_wr,
     // VRAM・パレット・OAM の書き込み (line_compositor へ。OAM は vram_waddr[7:0] と vram_wdata を使う)
     output logic        vram_we,
     output logic [13:0] vram_waddr,
@@ -466,6 +475,11 @@ module gpu #(
             bitmap_key  <= 16'h0000;
             bitmap_rank <= 3'd1;
             bitmap_fmt  <= 1'b0;
+            audio_en    <= 1'b0;
+            audio_clear <= 1'b0;
+            pcm_base    <= 13'h1FE0;
+            pcm_size    <= 4'd11;
+            pcm_wr      <= '0;
             tile_scroll_x <= '0;
             tile_scroll_y <= '0;
             tile_map_base <= '0;
@@ -495,6 +509,7 @@ module gpu #(
             pal_we   <= 1'b0;
             oam_we   <= 1'b0;
             light_we <= 1'b0;
+            audio_clear <= 1'b0;
             if (flush) rd_ptr <= wr_ptr;
             if (re && addr == A_STATUS) error <= 1'b0;
 
@@ -663,6 +678,13 @@ module gpu #(
                                 8'd20: hs_mode        <= color[1:0];
                                 8'd21: hs_base        <= color[13:0];
                                 8'd22: bitmap_fmt     <= color[0];
+                                8'd23: begin
+                                    audio_en    <= color[0];
+                                    audio_clear <= color[1];
+                                end
+                                8'd24: pcm_base       <= color[12:0];
+                                8'd25: pcm_size       <= color[3:0];
+                                8'd26: pcm_wr         <= color;
                                 default: error <= 1'b1;
                             endcase
                         end

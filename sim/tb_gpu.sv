@@ -19,6 +19,10 @@ module tb_gpu;
     logic [15:0] bg_color, bitmap_key;
     logic [5:0]  layer_ctrl;
     logic        light_we;
+    logic        audio_en, audio_clear;
+    logic [12:0] pcm_base;
+    logic [3:0]  pcm_size;
+    logic [15:0] pcm_wr;
     logic [9:0]  tileb_scroll_x, tileb_scroll_y;
     logic [13:0] tileb_map_base, tileb_pat_base, win_map_base, hs_base;
     logic [7:0]  tileb_ctrl;
@@ -64,6 +68,7 @@ module tb_gpu;
         .spr_pat_base, .spr_bank, .spr_line_cols, .oam_we, .light_we,
         .tileb_scroll_x, .tileb_scroll_y, .tileb_map_base, .tileb_pat_base, .tileb_ctrl, .win_h, .win_v, .win_map_base, .hs_mode, .hs_base,
         .vram_we, .vram_waddr, .vram_wdata, .pal_we, .pal_waddr, .pal_wdata,
+        .audio_en, .audio_clear, .pcm_base, .pcm_size, .pcm_wr,
         .mark_req, .line_start, .line_num, .ready
     );
 
@@ -344,6 +349,8 @@ module tb_gpu;
     always @(posedge clk) if (trace && dut.state == 15) $display("  [trace] WAIT_LINE target %0d armed %b mark %b line_start %b line_num %0d op %02h",
                                                      dut.wait_target, dut.wait_armed, dut.wait_mark, line_start, line_num, dut.op);
     always @(posedge clk) if (trace && mark_req) $display("  [trace] mark_req at t=%0t", $time);
+    int clear_pulses = 0;
+    always @(posedge clk) if (audio_clear) clear_pulses++;
     int mark_count_tb = 0, mark_line = -1;
     int prev_line = 0;
     always @(posedge clk) begin
@@ -686,6 +693,17 @@ module tb_gpu;
             errors++;
         end
         for (x = 12; x <= 21; x++) cmd(32'h0900_0000 | (x << 16));
+        // 音のレジスタ (K5a): 既定、REG_WRITE、AUDIO_CTRL の [1] は 1 クロックだけ
+        if (audio_en !== 0 || pcm_base !== 13'h1FE0 || pcm_size !== 4'd11 || pcm_wr !== 0) begin
+            $display("  audio registers after reset: %b %h %0d %h", audio_en, pcm_base, pcm_size, pcm_wr); errors++;
+        end
+        clear_pulses = 0;
+        cmd(32'h0917_0003); cmd(32'h0918_FFFF); cmd(32'h0919_FFF9); cmd(32'h091A_BEEF);
+        wait_idle();
+        if (audio_en !== 1 || pcm_base !== 13'h1FFF || pcm_size !== 4'd9 || pcm_wr !== 16'hBEEF || clear_pulses != 1) begin
+            $display("  audio REG_WRITE: %b %h %0d %h, %0d clear pulses", audio_en, pcm_base, pcm_size, pcm_wr, clear_pulses); errors++;
+        end
+        cmd(32'h0917_0000); cmd(32'h0918_1FE0); cmd(32'h0919_000B); cmd(32'h091A_0000);
         // OAM_WRITE 3 ワードを 0xFE から (0x00 に折り返す)。VRAM には書かない
         vram_writes = 0; oam_writes = 0;
         cmd(32'h0F00_0003); cmd(32'h0000_00FE); cmd(32'h1111_0001); cmd(32'h2222_0002); cmd(32'h3333_0003);
