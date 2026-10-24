@@ -22,7 +22,7 @@ Tang Nano 20K (Gowin GW2AR-18) と RP2350 で、レトロゲーム機の VDP の
   すべて 参照モデル = Verilator = 実機 の CRC で確かめている ([docs/HARNESS.md](docs/HARNESS.md))
 - 進み具合: コマンド GPU は [docs/GPU_PLAN.md](docs/GPU_PLAN.md) (M0〜M9 済み、M8 はやめた)、エミュレータ向けのタイル/スプライト エンジンは
   [docs/EMU_GPU_PLAN.md](docs/EMU_GPU_PLAN.md) (E1〜E4 済み、次は E5 のホスト翻訳層)、
-  [rs-kessel](https://github.com/fpt/rs-kessel) を載せる準備は [docs/KESSEL_ON_VDP.md](docs/KESSEL_ON_VDP.md) (K1 の VDP 側 = 8bpp の面と BLIT4 済み)
+  [rs-kessel](https://github.com/fpt/rs-kessel) を載せる準備は [docs/KESSEL_ON_VDP.md](docs/KESSEL_ON_VDP.md) (K1〜K4 の VDP 側 = 8bpp の面・BLIT4・スプライトのセル順とバンク・STRETCH_BLIT・ライトマップ済み)
 - 本番ホスト (RP2350) とのリンクは HSTX に決めた (EMU_GPU_PLAN.md の「本番のリンク」)。まだ作っていない
 
 ## ツール
