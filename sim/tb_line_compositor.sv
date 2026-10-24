@@ -67,7 +67,7 @@ module tb_line_compositor;
         .tile_scroll_x(10'd0), .tile_scroll_y(10'd0), .tile_map_base(14'd0), .tile_pat_base(PAT), .tile_ctrl(8'd0),
         .tileb_scroll_x(10'd0), .tileb_scroll_y(10'd0), .tileb_map_base, .tileb_pat_base(PAT), .tileb_ctrl(8'd0),
         .win_h(6'd0), .win_v, .win_map_base(WMAP), .hs_mode, .hs_base(HSB),
-        .spr_pat_base(PAT), .spr_bank(3'd1), .spr_line_cols(spr_line_px[9:3]),
+        .spr_pat_base(PAT), .spr_bank(4'd1), .spr_line_cols(spr_line_px[9:3]),
         .vram_we, .vram_waddr, .vram_wdata, .pal_we, .pal_waddr, .pal_wdata, .oam_we,
         .mark_req, .mark_toggle, .line_start, .line_num,
         .mem_req, .mem_addr, .mem_len, .mem_ack, .mem_rvalid, .mem_rdata, .underflow_count,

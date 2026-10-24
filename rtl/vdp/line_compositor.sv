@@ -72,7 +72,7 @@ module line_compositor #(
     input  logic [1:0]  hs_mode,          // 横スクロールの表: 0 なし (レジスタ)、1 画面全体、2 8 ラインごと、3 ラインごと
     input  logic [13:0] hs_base,
     input  logic [13:0] spr_pat_base,     // スプライト (sprite_layer.sv)
-    input  logic [2:0]  spr_bank,
+    input  logic [3:0]  spr_bank,
     input  logic [6:0]  spr_line_cols,
     input  logic        vram_we,          // VRAM・パレット・OAM の書き込み (GPU)。OAM は vram_waddr[7:0] と vram_wdata を使う
     input  logic [13:0] vram_waddr,
@@ -189,7 +189,7 @@ module line_compositor #(
     logic [13:0] l_hs_base;
     logic [9:0]  hs_a, hs_b;     // 横スクロールの表から読んだ値
     logic [13:0] l_spat;
-    logic [2:0]  l_sbank;
+    logic [3:0]  l_sbank;
     logic [6:0]  l_scols;
     logic [20:0] l_addr;         // ビットマップの行のアドレス
     logic        t_start, t_busy;

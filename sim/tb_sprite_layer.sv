@@ -1,6 +1,7 @@
 // スプライト: OAM・VRAM・パレットを乱数で埋め、いろいろなラインと上限で出てくるピクセルの列を参照の計算と比べる
 //   - OAM の順、1 つのスプライトの中では x の順に、画面の中の不透明なピクセルだけが出る
-//   - 大きさ 1〜4 タイル、左右・上下反転、セルの並び順 (列優先 / 16 タイル幅の表)、パレット、優先度、負の x / y と画面の外
+//   - 大きさ 1〜4 タイル、左右・上下反転、セルの並び順 (列優先 / 16 タイル幅の表 / 行優先 (K2))、パレット、優先度、負の x / y と画面の外
+//   - スプライトごとのバンク (bank[3] = 1 のとき、パレットの番号は {0, ワード 1 の [19:16], 値})
 //   - ラインの上限 (line_px / 8 列、画面の外の列も数える)。0 ならなにも出ない
 //   - next_word が 1 クロック前に x / 2。続けて出る 2 つのピクセルが同じワードの同じ側にならない
 //   - 1 ラインの時間 (上限 320 ピクセルなら 700 クロック以内)
@@ -16,7 +17,7 @@ module tb_sprite_layer;
     logic [7:0]  oam_waddr = '0, line = '0, next_word;
     logic [31:0] oam_wdata = '0;
     logic [13:0] pat_base = '0, vram_raddr;
-    logic [2:0]  bank = '0;
+    logic [3:0]  bank = '0;
     logic [9:0]  line_px = 10'd320;
     logic [31:0] vram_q;
     logic [8:0]  pal_raddr;
@@ -89,8 +90,9 @@ module tb_sprite_layer;
                 if (cols == 0) begin stop = 1; limited_lines++; break; end
                 cols--;
                 sc = w1[11] ? w - 1 - col : col;
-                if (w0[30]) tile = (((int'(w1[10:4]) + ry / 8) % 128) << 4) | ((int'(w1[3:0]) + sc) % 16);
-                else        tile = (int'(w1[10:0]) + sc * h + ry / 8) % 2048;
+                if ({w0[10], w0[30]} == 2'd1)      tile = (((int'(w1[10:4]) + ry / 8) % 128) << 4) | ((int'(w1[3:0]) + sc) % 16);
+                else if ({w0[10], w0[30]} == 2'd0) tile = (int'(w1[10:0]) + sc * h + ry / 8) % 2048;
+                else                               tile = (int'(w1[10:0]) + (ry / 8) * w + sc) % 2048;
                 pat = vram[(int'(pat_base) + tile * 8 + ry % 8) % VW];
                 if (sx + col * 8 < 0 || sx + col * 8 + 7 >= SRC_W) clipped_cols++;
                 for (k = 0; k < 8; k++) begin
@@ -99,7 +101,7 @@ module tb_sprite_layer;
                     nib = int'(pat >> (28 - 4 * pi)) & 15;
                     if (px >= 0 && px < SRC_W && nib != 0) begin
                         exp_x[exp_n] = 9'(px);
-                        exp_c[exp_n] = {w1[15], pal[{bank, w1[14:13], 4'(nib)}]};
+                        exp_c[exp_n] = {w1[15], bank[3] ? pal[{1'b0, w1[19:16], 4'(nib)}] : pal[{bank[2:0], w1[14:13], 4'(nib)}]};
                         exp_n++;
                     end
                 end
@@ -146,9 +148,9 @@ module tb_sprite_layer;
             w0 = $urandom;
             w0[31]    = ($urandom % 100) < en_pct;
             w0[25:16] = 10'($urandom_range(0, 300) - 40);
-            w0[15:10] = '0;
+            w0[15:11] = '0;                  // [10] はセルの並び順の上位
             w0[9:0]   = 10'($urandom_range(0, 447) - 64);
-            w1 = {16'h0, 16'($urandom)};
+            w1 = {12'h0, 4'($urandom), 16'($urandom)};
             oam_ref[2 * i]     = w0;
             oam_ref[2 * i + 1] = w1;
         end
@@ -180,19 +182,25 @@ module tb_sprite_layer;
         rst = 0;
 
         // まばら (上限に届かない) と、混んでいる (上限で切れる)
-        pat_base = 14'h0000; bank = 3'd0;
+        pat_base = 14'h0000; bank = 4'd0;
         fill_oam(15);
         sweep(320);
-        pat_base = 14'h3F00; bank = 3'd5;      // パターンのアドレスが VRAM の端で折り返す
+        pat_base = 14'h3F00; bank = 4'd5;      // パターンのアドレスが VRAM の端で折り返す
         fill_oam(100);
         sweep(320);
         sweep(13);                             // 1 列
         sweep(0);                              // なにも出ない
         sweep(1023);                           // 127 列
-        pat_base = 14'h0100; bank = 3'd2;
+        pat_base = 14'h0100; bank = 4'd2;
         fill_oam(60);
         sweep(64);
         sweep(320);
+        bank = 4'b1011;                        // スプライトごとのバンク ([2:0] は使わない)
+        sweep(320);
+        pat_base = 14'h3F80; bank = 4'b1000;
+        fill_oam(100);
+        sweep(320);
+        sweep(1023);
 
         if (max320 > 700) begin $display("  line took %0d cycles with a 320 pixel limit", max320); errors++; end
         if (order_errors != 0) begin $display("  next_word wrong / same side twice: %0d", order_errors); errors++; end

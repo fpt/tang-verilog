@@ -1,15 +1,19 @@
-// スプライト (docs/EMU_GPU_PLAN.md の E3)。line_compositor が 1 ラインごとに start で動かす
+// スプライト (docs/EMU_GPU_PLAN.md の E3、docs/KESSEL_ON_VDP.md の K2)。line_compositor が 1 ラインごとに start で動かす
 //
 //   OAM:  128 エントリ x 2 ワードの BSRAM (エントリ n はワード 2n と 2n+1)。GPU の OAM_WRITE が書く
 //     ワード 0: [9:0] x (符号付き、画面の左端が 0)、[25:16] y (符号付き)、[27:26] 幅 - 1 (タイル)、[29:28] 高さ - 1 (タイル)、
-//               [30] セルの並び順、[31] 有効
-//     ワード 1: [15:0] マップのエントリと同じ形 ([10:0] 先頭のタイル、[11] 左右反転、[12] 上下反転、[14:13] パレット、[15] 優先度)
+//               {[10], [30]} セルの並び順、[31] 有効
+//     ワード 1: [15:0] マップのエントリと同じ形 ([10:0] 先頭のタイル、[11] 左右反転、[12] 上下反転、[14:13] パレット、[15] 優先度)、
+//               [19:16] スプライトごとのバンク (bank[3] = 1 のときだけ使う)
 //   大きさ: 幅・高さとも 1〜4 タイル (8〜32 ピクセル)。タイルの形式はタイル レイヤと同じ (8x8、4bpp、ピクセルの値 0 は透明)
 //   セルの並び順 (スプライトの中の列 c、行 r のタイル):
 //     0: 列優先 (メガドラ)       先頭 + c x 高さ + r
 //     1: 16 タイル幅の表 (SNES)  {先頭[10:4] + r, 先頭[3:0] + c} (列は表の行の中で折り返す)
+//     2: 行優先 (Kessel の sprn) 先頭 + r x 幅 + c
+//     3: 予約 (今は 2 と同じ)
 //   反転: 左右反転はタイルの列の順番とタイルの中のピクセルの両方、上下反転はタイルの行の順番とタイルの中の行の両方を逆にする
-//   色:   パレットの {bank, エントリのパレット, ピクセルの値}
+//   色:   パレットの {bank[2:0], エントリのパレット, ピクセルの値}。bank[3] = 1 なら {0, ワード 1 の [19:16], ピクセルの値} (0..255。
+//         8bpp のビットマップ・BLIT4 と同じ番号。エントリのパレット [14:13] は使わない)
 //
 //   動き方: start で OAM をエントリ 0 から順に 1 クロックに 1 つ調べ、line に掛かる有効なスプライトを見つけたら、
 //           その場でタイルの列ごとに タイルの行を読む (1 クロック) -> 受け取る (1 クロック) -> 8 ピクセルを 1 クロックに 1 つ出す。
@@ -39,7 +43,7 @@ module sprite_layer #(
     input  logic        start,
     input  logic [7:0]  line,
     input  logic [13:0] pat_base,
-    input  logic [2:0]  bank,
+    input  logic [3:0]  bank,             // [2:0] バンク (64 色単位)、[3] スプライトごとのバンク (ワード 1 の [19:16]) を使う
     input  logic [6:0]  line_cols,
     output logic        busy,
     // ピクセルの出力
@@ -76,11 +80,12 @@ module sprite_layer #(
     // 見つけたスプライト
     logic [10:0] s_x;             // 今のタイルの列の左端 (符号付き)
     logic [1:0]  s_wm1, s_hm1;
-    logic        s_order;
+    logic [1:0]  s_order;
     logic [4:0]  s_dy;            // スプライトの上端からのライン
     logic [10:0] s_tile;
     logic        s_hflip, s_pri;
     logic [1:0]  s_pal;
+    logic [3:0]  s_bank;          // スプライトごとのバンク
     logic [1:0]  s_row;           // 上下反転したあとのタイルの行
     logic [2:0]  s_fine;
     logic [1:0]  col;             // 画面の左から何列目か
@@ -101,12 +106,17 @@ module sprite_layer #(
     // 今の列のタイル番号
     logic [1:0]  sc;              // スプライトの中の列 (左右反転のあと)
     logic [3:0]  col_off;         // 列優先のときの列の先頭のタイル (列 x 高さ)
+    logic [3:0]  row_off;         // 行優先のときの行の先頭のタイル (行 x 幅)
     logic [10:0] tile_num;
     assign sc      = s_hflip ? s_wm1 - col : col;
     assign col_off = 4'(sc) * (4'(s_hm1) + 4'd1);
+    assign row_off = 4'(s_row) * (4'(s_wm1) + 4'd1);
     always_comb begin
-        if (s_order) tile_num = {s_tile[10:4] + 7'(s_row), s_tile[3:0] + 4'(sc)};
-        else         tile_num = s_tile + 11'(col_off) + 11'(s_row);
+        unique case (s_order)
+            2'd0:    tile_num = s_tile + 11'(col_off) + 11'(s_row);
+            2'd1:    tile_num = {s_tile[10:4] + 7'(s_row), s_tile[3:0] + 4'(sc)};
+            default: tile_num = s_tile + 11'(row_off) + 11'(sc);
+        endcase
     end
 
     logic [2:0] pi;
@@ -124,7 +134,7 @@ module sprite_layer #(
             default: oam_raddr = {idx, 1'b0};
         endcase
         vram_raddr = pat_base + {tile_num, s_fine};
-        pal_raddr  = {bank, s_pal, nib};
+        pal_raddr  = bank[3] ? {1'b0, s_bank, nib} : {bank[2:0], s_pal, nib};
     end
 
     assign busy      = state != S_IDLE || p_valid;
@@ -147,7 +157,7 @@ module sprite_layer #(
                     s_x     <= 11'(signed'(oam_q[9:0]));
                     s_wm1   <= oam_q[27:26];
                     s_hm1   <= oam_q[29:28];
-                    s_order <= oam_q[30];
+                    s_order <= {oam_q[10], oam_q[30]};
                     s_dy    <= dy[4:0];
                     if (hit)                 state <= S_ATTR;
                     else if (idx == 7'd127)  state <= S_IDLE;
@@ -157,6 +167,7 @@ module sprite_layer #(
                     s_tile  <= oam_q[10:0];
                     s_hflip <= oam_q[11];
                     s_pal   <= oam_q[14:13];
+                    s_bank  <= oam_q[19:16];
                     s_pri   <= oam_q[15];
                     s_row   <= ry[4:3];
                     s_fine  <= ry[2:0];
