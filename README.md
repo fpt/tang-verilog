@@ -10,6 +10,7 @@ Tang Nano 20K (Gowin GW2AR-18) と RP2350 で、レトロゲーム機の VDP の
 
 ## ドキュメント
 
+- [docs/SPECIFICATION.md](docs/SPECIFICATION.md): アプリケーション開発者向けの仕様 (接続、レジスタ、コマンド、データ形式、タイミング、制限)
 - [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md): 設計方針と今の実装 (レジスタバス、レジスタマップ、クロック、SDRAM)
 - [docs/GPU_PLAN.md](docs/GPU_PLAN.md): SDRAM フレームバッファの tiny-GPU の開発計画 (ハーネスで検証しながら進める)
 - [docs/WIRING.md](docs/WIRING.md): RP2350 と Tang Nano 20K の配線・SPI ピン割り当て
