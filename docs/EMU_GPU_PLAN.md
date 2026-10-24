@@ -235,9 +235,9 @@ E1 が一番大きい構造変更 (フレームバッファ直出しからライ
   そのまま使っていたので、表示のバースト読み出しの途中で `MEM_CFG` を書くと受け取ったワードの数がずれ、ack が出ずに SDRAM が止まっていた。
   `harness.py memtest` (取り込み位置を順に変える) で再現した。待機中にだけ取り込むように直し、`tb_sdram_ctrl` にバーストの途中で変えるテストを足した
 
-`DRAW_TILEMAP` (M8) はやめた。E2 のタイル レイヤで置き換える ([pre_E3_review.md](pre_E3_review.md) の 3)。
+`DRAW_TILEMAP` (M8) はやめた。E2 のタイル レイヤで置き換える ([GPU_PLAN.md](GPU_PLAN.md) の「M8 を閉じた理由」)。
 
-### E2.5 の結果 ✅ ([pre_E3_review.md](pre_E3_review.md) の 1)
+### E2.5 の結果 ✅
 
 - [`line_compositor.sv`](../rtl/vdp/line_compositor.sv) の合成を、**順位の付いた作業ライン 1 本** にした。ピクセルごとに `{順位 3bit, 色 16bit}` を
   偶数・奇数の x の 2 つの BSRAM に持つ (E2 のタイル ライン バッファをそのまま使い回したので、BSRAM は 39 のまま)
@@ -254,7 +254,7 @@ E1 が一番大きい構造変更 (フレームバッファ直出しからライ
 - `harness.py fbtest` が、前のシナリオが残した合成のレジスタ (タイル有効や `BITMAP_RANK`) を既定に戻してから測るようにした
 - 資源 (HDMI、E2 → E2.5): LUT4 5,955 → 6,197、DFF 2,563 → 2,613、BSRAM 39 → 39
 
-### E3 の結果 ✅ ([pre_E3_review.md](pre_E3_review.md) の 2)
+### E3 の結果 ✅
 
 - [`sprite_layer.sv`](../rtl/vdp/sprite_layer.sv): スプライト 128 個。OAM は 128 エントリ x 2 ワードの BSRAM 1 個で、GPU の `OAM_WRITE` (`0x0F`) が書く
   - ワード 0: `[9:0]` x (符号付き)、`[25:16]` y (符号付き)、`[27:26]` 幅 - 1、`[29:28]` 高さ - 1 (どちらも 1〜4 タイル)、`[30]` セルの並び順、`[31]` 有効。

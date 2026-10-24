@@ -2,7 +2,7 @@
 
 [rs-kessel](https://github.com/fpt/rs-kessel) (16bit スタック VM のファンタジーコンソール) を、RP2350 + Tang Nano 20K の VDP で動かすための設計メモ。
 方針は「エンジンをハードに寄せる」。VDP 側に足すものと、Kessel 側で変えるものを分けて書く。
-VDP の現状は [EMU_GPU_PLAN.md](EMU_GPU_PLAN.md) (E4 まで) と [GPU_PLAN.md](GPU_PLAN.md) (M9 まで)。
+VDP の現状は [EMU_GPU_PLAN.md](EMU_GPU_PLAN.md) (E4 まで)、[GPU_PLAN.md](GPU_PLAN.md) (M9 まで) と、この文書の K1。
 コマンドやデータ形式の正確な定義は [SPECIFICATION.md](SPECIFICATION.md)。
 
 ## 0. 結論
@@ -25,7 +25,7 @@ VDP の現状は [EMU_GPU_PLAN.md](EMU_GPU_PLAN.md) (E4 まで) と [GPU_PLAN.md
 | `clip()` 相当、Square240 の額縁 | 描く範囲 | `CLIP` (`0x07`、M6 からある) | あり |
 | `spr(id,x,y,flags)` 4bpp + `sprbank` | 即時描画 | **BLIT4** (4bpp ソース + バンク → 8bpp 宛先、透過 = 0) | ✅ K1 |
 | `sprn` (w x h タイル、`id + row*w + col`) | 多タイル | BLIT4 をタイルごとに、またはハードスプライトのセル順 2 | 要追加 (4 章) |
-| `spr_scaled` (8.8 固定、最近傍) | 拡大縮小 | `STRETCH_BLIT` (4bpp ソース) | 未着手 (pre_E3_review の 3) |
+| `spr_scaled` (8.8 固定、最近傍) | 拡大縮小 | `STRETCH_BLIT` (4bpp ソース) | 未着手 ([GPU_PLAN.md](GPU_PLAN.md) の「`STRETCH_BLIT` の設計」) |
 | `sspr(addr,…)` | メモリ上の生タイル | SDRAM に置いて BLIT4 | — |
 | `map(tx,ty,sx,sy,tw,th)` + `camera` | タイルブロックの即時描画 | **面 A / B** (スクロール = `tx*8 - sx + camera`)。3 回目以降は BLIT4 | あり |
 | `mget/mset/fget/fset` | VM の RAM | VM 側のまま。ダーティ行だけ `VRAM_WRITE` で面のマップへ | — |
@@ -147,7 +147,6 @@ LCD が 800x480 なら、VDP に 400x240 を足して Kessel にも `Wide400` �
 | K4 | VDP: ライトマップ。Kessel: セル単位の光 | `rogue` `sokoban` `dnb` `piano` `popn` |
 | K5 | 音: FPGA の I2S + PCM FIFO、RP2350 のシンセ、ハードスプライトの `actor` API | 全部、音付き |
 
-K1 の VDP 側は E4.5 (pre_E5_review.md、これから書く) と並行できる (どちらも合成器とコマンドの追加で、ぶつからない)。
 
 ## K1 の結果 (VDP 側)
 
