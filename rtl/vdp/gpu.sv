@@ -45,7 +45,8 @@
 //                   22: BITMAP_FMT (1bit、0 = RGB565、1 = 8bpp。描くコマンドにはすぐ、表示には次のラインから効く)、
 //                   23: AUDIO_CTRL ([0] 音を出す、[1] に 1 を書くと PCM_RD と UNDERRUN と先読みを空にする)、24: PCM_BASE (13bit、PCM のリングの
 //                   SDRAM の先頭、256 ワード単位。既定 0x1FE0)、25: PCM_SIZE (4bit、リングは 1 << n ワード。既定 11)、26: PCM_WR (16bit、ホストが書いた標本の数)。
-//                   音のレジスタはすぐ効く (ラインに合わせない)。音の動き方は audio_out.sv
+//                   音のレジスタはすぐ効く (ラインに合わせない)。音の動き方は audio_out.sv。
+//                   32..50: Mode 7 と霧のレジスタ (E7)。line_compositor が持つ (意味は line_compositor.sv と mode7_layer.sv)
 //                   どれも既定 0 (LAYER_CTRL と BITMAP_RANK は 1、SPR_LINE_PX は 320)
 //   0x0A WAIT_LINE  [7:0] ライン n。以降の REG_WRITE がライン n から効くところ (ライン n-1 の合成が始まったところ) まで待つ
 //   0x0B WAIT_VBLANK  WAIT_LINE 0 と同じ (以降の REG_WRITE が次のフレームのライン 0 から効く)。
@@ -135,6 +136,10 @@ module gpu #(
     output logic [12:0] pcm_base,
     output logic [3:0]  pcm_size,
     output logic [15:0] pcm_wr,
+    // E7 のレジスタ (REG_WRITE 32..50。line_compositor が持つ。xreg_idx = 番号 - 32)
+    output logic        xreg_we,
+    output logic [4:0]  xreg_idx,
+    output logic [15:0] xreg_data,
     // VRAM・パレット・OAM の書き込み (line_compositor へ。OAM は vram_waddr[7:0] と vram_wdata を使う)
     output logic        vram_we,
     output logic [13:0] vram_waddr,
@@ -477,6 +482,7 @@ module gpu #(
             bitmap_fmt  <= 1'b0;
             audio_en    <= 1'b0;
             audio_clear <= 1'b0;
+            xreg_we     <= 1'b0;
             pcm_base    <= 13'h1FE0;
             pcm_size    <= 4'd11;
             pcm_wr      <= '0;
@@ -510,6 +516,7 @@ module gpu #(
             oam_we   <= 1'b0;
             light_we <= 1'b0;
             audio_clear <= 1'b0;
+            xreg_we  <= 1'b0;
             if (flush) rd_ptr <= wr_ptr;
             if (re && addr == A_STATUS) error <= 1'b0;
 
@@ -685,7 +692,16 @@ module gpu #(
                                 8'd24: pcm_base       <= color[12:0];
                                 8'd25: pcm_size       <= color[3:0];
                                 8'd26: pcm_wr         <= color;
-                                default: error <= 1'b1;
+                                default: begin
+                                    // 32..50: E7 (Mode 7 と霧) のレジスタ
+                                    if (flags_raw >= 8'd32 && flags_raw <= 8'd50) begin
+                                        xreg_we   <= 1'b1;
+                                        xreg_idx  <= 5'(flags_raw - 8'd32);
+                                        xreg_data <= color;
+                                    end else begin
+                                        error <= 1'b1;
+                                    end
+                                end
                             endcase
                         end
                         OP_VRAM_WRITE, OP_OAM_WRITE, OP_LIGHT_WRITE: begin

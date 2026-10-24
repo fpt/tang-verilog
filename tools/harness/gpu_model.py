@@ -34,6 +34,8 @@ rtl/vdp/gpu.sv と同じ規則でコマンドを解釈し、表示される面�
       {"op": "vram_write", "addr": 0, "words": ["deadbeef", ...]},     # VRAM (ワードアドレス、16K ワードで折り返す)
       {"op": "pal_write", "index": 0, "colors": ["#rrggbb", ...]},      # パレット (0..511)
       {"op": "tiles", "kind": "demo", "addr": 0},                        # 下の tile_words (タイル 16 個 = 128 ワード)
+      {"op": "m7_tiles", "addr": 4096},          # Mode 7 のタイル 256 個 (8bpp、4096 ワード。下の m7_tile_words)
+      {"op": "m7_map", "addr": 0, "kind": "track"},   # Mode 7 のマップ 128 x 128 (4096 ワード。下の m7_map_words)
       {"op": "tilemap", "kind": "demo", "addr": 14336, "w": 32, "h": 28},  # 下の map_entries
       {"op": "palette", "kind": "demo", "index": 0, "count": 64, "offset": 0},  # 下の palette_colors
       {"op": "oam_write", "addr": 0, "words": ["deadbeef", ...]},      # OAM (ワードアドレス、256 ワードで折り返す)
@@ -64,20 +66,33 @@ LAYER_REGS = {"bg_color": 0, "layer_ctrl": 1, "bitmap_key": 2, "tile_scroll_x": 
               "spr_pat_base": 9, "spr_bank": 10, "spr_line_px": 11,
               "tileb_scroll_x": 12, "tileb_scroll_y": 13, "tileb_map_base": 14, "tileb_pat_base": 15, "tileb_ctrl": 16,
               "win_h": 17, "win_v": 18, "win_map_base": 19, "hscroll_mode": 20, "hscroll_base": 21,
-              "bitmap_fmt": 22, "audio_ctrl": 23, "pcm_base": 24, "pcm_size": 25, "pcm_wr": 26}
+              "bitmap_fmt": 22, "audio_ctrl": 23, "pcm_base": 24, "pcm_size": 25, "pcm_wr": 26,
+              "m7_sel": 32, "m7_ctrl": 33, "m7_a": 34, "m7_b": 35, "m7_c": 36, "m7_d": 37,
+              "m7_x0": 38, "m7_y0": 39, "m7_hofs": 40, "m7_vofs": 41, "m7_map_base": 42, "m7_pat_base": 43,
+              "m7_tbl_base": 44, "m7_sx": 45, "m7_sy": 46,
+              "line_mul": 47, "line_add": 48, "line_fx_ctrl": 49, "line_fx_base": 50}
 LAYER_MASK = {"bg_color": 0xFFFF, "layer_ctrl": 0x3F, "bitmap_key": 0xFFFF, "tile_scroll_x": 0x3FF, "tile_scroll_y": 0x3FF,
               "tile_map_base": 0x3FFF, "tile_pat_base": 0x3FFF, "tile_ctrl": 0xFF, "bitmap_rank": 0x7,
               "spr_pat_base": 0x3FFF, "spr_bank": 0xF, "spr_line_px": 0x3FF,
               "tileb_scroll_x": 0x3FF, "tileb_scroll_y": 0x3FF, "tileb_map_base": 0x3FFF, "tileb_pat_base": 0x3FFF,
               "tileb_ctrl": 0xFF, "win_h": 0x9F, "win_v": 0x9F, "win_map_base": 0x3FFF, "hscroll_mode": 0x3,
               "hscroll_base": 0x3FFF, "bitmap_fmt": 0x1, "audio_ctrl": 0x3, "pcm_base": 0x1FFF, "pcm_size": 0xF,
-              "pcm_wr": 0xFFFF}
+              "pcm_wr": 0xFFFF,
+              "m7_sel": 0xC3, "m7_ctrl": 0xF, "m7_a": 0xFFFF, "m7_b": 0xFFFF, "m7_c": 0xFFFF, "m7_d": 0xFFFF,
+              "m7_x0": 0x1FFF, "m7_y0": 0x1FFF, "m7_hofs": 0x1FFF, "m7_vofs": 0x1FFF, "m7_map_base": 0x3FFF,
+              "m7_pat_base": 0x3FFF, "m7_tbl_base": 0x3FFF, "m7_sx": 0x3FF, "m7_sy": 0x1FF,
+              "line_mul": 0x7FFF, "line_add": 0xFFFF, "line_fx_ctrl": 0x1, "line_fx_base": 0x3FFF}
 LAYER_RESET = {"bg_color": 0x0000, "layer_ctrl": 0x01, "bitmap_key": 0x0000, "tile_scroll_x": 0, "tile_scroll_y": 0,
                "tile_map_base": 0, "tile_pat_base": 0, "tile_ctrl": 0, "bitmap_rank": 1,
                "spr_pat_base": 0, "spr_bank": 0, "spr_line_px": 320,
                "tileb_scroll_x": 0, "tileb_scroll_y": 0, "tileb_map_base": 0, "tileb_pat_base": 0, "tileb_ctrl": 0,
                "win_h": 0, "win_v": 0, "win_map_base": 0, "hscroll_mode": 0, "hscroll_base": 0, "bitmap_fmt": 0,
-               "audio_ctrl": 0, "pcm_base": 0x1FE0, "pcm_size": 11, "pcm_wr": 0}
+               "audio_ctrl": 0, "pcm_base": 0x1FE0, "pcm_size": 11, "pcm_wr": 0,
+               "m7_sel": 0, "m7_ctrl": 0, "m7_a": 0x100, "m7_b": 0, "m7_c": 0, "m7_d": 0x100,
+               "m7_x0": 0, "m7_y0": 0, "m7_hofs": 0, "m7_vofs": 0, "m7_map_base": 0, "m7_pat_base": 0,
+               "m7_tbl_base": 0, "m7_sx": 0, "m7_sy": 0,
+               "line_mul": 0x4210, "line_add": 0, "line_fx_ctrl": 0, "line_fx_base": 0}
+# Mode 7 (m7_*) と霧 (line_*) は E7 (rtl/vdp/mode7_layer.sv、line_compositor.sv)。
 # 音のレジスタ (audio_ctrl 〜 pcm_wr) は画に効かない。参照モデルは値を持つだけ (音は audio_out.sv と harness.py audio で確かめる)
 # 合成の順位 (line_compositor.sv): 0 背景色、面 B は優先度ビットで 1 か 4、面 A (とウィンドウ) は 2 か 5、スプライトは 3 か 6、
 # ビットマップは bitmap_rank
@@ -172,6 +187,10 @@ def encode(step):
         return pal_write_words(step["index"], [color565(c) for c in step["colors"]])
     if op == "tiles":
         return vram_write_words(step["addr"], tile_words(step["kind"]))
+    if op == "m7_tiles":
+        return vram_write_words(step["addr"], m7_tile_words())
+    if op == "m7_map":
+        return vram_write_words(step["addr"], m7_map_words(step.get("kind", "track")))
     if op == "tilemap":
         return vram_write_words(step["addr"], map_words(map_entries(step["kind"], step["w"], step["h"])))
     if op == "palette":
@@ -213,6 +232,22 @@ def lit(c, cell):
     """line_compositor.sv と同じ: RGB565 の各色に倍率 (16 = 1 倍) を掛けて >> 4、最大値で切る"""
     r, g, b = cell
     return (min(31, (c >> 11) * r >> 4) << 11 | min(63, (c >> 5 & 63) * g >> 4) << 5 | min(31, (c & 31) * b >> 4))
+
+
+def add565(c, k):
+    """line_compositor.sv と同じ: RGB565 の各色に足して最大値で切る (霧の LINE_ADD)"""
+    return (min(31, (c >> 11) + (k >> 11)) << 11 | min(63, (c >> 5 & 63) + (k >> 5 & 63)) << 5
+            | min(31, (c & 31) + (k & 31)))
+
+
+def sext(v, bits):
+    v &= (1 << bits) - 1
+    return v - (1 << bits) if v >> (bits - 1) else v
+
+
+def m7_clip(n):
+    """bsnes と同じ: 14bit の差を 11bit の符号付きに"""
+    return (n | ~1023) if n & 0x2000 else (n & 1023)
 
 
 def oam_write_words(addr, words):
@@ -348,6 +383,46 @@ def map_entries(kind, w, h):
                 raise ValueError(f"unknown tilemap {kind!r}")
             out.append(tile | hflip << 11 | vflip << 12 | pal << 13 | (r % 2) << 15)
     return out
+
+
+def m7_tile_words():
+    """Mode 7 のタイル 256 個 (8bpp、タイル t は 16 ワード)。中は色 t、上と左の縁は t ^ 0x80、t % 5 == 0 のタイルはところどころ 0 (透明)。
+    t % 7 == 0 のタイルには 0x80 (EXTBG なら [6:0] が 0 で透明) の点がある"""
+    words = []
+    for t in range(256):
+        for y in range(8):
+            for x4 in range(2):
+                w = 0
+                for k in range(4):
+                    x = 4 * x4 + k
+                    v = t ^ 0x80 if x == 0 or y == 0 else t
+                    if t % 5 == 0 and (x + y + t) % 6 == 0:
+                        v = 0
+                    elif t % 7 == 0 and (x * y) % 5 == 1:
+                        v = 0x80
+                    w |= v << 8 * k
+                words.append(w)
+    return words
+
+
+def m7_map_words(kind):
+    """Mode 7 のマップ 128 x 128 セル (1 セル 1 バイト、1 ワードに 4 セル)。track: 帯と市松とまばらな印"""
+    cells = []
+    for cy in range(128):
+        for cx in range(128):
+            if kind == "track":
+                if abs(cx - 64) < 6:
+                    t = 200 + (cy % 8)                 # 道
+                elif (cx // 8 + cy // 8) % 2:
+                    t = 16 + (cx * 5 + cy * 3) % 40
+                else:
+                    t = 100 + (cx ^ cy) % 50
+                if cx % 32 == 0 or cy % 32 == 0:
+                    t = 1 + (cx + cy) % 8
+            else:
+                t = (cx * 7 + cy * 11) & 0xFF
+            cells.append(t)
+    return [sum(cells[4 * i + k] << 8 * k for k in range(4)) for i in range(len(cells) // 4)]
 
 
 def map_words(entries):
@@ -777,7 +852,14 @@ class Model:
                     rank = RANK_B_HI if t[1] else RANK_B_LO
                     if rank > line[x][0]:
                         line[x] = (rank, t[0])
-        if ctrl & 4:
+        m7 = self.m7_regs(regs, y)
+        if ctrl & 4 and m7:
+            for x, t in enumerate(self.mode7_line(y, regs, m7)):
+                if t is not None:
+                    rank = RANK_A_HI if t[1] else RANK_A_LO
+                    if rank > line[x][0]:
+                        line[x] = (rank, t[0])
+        elif ctrl & 4:
             win = [self.in_window(regs, x, y) for x in range(SRC_W)]
             passes = [("a", False)] + ([("w", True)] if any(win) else [])
             for which, inside in passes:
@@ -809,12 +891,79 @@ class Model:
                     if not (ctrl & 2 and p == key) and rank > line[2 * x + k][0]:
                         line[2 * x + k] = (rank, p)
         out = [bg if r == 0 else c for r, c in line]
-        if ctrl & 32:                             # ライトマップ (K4): 背景色にも掛かる
+        mul, add = regs["line_mul"], regs["line_add"]
+        if regs["line_fx_ctrl"] & 1:             # 霧の表 (E7): {LINE_ADD, LINE_MUL}
+            w = self.vram_word(regs["line_fx_base"] + y)
+            mul, add = w & 0x7FFF, w >> 16
+        lmul = (mul & 31, mul >> 5 & 31, mul >> 10 & 31)
+        if ctrl & 32 or lmul != (16, 16, 16) or add:
+            # ライトマップ (K4、背景色にも掛かる) と霧 (E7): L_eff = min(63, (L_cell * L_line) >> 4)、lit のあとに LINE_ADD
             for x in range(SRC_W):
-                cell = self.light.get(y // 8 * LIGHT_W + x // 8)
-                if cell is None:
-                    raise ValueError(f"lightmap cell ({x // 8},{y // 8}) is unwritten")
-                out[x] = lit(out[x], cell)
+                cell = (16, 16, 16)
+                if ctrl & 32:
+                    cell = self.light.get(y // 8 * LIGHT_W + x // 8)
+                    if cell is None:
+                        raise ValueError(f"lightmap cell ({x // 8},{y // 8}) is unwritten")
+                eff = tuple(min(63, c * m >> 4) for c, m in zip(cell, lmul))
+                out[x] = add565(lit(out[x], eff), add)
+        return out
+
+    def m7_regs(self, regs, y):
+        """line_compositor.sv と同じ: Mode 7 が有効なら、このラインの行列 (表から読んだもの込み)。無効なら None"""
+        ctrl = regs["m7_ctrl"]
+        if not ctrl & 1:
+            return None
+        a, b, c, d = regs["m7_a"], regs["m7_b"], regs["m7_c"], regs["m7_d"]
+        tab, base, z = ctrl >> 2 & 3, regs["m7_tbl_base"], None
+        if tab == 1:
+            w0, w1 = self.vram_word(base + 2 * y), self.vram_word(base + 2 * y + 1)
+            a, b, c, d = w0 & 0xFFFF, w0 >> 16, w1 & 0xFFFF, w1 >> 16
+        elif tab == 2:
+            z = self.vram_word(base + y) & 0xFFFF
+        if z is not None:                         # 遠近: a = cos、b = sin (1.14)
+            ea = sext(z * sext(a, 16) >> 14, 16)
+            eb = sext(z * sext(b, 16) >> 14, 16)
+            a, b, c, d = ea, eb, sext(-eb, 16), ea
+        else:
+            a, b, c, d = sext(a, 16), sext(b, 16), sext(c, 16), sext(d, 16)
+        return a, b, c, d
+
+    def vbyte(self, byte_addr):
+        return self.vram_word(byte_addr >> 2) >> 8 * (byte_addr & 3) & 0xFF
+
+    def mode7_line(self, y, regs, m):
+        """mode7_layer.sv と同じ (bsnes の式): ライン y の (色, 優先度) のリスト、透明なピクセルは None"""
+        a, b, c, d = m
+        sel, extbg = regs["m7_sel"], regs["m7_ctrl"] >> 1 & 1
+        hflip, vflip, over = sel & 1, sel >> 1 & 1, sel >> 6 & 3
+        x0, y0 = sext(regs["m7_x0"], 13), sext(regs["m7_y0"], 13)
+        h = m7_clip(sext(regs["m7_hofs"], 13) - x0)
+        v = m7_clip(sext(regs["m7_vofs"], 13) - y0)
+        yy = y - sext(regs["m7_sy"], 9)
+        if vflip:
+            yy = 255 - yy
+        sx = sext(regs["m7_sx"], 10)
+        xs = 255 + sx if hflip else -sx
+        ox = ((a * h) & ~63) + ((b * v) & ~63) + ((b * yy) & ~63) + (x0 << 8)
+        oy = ((c * h) & ~63) + ((d * v) & ~63) + ((d * yy) & ~63) + (y0 << 8)
+        mb, pb = regs["m7_map_base"] * 4, regs["m7_pat_base"] * 4
+        out = []
+        for i in range(SRC_W):
+            xx = xs - i if hflip else xs + i
+            px, py = (ox + a * xx) >> 8, (oy + c * xx) >> 8
+            oob = (px | py) & ~1023
+            if oob and over == 2:
+                out.append(None)
+                continue
+            t = 0 if oob and over == 3 else self.vbyte((mb + ((py >> 3) & 127) * 128 + ((px >> 3) & 127)) & 0xFFFF)
+            pix = self.vbyte((pb + t * 64 + (py & 7) * 8 + (px & 7)) & 0xFFFF)
+            idx = pix & 127 if extbg else pix
+            if idx == 0:
+                out.append(None)
+                continue
+            if idx not in self.pal:
+                raise ValueError(f"mode 7 uses unwritten palette entry {idx}")
+            out.append((self.pal[idx], pix >> 7 if extbg else 0))
         return out
 
     def displayed565(self):

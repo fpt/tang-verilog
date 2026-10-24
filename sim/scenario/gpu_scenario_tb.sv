@@ -60,6 +60,9 @@ module gpu_scenario_tb;
     logic        bitmap_fmt;
     logic [5:0]  layer_ctrl;
     logic        light_we;
+    logic        xreg_we;           // E7 のレジスタ (gpu -> line_compositor)
+    logic [4:0]  xreg_idx;
+    logic [15:0] xreg_data;
     logic [9:0]  tileb_scroll_x, tileb_scroll_y;
     logic [13:0] tileb_map_base, tileb_pat_base, win_map_base, hs_base;
     logic [7:0]  tileb_ctrl;
@@ -84,7 +87,7 @@ module gpu_scenario_tb;
         .clk_sys, .rst_sys(rst), .fb_base, .base_latched,
         .bg_color, .layer_ctrl, .bitmap_key, .bitmap_rank, .bitmap_fmt, .mark_req, .mark_toggle, .line_start, .line_num,
         .tile_scroll_x, .tile_scroll_y, .tile_map_base, .tile_pat_base, .tile_ctrl,
-        .spr_pat_base, .spr_bank, .spr_line_cols, .oam_we, .light_we,
+        .spr_pat_base, .spr_bank, .spr_line_cols, .oam_we, .light_we, .xreg_we, .xreg_idx, .xreg_data,
         .tileb_scroll_x, .tileb_scroll_y, .tileb_map_base, .tileb_pat_base, .tileb_ctrl, .win_h, .win_v, .win_map_base, .hs_mode, .hs_base,
         .vram_we, .vram_waddr, .vram_wdata, .pal_we, .pal_waddr, .pal_wdata,
         .mem_req(fb_req), .mem_addr(fb_addr), .mem_len(fb_len), .mem_ack(fb_ack),
@@ -106,7 +109,7 @@ module gpu_scenario_tb;
         .fb_base, .base_latched,
         .bg_color, .layer_ctrl, .bitmap_key, .bitmap_rank, .bitmap_fmt, .mark_req, .line_start, .line_num, .ready(gpu_ready),
         .tile_scroll_x, .tile_scroll_y, .tile_map_base, .tile_pat_base, .tile_ctrl,
-        .spr_pat_base, .spr_bank, .spr_line_cols, .oam_we, .light_we,
+        .spr_pat_base, .spr_bank, .spr_line_cols, .oam_we, .light_we, .xreg_we, .xreg_idx, .xreg_data,
         .tileb_scroll_x, .tileb_scroll_y, .tileb_map_base, .tileb_pat_base, .tileb_ctrl, .win_h, .win_v, .win_map_base, .hs_mode, .hs_base,
         .vram_we, .vram_waddr, .vram_wdata, .pal_we, .pal_waddr, .pal_wdata,
         .audio_en, .audio_clear, .pcm_base, .pcm_size, .pcm_wr

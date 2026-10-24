@@ -22,7 +22,8 @@ usage: harness.py [--port PORT] <command> [args...]
                             アニメーションを止め、FRAME_CRC を参照 (make render FREEZE=1 の frames.json) と比べ、
                             HDMI キャプチャも参照画像と比べる。キャプチャと差分画像を --out に保存
   fps <file.json> [--frames N]
-                            {"setup", "frame"} の frame を N 回くり返して速さを測る (fps、表示フレーム / 描画フレーム、UNDERFLOW)
+                            {"setup", "frame"} の frame を N 回くり返して速さを測る (fps、表示フレーム / 描画フレーム、UNDERFLOW)。
+                            "frames": [[...], ...] ならフレームごとに順に使う
   demo [--frames N] [--start K]
                             M9 のデモ (demo.py) を流す。N フレーム (0 なら Ctrl-C まで)。速さ・表示フレーム / 描画フレーム・UNDERFLOW
   scenario <file.json> [--no-capture]
@@ -576,11 +577,12 @@ def scenario(bridge, path, do_capture, out_dir):
 
 def fps(bridge, path, frames):
     """{"setup": [...], "frame": [...]} の frame (SWAP で終わる) を frames 回くり返し、速さを測る。
-    SWAP は表示がフレームの先頭で取り込むまで待つので、間に合っていれば 60 フレーム / 秒 (表示 1 フレームに 1 回の SWAP) になる"""
+    SWAP は表示がフレームの先頭で取り込むまで待つので、間に合っていれば 60 フレーム / 秒 (表示 1 フレームに 1 回の SWAP) になる。
+    "frame" の代わりに "frames": [[...], [...], ...] なら、フレームごとに順に使う (回る道路など、毎フレーム中身が変わるもの)"""
     import gpu_model
     sc = gpu_model.load(path)
     setup = [w for st in sc["setup"] for w in gpu_model.encode(st)]
-    frame = [w for st in sc["frame"] for w in gpu_model.encode(st)]
+    seq = [[w for st in fr for w in gpu_model.encode(st)] for fr in (sc["frames"] if "frames" in sc else [sc["frame"]])]
     vdp = Vdp(bridge)
     gpu = Gpu(vdp)
     control = vdp.read1(REGS["CONTROL"])
@@ -597,8 +599,8 @@ def fps(bridge, path, frames):
         under0 = vdp.read1(REGS["UNDERFLOW"])
         _, f0 = read_crc(vdp)
         start = time.monotonic()
-        for _ in range(frames):
-            gpu.send(frame)
+        for k in range(frames):
+            gpu.send(seq[k % len(seq)])
         st = gpu.wait_idle(timeout=20)
         elapsed = time.monotonic() - start
         _, f1 = read_crc(vdp)
@@ -608,7 +610,7 @@ def fps(bridge, path, frames):
         vdp.write(REGS["CONTROL"], [control])
     shown = (f1 - f0) & 0xFFFF
     return {"ok": under == 0 and not st & (GPU_ST_ERROR | GPU_ST_OVERFLOW), "scenario": sc["name"], "frames": frames,
-            "words_per_frame": len(frame), "seconds": round(elapsed, 2), "fps": round(frames / elapsed, 1),
+            "words_per_frame": max(len(f) for f in seq), "seconds": round(elapsed, 2), "fps": round(frames / elapsed, 1),
             "display_frames_per_drawn_frame": round(shown / frames, 2), "underflow": under, "gpu_status": st}
 
 

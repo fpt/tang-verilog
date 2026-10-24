@@ -124,6 +124,7 @@ lint:
 	$(FPGA) verilator --lint-only -Wall --top-module tile_layer $(VDP_SRC)
 	$(FPGA) verilator --lint-only -Wall --top-module sprite_layer $(VDP_SRC)
 	$(FPGA) verilator --lint-only -Wall --top-module audio_out $(VDP_SRC)
+	$(FPGA) verilator --lint-only -Wall --top-module mode7_layer $(VDP_SRC)
 	$(FPGA) verilator --lint-only -Wall --top-module gpu $(VDP_SRC)
 
 sim: $(addprefix sim-,$(TBS))
