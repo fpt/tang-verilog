@@ -5,8 +5,8 @@ M9 までのハーネスで使わなかった線 (ERROR、LED0〜5、OLED) は�
 **40 ピン RGB LCD、I2S (MAX98357A)、HDMI のピンは使わない**ので、ハーネスのまま LCD と音を出せる。
 
 - ホスト: Waveshare RP2350-PiZero (RP2350B、Pi 互換 40 ピンヘッダ、BCM 番号 = GPIO 番号)。PSRAM は APS6404L-3SQR-ZR を自分で実装、CS は GPIO 47
-- 回路図: [`harness/kicad/rp2350-pizero-tang-harness.kicad_sch`](../harness/kicad/rp2350-pizero-tang-harness.kicad_sch)
-- 配線表: [`harness/pins_v2.json`](../harness/pins_v2.json) (v1 と同じ形式。信号名も v1 に合わせてあるので `gen_pins_h.py` がそのまま使える)
+- 回路図: [`harness/kicad/v2/rp2350-pizero-tang-harness.kicad_sch`](../harness/kicad/v2/rp2350-pizero-tang-harness.kicad_sch)
+- 配線表: [`harness/kicad/v2/pins_v2.json`](../harness/kicad/v2/pins_v2.json) (v1 と同じ形式。信号名も v1 に合わせてあるので `gen_pins_h.py` がそのまま使える)
 
 ## 1. 配線表 (13 本 + GND)
 
@@ -21,11 +21,11 @@ M9 までのハーネスで使わなかった線 (ERROR、LED0〜5、OLED) は�
 | COPI | P → F | GPIO11 (SPI1 TX) | 23 | 19 | LED4 | |
 | CIPO | F → P | GPIO8 (SPI1 RX) | 24 | 75 | BL616 MISO | v1 で実績 |
 | CS | P → F | GPIO9 | 21 | 86 | BL616 SPI_DIR | v1 で実績。正論理、10k プルダウン (R6) |
-| IRQ (/READY) | F → P | GPIO20 | 38 | 85 | SD D1、10k プルアップ | v1 と同じ意味 (CONTROL bit4 で READY)。未コンフィグ時 High |
+| IRQ (/READY) | F → P | GPIO20 | 38 | 85 | SD D1、10k プルアップ | v1 と同じ意味 (CONTROL bit4 で READY)。未コンフィグ時 High (2 章) |
 | VSYNC | F → P | GPIO22 | 15 | 16 | LED1 / LCD YD (LCD_INIT1) | JP2 (既定 閉) |
 | HEARTBEAT | F → P | GPIO23 | 16 | 15 | LED0 / LCD XR (LCD_INIT0) | JP3 (既定 閉) |
 | RESET | P → F | GPIO21 | 40 | 79 | WS2812 DIN | 10k プルダウン (R7) |
-| GND | | | 6, 9, 14, 20, 25, 30, 34, 39 | GND | | リボンでは各 HSTX 線の隣に 1 本 |
+| GND | | | 6, 9, 14, 20, 25, 30, 34, 39 | GND | | 隣り合う線は 2 章 |
 | 5V (任意) | Tang → Pi | | 2 または 4 | 5V | | JP1 + SS14 (D1)。2 章 |
 
 **HSTX のビット割り当て** (RP2350 側の設定): bit0 = D0, bit1 = D1, bit7 = D2, bit4 = D3, bit2 = CLK。HSTX はどのビットをどの GPIO に出すか自由なので、
@@ -41,14 +41,24 @@ M9 までのハーネスで使わなかった線 (ERROR、LED0〜5、OLED) は�
   オンボードの DVI は GPIO 41〜46 と 6/7 (PIO のビットバング) で、HSTX とは独立 (回路図の読み。届いたらヘッダの GPIO 12〜19 と HDMI 側の抵抗が導通していないことを確認)
 - **正論理のまま** (v1 と同じ)。CS と RESET に外付け 10k プルダウン (RP2350-E9 の内蔵プルダウンの不具合を避ける)
 - **IRQ と READY は 1 本** (v1 と同じく CONTROL bit4 で切り替え)。HSTX は片方向なので VBLANK のタイミングは VSYNC の線で取る
-- **VSYNC / HEARTBEAT は LCD_INIT0/1 と共有**。ST7701 系のパネル (SPI 初期化にこの線を使う) のときだけ JP2/JP3 を開ける。選び方は HEARTBEAT が ready 判定に必須なので、
-  そのときは HEARTBEAT を SPI の ID レジスタのポーリングに置き換える
+- **VSYNC / HEARTBEAT は LCD の XR / YD (LCD_INIT0/1) と共有**。FPGA の 15〜18 は LCD の XR / YD / XL / YU (LCD_INIT) につながっていて、
+  ハーネスが使うのは 15 と 16 だけ (17 / 18 は使わない)。ST7701 系のパネル (SPI 初期化にこの線を使う) のときだけ JP2/JP3 を開ける。
+  開けると HEARTBEAT が来なくなる。HEARTBEAT は FPGA が動いているかの判定 (2 章の READY) に使っているので、そのときは代わりに SPI で ID レジスタをポーリングする
 
 ## 2. 電気的な注意
 
 - 全部 3.3V。レベル変換なし
 - HSTX の 5 本は RP2350 側に直列 33R (R1〜R5)。最初 33R、波形を見て 0〜47R。15cm 程度のリボンまでなら 37.5MHz DDR で問題ない見込み。
-  各 HSTX 線の隣に GND を 1 本置く (Pi ヘッダの GND は 34, 39 がデータの隣、6, 9 がクロックの隣)。75MHz DDR に上げるときは基板化する
+  75MHz DDR に上げるときは基板化する
+- **隣り合う線**: 40 芯のリボンでは隣の線はピン番号 ±1 (ヘッダの物理的な隣とは違う)。今の割り当てでは
+  - CLK (8): 7 と 9。9 が GND
+  - D1 (33)、D2 (35): 34 の GND を挟む
+  - D0 (32): 31 (GPIO 6、使わない) と 33 (D1)。D3 (36): 35 (D2) と 37 (GPIO 26、使わない)。**隣に GND がない**
+  - 39 の GND は IRQ (38) と RESET (40) の隣で、データの隣ではない
+
+  37.5MHz DDR・15cm なら、D0 / D3 の隣は何もつながない線 (31、37) なので許容とする。ジャンパワイヤで配線するときは、HSTX の各線に GND の線を 1 本ずつ撚り合わせる
+- **IRQ / READY は FPGA が未コンフィグのとき High** (85 の SD のプルアップ)。正論理なので「READY」に見える。ファームウェアは HEARTBEAT のトグル
+  (JP3 を開けているときは SPI の ID レジスタ = `0x5A`) を確かめてからでないと IRQ / READY を信じない。リセット直後とビットストリームの書き込み中も同じ
 - 85 と 80 の 10k プルアップ、19/20 の LED は RP2350 の出力でそのまま駆動できる
 - 電源: 最初は **GND だけ共通にして USB を 2 本**挿す。Tang の 5V → JP1 → SS14 → ヘッダ 5V は、PiZero のヘッダ 5V が VBUS か VSYS (ダイオードと充電 IC の後) かを回路図で確かめてから閉じる。3V3 同士はつながない
 - PSRAM: APS6404L-3SQR-ZR、CS = GPIO 47。SDK の `psram` 初期化に 47 を渡す。QMI のクロックは 133MHz 以下
