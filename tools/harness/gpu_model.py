@@ -33,7 +33,8 @@ rtl/vdp/gpu.sv と同じ規則でコマンドを解釈し、表示される面�
       {"op": "palette", "kind": "demo", "index": 0, "count": 64, "offset": 0},  # 下の palette_colors
       {"op": "oam_write", "addr": 0, "words": ["deadbeef", ...]},      # OAM (ワードアドレス、256 ワードで折り返す)
       {"op": "oam", "sprites": [{"x": -4, "y": 10, "w": 2, "h": 1, "tile": 3, "hflip": false, "vflip": false,
-                                 "pal": 0, "pri": 0, "order": 0}, ...]}  # OAM 全体 (書かなかったエントリは無効)
+                                 "pal": 0, "pri": 0, "order": 0, "bank": 0}, ...]}  # OAM 全体 (書かなかったエントリは無効)。
+                                                 # order: 0 列優先、1 16 タイル幅の表、2 行優先。bank: スプライトごとのバンク (spr_bank bit3 のとき)
       {"op": "demo_setup"}, {"op": "demo_frame", "frame": 120, "mark": true}   # M9 のデモ (demo.py) のコマンド
       {"op": "md_frame", "variant": 0, "mark": true}   # メガドラの形式の決まったフレーム (md.py) を直したもの。印付きの 1 フレーム
   ]}
@@ -59,7 +60,7 @@ LAYER_REGS = {"bg_color": 0, "layer_ctrl": 1, "bitmap_key": 2, "tile_scroll_x": 
               "bitmap_fmt": 22}
 LAYER_MASK = {"bg_color": 0xFFFF, "layer_ctrl": 0x1F, "bitmap_key": 0xFFFF, "tile_scroll_x": 0x3FF, "tile_scroll_y": 0x3FF,
               "tile_map_base": 0x3FFF, "tile_pat_base": 0x3FFF, "tile_ctrl": 0xFF, "bitmap_rank": 0x7,
-              "spr_pat_base": 0x3FFF, "spr_bank": 0x7, "spr_line_px": 0x3FF,
+              "spr_pat_base": 0x3FFF, "spr_bank": 0xF, "spr_line_px": 0x3FF,
               "tileb_scroll_x": 0x3FF, "tileb_scroll_y": 0x3FF, "tileb_map_base": 0x3FFF, "tileb_pat_base": 0x3FFF,
               "tileb_ctrl": 0xFF, "win_h": 0x9F, "win_v": 0x9F, "win_map_base": 0x3FFF, "hscroll_mode": 0x3,
               "hscroll_base": 0x3FFF, "bitmap_fmt": 0x1}
@@ -180,10 +181,11 @@ def oam_write_words(addr, words):
 
 def oam_entry(sp):
     """スプライト 1 つ (辞書) を OAM の 2 ワードに (sprite_layer.sv の形式)"""
-    w0 = (sp["x"] & 0x3FF | (sp["y"] & 0x3FF) << 16 | (sp.get("w", 1) - 1) << 26 | (sp.get("h", 1) - 1) << 28
-          | (1 if sp.get("order") else 0) << 30 | (0 if sp.get("enable", True) is False else 1) << 31)
+    order = int(sp.get("order", 0))        # True / False も 1 / 0 として受ける
+    w0 = (sp["x"] & 0x3FF | (order >> 1 & 1) << 10 | (sp["y"] & 0x3FF) << 16 | (sp.get("w", 1) - 1) << 26
+          | (sp.get("h", 1) - 1) << 28 | (order & 1) << 30 | (0 if sp.get("enable", True) is False else 1) << 31)
     w1 = (sp.get("tile", 0) & 0x7FF | (1 if sp.get("hflip") else 0) << 11 | (1 if sp.get("vflip") else 0) << 12
-          | (sp.get("pal", 0) & 3) << 13 | (1 if sp.get("pri") else 0) << 15)
+          | (sp.get("pal", 0) & 3) << 13 | (1 if sp.get("pri") else 0) << 15 | (sp.get("bank", 0) & 15) << 16)
     return [w0, w1]
 
 
@@ -630,14 +632,14 @@ class Model:
 
     def sprite_line(self, y, regs):
         """sprite_layer.sv と同じ: ライン y に出るスプライトのピクセル (x, 色, 優先度) を出す順に。
-        OAM の順、ラインの上限は spr_line_px // 8 列 (画面の外の列も数える)"""
+        OAM の順、ラインの上限は spr_line_px // 8 列 (画面の外の列も数える)。spr_bank bit3 ならパレットはスプライトごとのバンク"""
         cols = regs["spr_line_px"] >> 3
         bank = regs["spr_bank"]
         out = []
         for n in range(128):
             w0 = self.oam_word(2 * n)
             sx, sy = s10(w0), s10(w0 >> 16)
-            w, h, order = (w0 >> 26 & 3) + 1, (w0 >> 28 & 3) + 1, w0 >> 30 & 1
+            w, h, order = (w0 >> 26 & 3) + 1, (w0 >> 28 & 3) + 1, (w0 >> 30 & 1) | (w0 >> 10 & 1) << 1
             dy = y - sy
             if not (w0 >> 31 and 0 <= dy < h * 8):
                 continue
@@ -649,16 +651,18 @@ class Model:
                     return out
                 cols -= 1
                 sc = w - 1 - col if hflip else col
-                if order:
+                if order == 1:
                     tile = ((first >> 4) + ry // 8) % 128 << 4 | (first + sc) % 16
-                else:
+                elif order == 0:
                     tile = (first + sc * h + ry // 8) % 2048
+                else:                               # 2 (と予約の 3): 行優先
+                    tile = (first + (ry // 8) * w + sc) % 2048
                 row = self.vram_word(regs["spr_pat_base"] + tile * 8 + ry % 8)
                 for k in range(8):
                     x = sx + col * 8 + k
                     nib = row >> (28 - 4 * (7 - k if hflip else k)) & 15
                     if 0 <= x < SRC_W and nib:
-                        pi = bank << 6 | pal << 4 | nib
+                        pi = (w1 >> 16 & 15) << 4 | nib if bank & 8 else (bank & 7) << 6 | pal << 4 | nib
                         if pi not in self.pal:
                             raise ValueError(f"sprites use unwritten palette entry {pi}")
                         out.append((x, self.pal[pi], pri))

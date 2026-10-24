@@ -38,7 +38,7 @@
 //                   0: BG_COLOR, 1: LAYER_CTRL, 2: BITMAP_KEY, 3: TILE_SCROLL_X (10bit), 4: TILE_SCROLL_Y (10bit),
 //                   5: TILE_MAP_BASE (VRAM のワードアドレス, 14bit), 6: TILE_PAT_BASE (同じ), 7: TILE_CTRL (8bit) (3〜7 は面 A),
 //                   8: BITMAP_RANK (3bit、合成の順位。line_compositor.sv)、9: SPR_PAT_BASE (VRAM のワードアドレス, 14bit)、
-//                   10: SPR_BANK (3bit、スプライトのパレットのバンク)、11: SPR_LINE_PX (10bit、1 ラインのスプライトのピクセル数の上限。
+//                   10: SPR_BANK (4bit。[2:0] スプライトのパレットのバンク、[3] スプライトごとのバンク (OAM ワード 1 の [19:16]) を使う)、11: SPR_LINE_PX (10bit、1 ラインのスプライトのピクセル数の上限。
 //                   8 の倍数に切り捨て。sprite_layer.sv)、12〜16: 面 B の TILEB_SCROLL_X / TILEB_SCROLL_Y / TILEB_MAP_BASE /
 //                   TILEB_PAT_BASE / TILEB_CTRL (面 A と同じ形)、17: WIN_H ([7] 右, [4:0] 位置 x 16 ピクセル)、
 //                   18: WIN_V ([7] 下, [4:0] 位置 x 8 ライン)、19: WIN_MAP_BASE、20: HSCROLL_MODE (2bit)、21: HSCROLL_BASE (14bit)、
@@ -113,7 +113,7 @@ module gpu #(
     output logic [1:0]  hs_mode,
     output logic [13:0] hs_base,
     output logic [13:0] spr_pat_base,
-    output logic [2:0]  spr_bank,
+    output logic [3:0]  spr_bank,
     output logic [6:0]  spr_line_cols,   // SPR_LINE_PX / 8
     // VRAM・パレット・OAM の書き込み (line_compositor へ。OAM は vram_waddr[7:0] と vram_wdata を使う)
     output logic        vram_we,
@@ -536,7 +536,7 @@ module gpu #(
                                 8'd7: tile_ctrl     <= color[7:0];
                                 8'd8: bitmap_rank   <= color[2:0];
                                 8'd9: spr_pat_base  <= color[13:0];
-                                8'd10: spr_bank     <= color[2:0];
+                                8'd10: spr_bank     <= color[3:0];
                                 8'd11: spr_line_cols <= color[9:3];
                                 8'd12: tileb_scroll_x <= color[9:0];
                                 8'd13: tileb_scroll_y <= color[9:0];

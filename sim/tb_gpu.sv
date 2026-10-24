@@ -22,7 +22,8 @@ module tb_gpu;
     logic [7:0]  tileb_ctrl;
     logic [5:0]  win_h, win_v;
     logic [1:0]  hs_mode;
-    logic [2:0]  bitmap_rank, spr_bank;
+    logic [2:0]  bitmap_rank;
+    logic [3:0]  spr_bank;
     logic        bitmap_fmt;
     logic [13:0] spr_pat_base;
     logic [6:0]  spr_line_cols;
@@ -593,7 +594,7 @@ module tb_gpu;
         end
         cmd(32'h0909_FFFF); cmd(32'h090A_FFFD); cmd(32'h090B_FC0F);      // 上限 15 ピクセル -> 1 列 (上位の bit は捨てる)
         wait_idle();
-        if (spr_pat_base !== 14'h3FFF || spr_bank !== 3'd5 || spr_line_cols !== 7'd1) begin
+        if (spr_pat_base !== 14'h3FFF || spr_bank !== 4'd13 || spr_line_cols !== 7'd1) begin
             $display("  sprite REG_WRITE: %h %h %0d", spr_pat_base, spr_bank, spr_line_cols); errors++;
         end
         cmd(32'h0909_0000); cmd(32'h090A_0000); cmd(32'h090B_0140);

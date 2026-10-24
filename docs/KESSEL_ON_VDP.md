@@ -24,7 +24,7 @@ VDP の現状は [EMU_GPU_PLAN.md](EMU_GPU_PLAN.md) (E4 まで)、[GPU_PLAN.md](
 | `pset` `hline` `vline` `rect` | 即時描画 | `POINT` `DRAW_LINE` `FILL_RECT` (8bpp 版) | ✅ K1 |
 | `clip()` 相当、Square240 の額縁 | 描く範囲 | `CLIP` (`0x07`、M6 からある) | あり |
 | `spr(id,x,y,flags)` 4bpp + `sprbank` | 即時描画 | **BLIT4** (4bpp ソース + バンク → 8bpp 宛先、透過 = 0) | ✅ K1 |
-| `sprn` (w x h タイル、`id + row*w + col`) | 多タイル | BLIT4 をタイルごとに、またはハードスプライトのセル順 2 | 要追加 (4 章) |
+| `sprn` (w x h タイル、`id + row*w + col`) | 多タイル | BLIT4 をタイルごとに、またはハードスプライトのセル順 2 | ✅ K2 (4 章) |
 | `spr_scaled` (8.8 固定、最近傍) | 拡大縮小 | `STRETCH_BLIT` (4bpp ソース) | 未着手 ([GPU_PLAN.md](GPU_PLAN.md) の「`STRETCH_BLIT` の設計」) |
 | `sspr(addr,…)` | メモリ上の生タイル | SDRAM に置いて BLIT4 | — |
 | `map(tx,ty,sx,sy,tw,th)` + `camera` | タイルブロックの即時描画 | **面 A / B** (スクロール = `tx*8 - sx + camera`)。3 回目以降は BLIT4 | あり |
@@ -38,9 +38,9 @@ VDP の現状は [EMU_GPU_PLAN.md](EMU_GPU_PLAN.md) (E4 まで)、[GPU_PLAN.md](
 色モデル: ビットマップの 8bpp インデックス = パレット 0..255。BLIT4 は `bank*16 + nibble` (バンク 4bit) なので同じ 0..255 に届く。
 `nibble 0 = 透過` も VDP と同じ。
 
-**ハードスプライトはこのままでは 256 色に届かない**。今の `sprite_layer` のパレットの番号は `{SPR_BANK (3bit), エントリのパレット (2bit), nibble}` で、
-1 つのスプライトから使えるのは SPR_BANK の 64 色 (Kessel のバンク 4 つ分) だけ。OAM の word1 `[31:16]` が空いているので、
-**word1 `[19:16]` にスプライトごとのバンク 4bit** を置き、`{0, bank (4bit), nibble}` にするモードを足す (`SPR_BANK` の上位ビットか別のビットで切り替え。数 LUT)。
+**ハードスプライトも 256 色に届く (K2)**。前からのモードのパレットの番号は `{SPR_BANK[2:0], エントリのパレット (2bit), nibble}` で、
+1 つのスプライトから使えるのは SPR_BANK の 64 色 (Kessel のバンク 4 つ分) だけ。`SPR_BANK[3]` = 1 にすると、
+**OAM の word1 `[19:16]` のスプライトごとのバンク 4bit** で `{0, bank, nibble}` (0..255) になる。`sprbank` の値をそのまま OAM に書けばよい。
 
 ## 2. VDP 側: 8bpp ビットマップレイヤ
 
@@ -91,10 +91,9 @@ Kessel は全部がペインターズオーダー。VDP はレイヤの順が固
 ## 4. スプライトシートの並び
 
 - Kessel の `sprn` は `id + row*w + col` (幅 w で行優先)。VDP のセル順は 0 = 列優先 (メガドラ)、1 = 16 タイル幅の表 (SNES)
-- 選択肢: (a) コンパイラが多タイルスプライトを 16 タイル幅のグリッドに置く、(b) VDP に **セル順 2 = 行優先・ストライド w** を足す (`addr = base + row*w + col`、数十 LUT)
-- (b) を勧める。シートの id 体系が変わらず、`sprn(id, x, y, w, h, flags)` の生の形がそのまま OAM のエントリになる
-- ビットは足りる: OAM の word0 は `[9:0]` x、`[25:16]` y、`[29:26]` 大きさ、`[30]` セル順、`[31]` 有効で、`[15:10]` が空いている。
-  `[10]` をセル順の 2 ビット目にする (`{[10], [30]}` = 0 列優先、1 SNES、2 行優先・ストライド w)
+- VDP に **セル順 2 = 行優先・ストライド w** を足した (K2)。タイル = `先頭 + row*w + col`。シートの id 体系が変わらず、
+  `sprn(id, x, y, w, h, flags)` の生の形がそのまま OAM のエントリになる (`先頭 = id`、`w`、`h`、反転、`sprbank` → word1 `[19:16]`)
+- セル順は OAM の word0 の `{[10], [30]}` (0 列優先、1 SNES、2 行優先)
 - VDP の 1〜4 x 1〜4 タイルの上限は Kessel 側にも書く (それより大きい `sprn` は BLIT4 に落ちる)
 
 ## 5. ライティング: セル単位のライトマップ
@@ -142,7 +141,7 @@ LCD が 800x480 なら、VDP に 400x240 を足して Kessel にも `Wide400` �
 | # | 内容 | 動くようになるゲーム |
 |---|---|---|
 | K1 | VDP ✅: 8bpp ビットマップ (透過色のインデックス)、`CLEAR` / `FILL_RECT` / `DRAW_LINE` / `POINT` / `BLIT` の 8bpp 版、BLIT4。Kessel: スクリーンの trait 化と VDP バックエンド (即時描画のみ、`map` も BLIT4) | `paint` `snake` `brick` `2048` `swarm` |
-| K2 | Kessel: 深さ 3 段の規則、`map` → 面 A/B、`camera`、フォント。VDP: セル順 2、スプライトごとのバンク 4bit | `platform` `shooter` `spectrum` |
+| K2 | Kessel: 深さ 3 段の規則、`map` → 面 A/B、`camera`、フォント。VDP ✅: セル順 2、スプライトごとのバンク 4bit | `platform` `shooter` `spectrum` |
 | K3 | VDP: `STRETCH_BLIT` (4bpp ソース) | `outrun` `tetris` `sokoban` (光なし) |
 | K4 | VDP: ライトマップ。Kessel: セル単位の光 | `rogue` `sokoban` `dnb` `piano` `popn` |
 | K5 | 音: FPGA の I2S + PCM FIFO、RP2350 のシンセ、ハードスプライトの `actor` API | 全部、音付き |
@@ -164,3 +163,16 @@ LCD が 800x480 なら、VDP に 400x240 を足して Kessel にも `Wide400` �
 - 資源 (E4 → K1): LUT4 6,636 → 7,496、DFF 3,009 → 3,055、BSRAM 40 → 41 / 46。Fmax clk_sys 99MHz、clk_pix 87MHz (目標 63 / 25.2MHz)。
   LUT の増分の多くは BLIT の取り出し (64bit の窓から 4 ピクセル) と矩形のマスクの一般化
 - ついでに直したもの: Icarus Verilog が E4 の `line_compositor.sv` (enum の三項演算子) を読めなくなっていたので if に書き換えた
+
+## K2 の結果 (VDP 側)
+
+- **セル順 2 (行優先)**: OAM の word0 `{[10], [30]}` = 2 で、スプライトの中の行 r・列 c のタイルは `先頭 + r x 幅 + c` (3 は予約で、今は 2 と同じ)。
+  Kessel の `sprn(id, x, y, w, h, flags)` はそのまま `先頭 = id` の OAM のエントリになる
+- **スプライトごとのバンク**: `SPR_BANK` を 4bit にし、`[3]` = 1 のときはパレットの番号が `{0, word1[19:16], ピクセル}` (0..255)。
+  8bpp のビットマップ・BLIT4 と同じ番号なので、Kessel の `sprbank` をそのまま書けばよい。モードは全スプライト共通で、ラインごとに切り替えられる
+- 検証: シナリオ `k2_sprites` (8bpp + 面 A の上に、行優先・半端な大きさ・反転・スプライトごとのバンク 16 個のスプライト 36 個 /
+  同じ OAM を前からのバンクと列優先・表で / ライン 120 でモードを切り替える印付きフレーム) が モデル = Verilator = 実機。前からのシナリオ 13 個も 3 通り一致。
+  `tb_sprite_layer` は OAM の乱数にセル順の上位ビットとバンクを入れ、スプライトごとのバンクの掃引を足した (行優先の式やバンクを壊すと落ちることを確かめた)
+- 実機: selftest 通過、`fps m7_fps` 59.8、`demo` 59.8 fps。1 ラインの合成の最長は前と同じ 2,057 クロック、k2 は 1,327
+- 資源 (K1 → K2): LUT4 7,496 → 7,435、DFF 3,055 → 3,062、BSRAM 41 → 41 / 46。Fmax clk_sys 96MHz、clk_pix 86MHz (目標 63 / 25.2MHz)。
+  論理の増分は数十 LUT で、LUT の減りは配置・合成のばらつき

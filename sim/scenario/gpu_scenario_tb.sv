@@ -69,7 +69,7 @@ module gpu_scenario_tb;
     logic [13:0] tile_map_base, tile_pat_base, vram_waddr;
     logic [7:0]  tile_ctrl;
     logic [13:0] spr_pat_base;
-    logic [2:0]  spr_bank;
+    logic [3:0]  spr_bank;
     logic [6:0]  spr_line_cols;
     logic        oam_we;
     logic        vram_we, pal_we;
