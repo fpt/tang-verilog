@@ -144,7 +144,8 @@ LCD が 800x480 なら、VDP に 400x240 を足して Kessel にも `Wide400` �
 | K2 | Kessel: 深さ 3 段の規則、`map` → 面 A/B、`camera`、フォント。VDP ✅: セル順 2、スプライトごとのバンク 4bit | `platform` `shooter` `spectrum` |
 | K3 | VDP ✅: `STRETCH_BLIT` (4bpp ソース) | `outrun` `tetris` `sokoban` (光なし) |
 | K4 | VDP ✅: ライトマップ。Kessel: セル単位の光 | `rogue` `sokoban` `dnb` `piano` `popn` |
-| K5 | 音: FPGA の I2S + PCM FIFO、RP2350 のシンセ、ハードスプライトの `actor` API | 全部、音付き |
+| K5a | VDP ✅: I2S + SDRAM の PCM のリング。ホスト: 1 フレーム分の PCM | 全部、音付き |
+| K5b | Kessel: ハードスプライトの `actor` API (VDP の変更なし) | `shooter` 系 |
 
 
 ## K1 の結果 (VDP 側)
@@ -211,3 +212,30 @@ LCD が 800x480 なら、VDP に 400x240 を足して Kessel にも `Wide400` �
 - 資源 (K3 → K4): LUT4 8,434 → 8,636 (+202)、DFF 3,515 → 3,522、BSRAM 42 → 44 / 46。乗算 6 個 (1 クロックに 2 ピクセル x 3 色) は LUT で組まれた (DSP は使っていない)。
   Fmax clk_sys 93MHz、clk_pix 115MHz (目標 63 / 25.2MHz)。5 章の見積もり (LUT 500〜800、BSRAM 2) より少ない
 - 残りの BSRAM は 2 個。K5 の PCM の FIFO (1 個) で 45 / 46 になる
+
+## K5a の結果 (音)
+
+- **出力**: 基板の MAX98357A に I2S (PA_EN 51、DIN 54、WS 55、BCK 56。Sipeed の `audio` の例と同じ)。54〜56 は SSPI と兼用なので、
+  nextpnr に `--vopt sspi_as_gpio`、gowin_pack に `--sspi_as_gpio` を渡す (書き込みは JTAG、起動は MSPI なので SSPI は使っていない)
+- **形式と時間**: 48kHz・ステレオ 16bit、BCLK = 32 fs = 1.536MHz。`clk_sys` (63MHz) から累算器 (+128 mod 2625) で作り、映像と同じ PLL なので
+  **映像 1 フレームにちょうど 800 標本**。ホストは 1 フレームに 800 標本足せばよく、時計のずれを気にしなくてよい
+- **PCM は SDRAM のリング** (pre_K5_review の 1): 既定は SDRAM の最後の 32KiB、2048 標本。アービタに「表示の次」の 1 ワードの読み出しの口を足した。
+  BSRAM は増えない (44 / 46 のまま)
+- **ホストとの約束**: `UPLOAD` でリングに書き、`REG_WRITE 26 PCM_WR` で書いた数を進める (FIFO の順なのでデータが入ってから進む)。
+  `PCM_RD` (0x50) と `UNDERRUN` (0x52) を読める。`AUDIO_CTRL` (23) で開始・停止・空にする。詳しくは SPECIFICATION.md の 12 章
+- 検証:
+  - `tb_audio_out`: SDRAM の代わり (返すまで 2〜60 クロック) と 16 標本のリングで、標本の順・左右・WS の位置・リングの折り返し・
+    使い切ったあとの無音と `UNDERRUN`・BCLK の周期 (41 か 42 クロック)・64 標本がちょうど 84,000 クロック (= 48kHz)・clear を確かめる (左右を入れ替えると落ちる)
+  - シナリオ `k5_audio`: 音を出したまま (リングをくり返し読む) k3_stretch と m9_demo の check を流す。CRC はそれぞれと同じ、表示の読み出しの待ちは 348 クロックのまま、
+    Verilator で 11,917 標本をアンダーランなしで鳴らした。前からのシナリオ 16 個も 3 通り一致
+  - 実機 `harness.py audio --seconds 600 --ring 13 --lead 6000` (750Hz、リングに 1 回書いて `PCM_WR` を進める): **10 分でアンダーラン 0、47,999.9Hz**、
+    PCM_RD の読み違い 0。ホストが PCM_RD を読む間隔は最大 45ms
+  - 先回り 1,600 標本 (33ms) では 10 分のうちにアンダーランが出た。macOS のホスト (Python + USB) が 45ms 止まることがあるためで、VDP の側ではない
+    (同じ時間で再生の速さは 47,997.5Hz、読み違い 0)。RP2350 のホストは止まらないが、先回りは「ホストが止まりうる最長時間 + 1 フレーム」にする
+  - **見つけて直した不具合**: `PCM_RD` の 2 バイトがずれることがあった。spi_slave は rdata を取り込んだ次のクロックに re を出すので、
+    re のクロックで上位を取っておくと、その 1 クロックで下位から繰り上がったとき 256 ずれる (10 分で数回。ホストの数えが 65,536 狂う)。
+    1 クロック前の値を取っておくように直し、`tb_audio_out` に spi_slave と同じ順で読む確かめを足した (前の作りでは落ちる)。
+    同じ作りの `FRAME_CRC` (0x05〜0x08) と `CRC_FRAME` も同じように直した (フレームの境目に当たると、下位のバイトだけ前のフレームになりえた)
+- **ハーネス v1 で流しきれないもの**: 毎回 `UPLOAD` する流し方 (`--stream`) は 192KB/s 要るが、USB → RP2040 → SPI のブリッジは約 180KB/s で、
+  毎秒 3,000 標本ほど足りずに途切れる (再生側は正しい。先回りを置いたループでは 0)。本番の RP2350 は SPI を直接駆動するか HSTX なので足りる
+- 資源 (K4 → K5a): LUT4 8,636 → 8,965、DFF 3,522 → 3,746、BSRAM 44 → 44 / 46。Fmax clk_sys 85MHz、clk_pix 249MHz (目標 63 / 25.2MHz)

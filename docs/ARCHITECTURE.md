@@ -29,7 +29,8 @@ RP2 ──SPI──► spi_slave ──► register bus ──┬─► vdp_regs
                                                          + 8bpp のビットマップ (パレット 0..255)         ✅ K1
                                                          + ライトマップ (8x8 のセルごとの RGB の倍率)     ✅ K4
                                                          を順位付きの作業ラインで合成 → 320x240 を 640x480 で表示) ✅ E2.5
-                          │           (表示 > GPU > メモリテスト)
+                          │◄── audio_out (SDRAM の PCM のリング → I2S → 基板のアンプ、48kHz)            ✅ K5a
+                          │           (表示 > 音 > GPU > メモリテスト)
                  パッケージ内 SDRAM 8MiB
 ```
 
@@ -103,7 +104,7 @@ GW2AR-18 のパッケージ内 SDRAM (64Mbit、2M ワード x 32bit、4 バン�
 - パッケージのピンではないので、cst の `IO_LOC` には apicula の [doc/sdram.md](https://github.com/YosysHQ/apicula/blob/master/doc/sdram.md) にある内部 I/O の名前 (`IOR11B` など) を書く。nextpnr-himbaechel と gowin_pack はこれでそのまま通る
 - コントローラ ([`sdram_ctrl.sv`](../rtl/vdp/sdram_ctrl.sv)): CL2。読み書きとも同じ行の中のバースト。書き込みはワードごとのバイトマスク (DQM) 付きで、
   奇数の x で始まる / 終わる矩形の端も読み‐修正‐書きなしで書ける。
-  利用者は [`sdram_arb.sv`](../rtl/vdp/sdram_arb.sv) で調停する (表示 > GPU > メモリテスト)。GPU のバーストは 64 ワードまでなので、
+  利用者は [`sdram_arb.sv`](../rtl/vdp/sdram_arb.sv) で調停する (表示 > 音 > GPU > メモリテスト)。GPU のバーストは 64 ワードまでなので、
   表示の読み出しが待たされても最大約 5.6us (締め切りは 63.5us。Verilator のシナリオで測る)
 - 読み出しデータを取り込む位置は半周期単位で変えられる (`MEM_CFG`、既定 5)。SDRAM クロックの位相も約 1ns 刻みで変えられ (`MEM_CLK`、既定 0)、
   既定のまま前後に 3〜4ns の余裕がある (GPU_PLAN.md の「M5 の前に: SDRAM クロックの位相」)

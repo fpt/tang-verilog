@@ -660,6 +660,98 @@ def demo(bridge, frames, start):
             "underflow": under, "gpu_status": st}
 
 
+AUDIO = {"PCM_RD": 0x50, "UNDERRUN": 0x52}     # audio_out.sv (読み出しだけ)
+
+
+def audio(bridge, seconds, tone, stream=False, ring_log2=11, target=1600):
+    """K5a: 正弦波 (tone Hz、左右同じ) を SDRAM の PCM のリングに流し続け、アンダーランが 0 で、再生がちょうど 48kHz で進むことを確かめる。
+    ホストは PCM_RD を読み、先回りが target 標本より少なくなったら PCM_WR を進める。
+      stream=True: 足す分を毎回 UPLOAD してから REG_WRITE PCM_WR (FIFO の順なので UPLOAD のあとに効く)。48kHz x 4 バイト = 192KB/s 要るが、
+                   ハーネス v1 (USB → RP2040 → SPI) は 180KB/s ほどしか通らないので途切れる (本番の RP2350 は SPI / HSTX を直接駆動する)
+      stream=False (既定): 周期がリングの大きさを割り切る音 (例: 750Hz = 64 標本) をリングに 1 回だけ書き、あとは PCM_WR を進めるだけ。
+                   ホストの数え方 (PCM_RD / PCM_WR) と再生の速さ・途切れを、リンクの速さに関係なく長時間確かめる"""
+    import math
+    import gpu_model as g
+    vdp = Vdp(bridge)
+    gpu = Gpu(vdp)
+    base = g.LAYER_RESET["pcm_base"] * 256           # 既定の場所 (SDRAM の最後の 32KiB)
+    mask = (1 << ring_log2) - 1
+
+    def reg(name, v):
+        return g.OP_REG_WRITE << 24 | g.LAYER_REGS[name] << 16 | (v & g.LAYER_MASK[name])
+
+    def sample(k):
+        v = int(round(8000 * math.sin(2 * math.pi * tone * k / 48000))) & 0xFFFF
+        return v << 16 | v
+
+    if not stream and (48000 / tone) % 1 or not stream and (mask + 1) % round(48000 / tone):
+        raise HarnessError(f"--tone {tone}: the period must divide the {mask + 1}-sample ring (e.g. 750, 1500) unless --stream")
+
+    def put(wr, n):
+        """標本 wr .. wr + n - 1 をリングへ (折り返すところで 2 つに分ける) し、PCM_WR を wr + n に。
+        stream でなければリングはもう正しいので PCM_WR だけ"""
+        if not stream:
+            gpu.send([reg("pcm_wr", (wr + n) & 0xFFFF)])
+            return
+        out, k = [], wr
+        while k < wr + n:
+            m = min(wr + n - k, mask + 1 - (k & mask))
+            out += [g.OP_UPLOAD << 24 | m, base + (k & mask)] + [sample(j) for j in range(k, k + m)]
+            k += m
+        gpu.send(out + [reg("pcm_wr", (wr + n) & 0xFFFF)])
+
+    def rd():
+        return int.from_bytes(vdp.read(AUDIO["PCM_RD"], 2), "little")
+
+    bridge.command("freq 8000000")
+    try:
+        gpu.flush()
+        gpu.wait_idle()
+        gpu.send([reg("audio_ctrl", 2), reg("pcm_base", base >> 8), reg("pcm_size", ring_log2), reg("pcm_wr", 0)])
+        wr = 0
+        if not stream:
+            gpu.send([g.OP_UPLOAD << 24 | (mask + 1), base] + [sample(j) for j in range(mask + 1)])
+        put(wr, target)
+        wr += target
+        gpu.send([reg("audio_ctrl", 1)])
+        gpu.wait_idle()
+        t0 = time.monotonic()
+        r0 = last = rd()
+        played, min_fill, sends = 0, target, 0
+        bad_reads, max_gap, t_last = 0, 0.0, time.monotonic()
+        while time.monotonic() - t0 < seconds:
+            r = rd()
+            now = time.monotonic()
+            max_gap = max(max_gap, now - t_last)       # ホストが PCM_RD を読む間隔の最大 (先回り target / 48kHz より長いと途切れる)
+            t_last = now
+            step = (r - last) & 0xFFFF
+            if step > 4096:              # 前の読みから数ミリ秒で 4096 標本 (85ms 分) は進まない: 読み違い。数えずに読み直す
+                bad_reads += 1
+                continue
+            played += step
+            last = r
+            fill = (wr - (r0 + played)) & 0xFFFF
+            min_fill = min(min_fill, fill)
+            if fill < target:
+                n = target - fill
+                put(wr, n)
+                wr += n
+                sends += 1
+            else:
+                time.sleep(0.002)
+        elapsed = time.monotonic() - t0
+        under = vdp.read1(AUDIO["UNDERRUN"])
+        gpu.send([reg("audio_ctrl", 0)])
+        st = gpu.wait_idle()
+    finally:
+        bridge.command("freq 1000000")
+    rate = played / elapsed
+    return {"ok": under == 0 and min_fill > 0 and bad_reads == 0 and abs(rate - 48000) < 48 and not st & (GPU_ST_ERROR | GPU_ST_OVERFLOW),
+            "seconds": round(elapsed, 1), "samples": played, "rate_hz": round(rate, 1), "underrun": under,
+            "min_fill": min_fill, "target_fill": target, "ring": mask + 1, "max_host_gap_ms": round(max_gap * 1000, 1),
+            "refills": sends, "bad_reads": bad_reads, "stream": stream, "tone_hz": tone, "gpu_status": st}
+
+
 def fb_show(vdp, slot, on):
     vdp.write(REGS["FB_BASE"], slot.to_bytes(2, "little"))
     control = vdp.read1(REGS["CONTROL"])
@@ -728,6 +820,11 @@ def main():
     ap.add_argument("--frames", type=int, default=120, help="fps / demo: number of frames (demo: 0 = until Ctrl-C)")
     ap.add_argument("--start", type=int, default=0, help="demo: first frame number")
     ap.add_argument("--keep", action="store_true", help="fbtest: leave the framebuffer displayed")
+    ap.add_argument("--seconds", type=float, default=10.0, help="audio: how long to play")
+    ap.add_argument("--tone", type=float, default=750.0, help="audio: sine frequency in Hz (without --stream its period must divide 2048)")
+    ap.add_argument("--ring", type=int, default=11, help="audio: log2 of the ring size in samples")
+    ap.add_argument("--lead", type=int, default=1600, help="audio: samples to keep queued ahead of playback")
+    ap.add_argument("--stream", action="store_true", help="audio: upload every refill (needs 192KB/s; harness v1 manages about 180)")
     ap.add_argument("--out", default=os.path.join(REPO, "build", "hw"), help="frametest: where to save capture/diff")
     ap.add_argument("command")
     ap.add_argument("args", nargs="*")
@@ -739,7 +836,7 @@ def main():
         # make の出力は標準エラーへ (標準出力は JSON だけにする)
         r = subprocess.run(["make", "prog", f"TARGET={a.args[0]}"], cwd=REPO, stdout=sys.stderr)
         result = {"ok": r.returncode == 0, "target": a.args[0]}
-    elif a.command in ("reg", "selftest", "memtest", "mem", "frametest", "fb", "fbtest", "scenario", "fps", "demo"):
+    elif a.command in ("reg", "selftest", "memtest", "mem", "frametest", "fb", "fbtest", "scenario", "fps", "demo", "audio"):
         bridge = Bridge(find_port(a.port))
         try:
             vdp = Vdp(bridge)
@@ -751,6 +848,8 @@ def main():
                 result = fps(bridge, a.args[0], a.frames)
             elif a.command == "demo":
                 result = demo(bridge, a.frames, a.start)
+            elif a.command == "audio":
+                result = audio(bridge, a.seconds, a.tone, a.stream, a.ring, a.lead)
             elif a.command == "scenario":
                 if len(a.args) != 1:
                     ap.error("scenario <scenarios/*.json>")

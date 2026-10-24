@@ -429,6 +429,7 @@ python3 tools/harness/harness.py prog hdmi       # make prog TARGET=hdmi (pinche
 | `fb upload [<png>] [--slot N]` / `fb show` / `fb off` | 320x240 の画像 (省略時はテスト画像) をフレームバッファへ / 表示の切り替え |
 | `scenario <scenarios/*.json> [--no-capture]` | シナリオを GPU に送り、check ごとに `FRAME_CRC` (とキャプチャ) を参照モデル (`gpu_model.py`) と比べる。`check_marked` は印を付けたフレームの `MARK_CRC` を比べる (キャプチャなし)。Verilator 側は `make scenario`。キャプチャは 95% 以上で合格 (正しさは CRC で決める) |
 | `fps <file.json> [--frames N]` | `{"setup", "frame"}` の frame (`SWAP` で終わる) を N 回くり返し、fps・表示フレーム / 描画フレーム・`UNDERFLOW` を測る |
+| `audio [--seconds S] [--tone HZ] [--stream]` | 音 (K5a): 正弦波を PCM のリングに流し、`PCM_RD` / `PCM_WR` で先回りを保ちながら、アンダーラン 0 と 48kHz を確かめる。既定はリングに 1 回書いて `PCM_WR` を進めるだけ (音の周期がリングを割り切る 750Hz など)。`--stream` は毎回 `UPLOAD` するが、192KB/s 要り、このハーネス (約 180KB/s) では途切れる |
 | `fbtest [<png>] [--slot N] [--keep] [--no-capture]` | アップロードして表示し、`FRAME_CRC`・`UNDERFLOW`・キャプチャを参照モデル (`fbmodel.py`) と比べる |
 | `prog <target>` | `make prog TARGET=<target>` |
 
