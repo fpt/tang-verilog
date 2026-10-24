@@ -20,7 +20,7 @@
     "pico_hstx_spare": {"17": 11, "18": 12},
     "pico_avoid": {"6": "PIO-USB D", "7": "PIO-USB D", "47": "PSRAM CS (ヘッダに出ていない)"},
     "fpga_lcd": [25, 26, 27, 28, 29, 30, 31, 41, 42, 48, 49, 77],
-    "fpga_lcd_init": [17, 18],
+    "fpga_lcd_init": [15, 16, 17, 18], "_lcd_init_note": "XR/YD/XL/YU。15/16 は HEARTBEAT/VSYNC と共有 (JP3/JP2)、17/18 は使わない",
     "fpga_i2s": [51, 54, 55, 56],
     "fpga_avoid": [52, 53, 76]
   },
