@@ -25,7 +25,7 @@ VDP の現状は [EMU_GPU_PLAN.md](EMU_GPU_PLAN.md) (E4 まで)、[GPU_PLAN.md](
 | `clip()` 相当、Square240 の額縁 | 描く範囲 | `CLIP` (`0x07`、M6 からある) | あり |
 | `spr(id,x,y,flags)` 4bpp + `sprbank` | 即時描画 | **BLIT4** (4bpp ソース + バンク → 8bpp 宛先、透過 = 0) | ✅ K1 |
 | `sprn` (w x h タイル、`id + row*w + col`) | 多タイル | BLIT4 をタイルごとに、またはハードスプライトのセル順 2 | ✅ K2 (4 章) |
-| `spr_scaled` (8.8 固定、最近傍) | 拡大縮小 | `STRETCH_BLIT` (4bpp ソース) | 未着手 ([GPU_PLAN.md](GPU_PLAN.md) の「`STRETCH_BLIT` の設計」) |
+| `spr_scaled` (8.8 固定、最近傍) | 拡大縮小 | `STRETCH_BLIT` (4bpp ソース) | ✅ K3 |
 | `sspr(addr,…)` | メモリ上の生タイル | SDRAM に置いて BLIT4 | — |
 | `map(tx,ty,sx,sy,tw,th)` + `camera` | タイルブロックの即時描画 | **面 A / B** (スクロール = `tx*8 - sx + camera`)。3 回目以降は BLIT4 | あり |
 | `mget/mset/fget/fset` | VM の RAM | VM 側のまま。ダーティ行だけ `VRAM_WRITE` で面のマップへ | — |
@@ -59,7 +59,7 @@ VDP の現状は [EMU_GPU_PLAN.md](EMU_GPU_PLAN.md) (E4 まで)、[GPU_PLAN.md](
   4bpp のソースの並びはタイルの 1 行と同じ (1 ワードに 8 ピクセル、ピクセル i は `[31-4i -: 4]`) なので、タイルのシートを SDRAM に置けばタイル t は
   `src = base + 8t`、stride 1 の 8x8 の BLIT4 になる。ソースは SDRAM だけ (VRAM は合成器の中にあり、描画エンジンからは読めない)
 - `STRETCH_BLIT` も 4bpp ソース版を主にする (Kessel の `spr_scaled` はシートのタイルを拡大する)
-- 塗り速度の目安 (63MHz): 全画面 `CLEAR` 約 20k クロック (0.3ms)、8x8 の BLIT4 1 個 約 100〜150 クロック、200 個で 0.5ms。全画面 `STRETCH_BLIT` 約 2.7ms
+- 塗り速度の目安 (63MHz): 全画面 `CLEAR` 約 20k クロック (0.3ms)、8x8 の BLIT4 1 個 約 100〜150 クロック、200 個で 0.5ms。全画面 `STRETCH_BLIT` 1.7ms (8bpp、実機。K3 の結果)
 - 資源: ビットマップのパスにパレット引きの段が 1 つ増えるだけ。BSRAM は増えない
 
 ## 3. Kessel 側: 描画の深さを 3 段にする
@@ -142,7 +142,7 @@ LCD が 800x480 なら、VDP に 400x240 を足して Kessel にも `Wide400` �
 |---|---|---|
 | K1 | VDP ✅: 8bpp ビットマップ (透過色のインデックス)、`CLEAR` / `FILL_RECT` / `DRAW_LINE` / `POINT` / `BLIT` の 8bpp 版、BLIT4。Kessel: スクリーンの trait 化と VDP バックエンド (即時描画のみ、`map` も BLIT4) | `paint` `snake` `brick` `2048` `swarm` |
 | K2 | Kessel: 深さ 3 段の規則、`map` → 面 A/B、`camera`、フォント。VDP ✅: セル順 2、スプライトごとのバンク 4bit | `platform` `shooter` `spectrum` |
-| K3 | VDP: `STRETCH_BLIT` (4bpp ソース) | `outrun` `tetris` `sokoban` (光なし) |
+| K3 | VDP ✅: `STRETCH_BLIT` (4bpp ソース) | `outrun` `tetris` `sokoban` (光なし) |
 | K4 | VDP: ライトマップ。Kessel: セル単位の光 | `rogue` `sokoban` `dnb` `piano` `popn` |
 | K5 | 音: FPGA の I2S + PCM FIFO、RP2350 のシンセ、ハードスプライトの `actor` API | 全部、音付き |
 
@@ -176,3 +176,23 @@ LCD が 800x480 なら、VDP に 400x240 を足して Kessel にも `Wide400` �
 - 実機: selftest 通過、`fps m7_fps` 59.8、`demo` 59.8 fps。1 ラインの合成の最長は前と同じ 2,057 クロック、k2 は 1,327
 - 資源 (K1 → K2): LUT4 7,496 → 7,435、DFF 3,055 → 3,062、BSRAM 41 → 41 / 46。Fmax clk_sys 96MHz、clk_pix 86MHz (目標 63 / 25.2MHz)。
   論理の増分は数十 LUT で、LUT の減りは配置・合成のばらつき
+
+## K3 の結果 (VDP 側)
+
+- `STRETCH_BLIT` (`0x0E`): 引数は `src`、`{dh, dw}`、`{y, x}`、`{sw, stride}`、`sx_step`、`sy_step` (16.16)。最近傍で、描くピクセル (i, j) は
+  ソースの `((step >> 1) + i * step) >> 16` を拾う (割り算はホスト)。反転・透過・クリップ・565 / 8bpp / 4bpp のソースは `BLIT` と同じ。描く大きさは 1024 まで
+- 作り: 描く 1 行ずつ、(1) ソースの行が変わったときだけ BLIT のライン バッファに読む、(2) 1 クロックに 1 ピクセル拾って描くワードを組み立て、
+  行バッファ (BSRAM 1 個、160 ワード x {透過の印 4bit, データ}) に置く、(3) その行をバーストで書く (透過の印とクリップの端はバイトマスク)。
+  クリップの外の行は読まない
+- `spr_scaled(id, x, y, scale)`: タイル t を `src = base + 8t`、stride 1、sw 8、`dw = dh = 8 x scale`、`step = 8 x 65536 / dw` の 4bpp の `STRETCH_BLIT`
+- 速さ (実機、`scenarios/k3_fps.json`): 8bpp の 160x120 → 320x240 が 1 回 1.7ms (200 回で 0.34 秒)
+- 検証: シナリオ `k3_stretch` (8bpp: 背景の全画面 2 倍、8x8 のタイルの 1〜5 倍、32x32 の 4bpp の輪の拡大・縮小・非整数倍・反転・透過・クリップ、
+  8bpp のソースの縮小 / RGB565: テスト画像の 1/2・拡大・反転、透過色のある玉) が モデル = Verilator = 実機。前からのシナリオ 14 個も 3 通り一致。
+  表示の読み出しの待ちは最大 348 クロックのまま。`tb_gpu` に 565 / 8bpp / 4bpp の STRETCH_BLIT (ワードの中の 4 つの位置、行をまたぐソース、上限のエラー) を足した
+  (拾う位置の半ピクセルのずらしを外すと落ちることを確かめた)
+- 実機: selftest 通過、`fps m7_fps` 60.1、`demo` 59.9 fps
+- 資源 (K2 → K3): LUT4 7,435 → 8,434、DFF 3,062 → 3,515、BSRAM 41 → 42 / 46。Fmax clk_sys 92MHz、clk_pix 92MHz (目標 63 / 25.2MHz)。
+  見積もり (300〜500 LUT) より多いのは、32bit の累算器 2 組と引数のレジスタ、行バッファへの組み立て (バイトごとの選択) の分
+- 合成の回避策: yosys が `STRETCH_BLIT` の累算器のレジスタと名前の付いたワイヤのあいだに `$buf` を残し、nextpnr が置けなかった (E4 の `tpass` と同じ現象)。
+  `bufnorm -conn` は SDRAM の IO の名前を変えてしまうので使えず、合成のあとに [`scripts/fix_netlist.py`](../scripts/fix_netlist.py) で
+  トップの `$buf` を接続に置き換える (ポートにつながるものはエラーにする)。`make synth` が毎回通す

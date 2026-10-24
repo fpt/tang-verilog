@@ -4,7 +4,8 @@
 // BLIT (偶数 / 奇数の位置、左右・上下反転、透過、画面の外、クリップ、SDRAM の行をまたぐソース)、
 // 合成のレジスタ (REG_WRITE)、WAIT_LINE / WAIT_VBLANK (印)、READY、VRAM_WRITE / PAL_WRITE とタイル レイヤのレジスタ (E2)、
 //   OAM_WRITE とスプライトのレジスタ (E3)、面 B・ウィンドウ・横スクロールの表のレジスタ (E4)、
-//   8bpp (K1: CLEAR / FILL_RECT / 線 / 点 / BLIT の 8bpp と 4bpp のソースを、ワードの中の 4 つの位置、反転、透過、クリップ、はみ出しで) を確認
+//   8bpp (K1: CLEAR / FILL_RECT / 線 / 点 / BLIT の 8bpp と 4bpp のソースを、ワードの中の 4 つの位置、反転、透過、クリップ、はみ出しで)、
+//   STRETCH_BLIT (K3: 拡大・縮小・非整数倍、反転、透過、クリップ、はみ出し、565 / 8bpp / 4bpp のソース、大きさの上限のエラー) を確認
 `timescale 1ns/1ps
 module tb_gpu;
     localparam int SRC_W = 320, SRC_H = 16, FIFO_WORDS = 16;
@@ -289,6 +290,36 @@ module tb_gpu;
             end
     endtask
 
+    // ソースの列・行がソースの大きさ (sw x 行数) に収まる step だけを使う (gpu.sv の約束)
+    // ---- STRETCH_BLIT: which 0 = 565 のソース 0 (src_px)、3 = 565 のソース 1、1 = 8bpp (src8_px)、2 = 4bpp (src4_px)。期待値は gpu.sv と同じ式 ----
+    task automatic stretch(input int which, input logic [20:0] a, input int stride, input int sw, input int dw, input int dh,
+                           input int bx, input int by, input logic [3:0] fl, input logic [3:0] bank,
+                           input logic [31:0] xs, input logic [31:0] ys);
+        logic [31:0] ax, ay;
+        logic [15:0] p, key;
+        logic [3:0]  nib;
+        int sx, sy, xd, yd;
+        bit tr;
+        key = (which == 0 || which == 3) ? KEY : (which == 1) ? {8'h00, KEY8} : {4'h0, bank, 8'h00};
+        cmd({8'h0E, 4'b0, fl, key}); cmd({11'b0, a}); cmd({16'(dh), 16'(dw)}); cmd({16'(by), 16'(bx)});
+        cmd({16'(sw), 16'(stride)}); cmd(xs); cmd(ys);
+        for (int j = 0; j < dh; j++) begin
+            ay = (ys >> 1) + 32'(j) * ys;
+            sy = int'(ay[31:16]);
+            yd = fl[2] ? by + dh - 1 - j : by + j;
+            for (int i = 0; i < dw; i++) begin
+                ax = (xs >> 1) + 32'(i) * xs;
+                sx = int'(ax[31:16]);
+                xd = fl[1] ? bx + dw - 1 - i : bx + i;
+                nib = src4_px(sx, sy);
+                p  = (which == 0) ? src_px(0, sx, sy) : (which == 3) ? src_px(1, sx, sy) :
+                     (which == 1) ? {8'h00, src8_px(sx, sy)} : {8'h00, bank, nib};
+                tr = fl[0] && ((which == 0 || which == 3) ? p == KEY : (which == 1) ? p[7:0] == KEY8 : nib == 0);
+                if (!tr && xd >= 0 && xd < SRC_W && yd >= 0 && yd < SRC_H) exp_plot(xd, yd, p);
+            end
+        end
+    endtask
+
     // +trace で GPU の BLIT の動きを表示する (調べもの用)
     bit trace = 0;
     bit blit_phase = 0;
@@ -465,6 +496,30 @@ module tb_gpu;
         wait_idle();
         check_all("BLIT with clip");
 
+        // ---- STRETCH_BLIT (K3)、RGB565: ソース 0 (7x5) を拡大 (2 倍、非整数倍)・縮小、反転、透過、クリップ、はみ出し ----
+        cmd(32'h0100_0421);
+        exp_clear(16'h0421);
+        stretch(0, 21'h30000, 4, 7, 14, 10, 3, 1, 4'b0000, 4'h0, 32'h0000_8000, 32'h0000_8000);     // 2 倍
+        stretch(0, 21'h30000, 4, 7, 23, 13, 20, 2, 4'b0001, 4'h0, 32'h0000_4E00, 32'h0000_6200);    // 非整数倍、透過
+        stretch(0, 21'h30000, 4, 7, 4, 3, 47, 3, 4'b0000, 4'h0, 32'h0001_C000, 32'h0001_A000);      // 縮小
+        stretch(0, 21'h30000, 4, 7, 17, 15, 54, 0, 4'b0110, 4'h0, 32'h0000_6800, 32'h0000_5600);    // 両方の反転
+        stretch(0, 21'h30000, 4, 7, 17, 15, 74, 1, 4'b0111, 4'h0, 32'h0000_6800, 32'h0000_5600);    // + 透過
+        stretch(0, 21'h30000, 4, 7, 30, 20, -9, -6, 4'b0011, 4'h0, 32'h0000_3B00, 32'h0000_4000);   // 左上にはみ出す
+        stretch(0, 21'h30000, 4, 7, 21, 21, 309, 9, 4'b0101, 4'h0, 32'h0000_5500, 32'h0000_3D00);   // 右下にはみ出す
+        stretch(0, 21'h30000, 4, 7, 1, 1, 101, 7, 4'b0000, 4'h0, 32'h0003_0000, 32'h0002_0000);     // 1 ピクセル
+        clip(120, 2, 133, 12);
+        stretch(0, 21'h30000, 4, 7, 40, 30, 111, -5, 4'b0010, 4'h0, 32'h0000_2CCD, 32'h0000_2AAB);  // クリップ
+        clip(0, 0, 319, 239);
+        stretch(3, 21'h200FA, 17, 34, 68, 6, 150, 1, 4'b0000, 4'h0, 32'h0000_8000, 32'h0000_8000);  // 行をまたぐソース (src_px 1 に合わせる)
+        wait_idle();
+        check_all("STRETCH_BLIT RGB565");
+        // 大きさの上限 (1024) を越えるとエラーで何も描かない
+        cmd({8'h0E, 8'h00, 16'h0}); cmd(32'h30000); cmd({16'd2, 16'd1025}); cmd(32'h0); cmd({16'd7, 16'd4}); cmd(32'h1000); cmd(32'h1000);
+        wait_idle();
+        rd_re(7'h40, d);
+        if (!d[1]) begin $display("  STRETCH_BLIT 1025 wide did not set error"); errors++; end
+        check_all("STRETCH_BLIT too wide draws nothing");
+
         // ---- 8bpp (K1) ----
         // RGB565 のときに 4bpp のソースを頼むとエラーで、何も描かない
         cmd({8'h08, 8'h08, 16'h0}); cmd(32'h30000); cmd({16'd5, 16'd7}); cmd({16'd0, 16'd0}); cmd(32'd4);
@@ -524,6 +579,20 @@ module tb_gpu;
         blit8(21'h30100, 2, 13, 6, 203, 2, 4'b1010, 4'h6);
         clip(0, 0, 319, 239);
         wait_idle(); check_all("8bpp / 4bpp BLIT clipped and across SDRAM rows");
+        // STRETCH_BLIT: 8bpp と 4bpp のソース (ワードの中の 4 つの位置、反転、透過、クリップ)
+        cmd(32'h0100_0003);
+        exp_clear(16'h0003);
+        for (int k = 0; k < 4; k++) begin
+            stretch(1, 21'h30000, 2, 7, 11 + k, 9, 5 + 30 * k + k, 0, 4'b0000, 4'h0, 32'h0000_8000, 32'h0000_9000);
+            stretch(1, 21'h30000, 2, 7, 19, 7, 150 + 40 * k + k, 0, 4'b0111, 4'h0, 32'h0000_5E00, 32'h0000_B400);
+            stretch(2, 21'h30100, 2, 13, 26 + k, 7, 5 + 40 * k + k, 8, 4'b1001, 4'h4 + 4'(k), 32'h0000_7000, 32'h0000_D800);
+            stretch(2, 21'h30100, 2, 13, 9, 9, 170 + 30 * k + k, 7, 4'b1110, 4'hC, 32'h0001_5000, 32'h0000_A800);
+        end
+        stretch(2, 21'h201FC, 9, 70, 35, 4, 290, 12, 4'b1011, 4'h9, 32'h0002_0000, 32'h0000_8000);   // 縮小、はみ出し、行をまたぐ
+        clip(60, 3, 66, 14);
+        stretch(1, 21'h30000, 2, 7, 30, 20, 50, -2, 4'b0001, 4'h0, 32'h0000_3800, 32'h0000_3000);
+        clip(0, 0, 319, 239);
+        wait_idle(); check_all("8bpp / 4bpp STRETCH_BLIT");
         rd_re(7'h40, d);
         if (d[1]) begin $display("  error after 8bpp commands"); errors++; end
         cmd(32'h0916_0000);

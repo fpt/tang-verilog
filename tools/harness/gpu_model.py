@@ -18,6 +18,9 @@ rtl/vdp/gpu.sv と同じ規則でコマンドを解釈し、表示される面�
        "transparent": true, "hflip": false, "vflip": false, "key": "#ff00ff"},
                                                  # 8bpp (bitmap_fmt = 1) のとき: "key" は番号 (0..255)、"src4": true で 4bpp のソース、
                                                  # "bank": 0..15 (4bpp の値の上位)
+      {"op": "stretch", "src": 196608, "stride": 8, "sw": 16, "w": 40, "h": 24, "x": 10, "y": 20,
+       "sx_step": 26214, "sy_step": 43690, ...},  # STRETCH_BLIT。step は 16.16 (省略すると sw / w と 1.0 から作る:
+                                                 # "sh" を書けば sh / h)。ほかのキーは blit と同じ
       {"op": "upload_image8", "slot": 512},      # 8bpp のテスト画像 (下の test_image8) を slot の面へ
       {"op": "upload_tiles", "kind": "sheet", "addr": 196608},   # tile_words を SDRAM に (4bpp の BLIT のソース。タイル t は addr + 8t、stride 1)
       {"op": "reg", "name": "bg_color", "value": "#rrggbb"},   # 合成のレジスタ (LAYER_REGS の名前)
@@ -50,7 +53,7 @@ SRC_W, SRC_H = fbmodel.SRC_W, fbmodel.SRC_H
 OP_NOP, OP_CLEAR, OP_FILL_RECT, OP_SWAP, OP_UPLOAD = 0x00, 0x01, 0x02, 0x03, 0x04
 OP_POINT, OP_DRAW_LINE, OP_CLIP, OP_BLIT = 0x05, 0x06, 0x07, 0x08
 OP_REG_WRITE, OP_WAIT_LINE, OP_WAIT_VBLANK = 0x09, 0x0A, 0x0B
-OP_VRAM_WRITE, OP_PAL_WRITE, OP_OAM_WRITE = 0x0C, 0x0D, 0x0F
+OP_VRAM_WRITE, OP_PAL_WRITE, OP_STRETCH, OP_OAM_WRITE = 0x0C, 0x0D, 0x0E, 0x0F
 # 合成のレジスタ: 名前 -> (REG_WRITE の番号, ビットの幅のマスク)
 LAYER_REGS = {"bg_color": 0, "layer_ctrl": 1, "bitmap_key": 2, "tile_scroll_x": 3, "tile_scroll_y": 4,
               "tile_map_base": 5, "tile_pat_base": 6, "tile_ctrl": 7, "bitmap_rank": 8,
@@ -77,6 +80,7 @@ RANK_S_LO, RANK_S_HI = 3, 6
 OAM_WORDS = 256
 VRAM_WORDS = 16384
 BLIT_MAX_W = 512
+STRETCH_MAX = 1024       # STRETCH_BLIT の描く大きさの上限
 SPRITE_KEY = 0xF81F      # sprite_pixels が透過色に使う色 (#ff00ff)
 FB_BASE_RESET, DRAW_BASE_RESET = 0, 256
 
@@ -117,6 +121,14 @@ def encode(step):
         key = (step.get("bank", 0) & 15) << 8 if step.get("src4") else color565(step.get("key", SPRITE_KEY))
         return [OP_BLIT << 24 | flags << 16 | key, step["src"],
                 (step["h"] & 0xFFFF) << 16 | (step["w"] & 0xFFFF), xy(step["x"], step["y"]), step["stride"] & 0xFFFF]
+    if op == "stretch":
+        flags = ((1 if step.get("transparent") else 0) | (2 if step.get("hflip") else 0) | (4 if step.get("vflip") else 0)
+                 | (8 if step.get("src4") else 0))
+        key = (step.get("bank", 0) & 15) << 8 if step.get("src4") else color565(step.get("key", SPRITE_KEY))
+        xs = step.get("sx_step", step["sw"] * 65536 // step["w"])
+        ys = step.get("sy_step", step["sh"] * 65536 // step["h"] if "sh" in step else 65536)
+        return [OP_STRETCH << 24 | flags << 16 | key, step["src"], (step["h"] & 0xFFFF) << 16 | (step["w"] & 0xFFFF),
+                xy(step["x"], step["y"]), (step["sw"] & 0xFFFF) << 16 | (step["stride"] & 0xFFFF), xs & 0xFFFFFFFF, ys & 0xFFFFFFFF]
     if op == "upload_image8":
         img = test_image8()
         out = []
@@ -485,6 +497,48 @@ class Model:
                         continue
                 self.plot(x + i, y + j, p)
 
+    def src_pixel(self, src, stride, si, sj, flags, key):
+        """BLIT / STRETCH_BLIT のソースのピクセル。(値, 透過か)"""
+        f8 = self.regs["bitmap_fmt"]
+        ppw = 8 if flags & 8 else 4 if f8 else 2
+        a = src + sj * stride + si // ppw
+        word = self.mem.get(a)
+        if word is None:
+            raise ValueError(f"BLIT reads unwritten word {a:#x}")
+        if flags & 8:
+            nib = word >> (28 - 4 * (si % 8)) & 15
+            return (key >> 8 & 15) << 4 | nib, bool(flags & 1 and nib == 0)
+        if f8:
+            p = word >> 8 * (si % 4) & 0xFF
+            return p, bool(flags & 1 and p == key & 0xFF)
+        p = word >> 16 if si % 2 else word & 0xFFFF
+        return p, bool(flags & 1 and p == key)
+
+    def stretch(self, src, stride, sw, dw, dh, x, y, flags, key, xs, ys):
+        """gpu.sv の STRETCH_BLIT と同じ: 描くピクセル (i, j) (反転の前) のソースは ((step >> 1) + i * step) >> 16 (32bit で折り返す)。
+        クリップの外の行は読まない。ソースの列が sw 以上になる step はホストの誤り (RTL は前の内容を読む) なのでエラーにする"""
+        f8 = self.regs["bitmap_fmt"]
+        lim = 4 * BLIT_MAX_W if flags & 8 else 2 * BLIT_MAX_W if f8 else BLIT_MAX_W
+        if dw == 0 or dh == 0 or dw > STRETCH_MAX or dh > STRETCH_MAX or (flags & 8 and not f8) or sw > lim:
+            return
+        cx0, cy0, cx1, cy1 = self.clip
+        for j in range(dh):
+            yd = y + (dh - 1 - j if flags & 4 else j)
+            if not cy0 <= yd <= cy1:
+                continue
+            sj = ((ys >> 1) + j * ys) & 0xFFFFFFFF
+            sj >>= 16
+            for i in range(dw):
+                xd = x + (dw - 1 - i if flags & 2 else i)
+                if not cx0 <= xd <= cx1:
+                    continue
+                si = (((xs >> 1) + i * xs) & 0xFFFFFFFF) >> 16
+                if si >= sw:
+                    raise ValueError(f"STRETCH_BLIT samples column {si} of a {sw}-wide source")
+                p, tr = self.src_pixel(src, stride, si, sj, flags, key)
+                if not tr:
+                    self.plot(xd, yd, p)
+
     def set_clip(self, x0, y0, x1, y1):
         """画面の外は画面の端に丸める。x0 / y0 が画面の外なら空 (gpu.sv と同じ)"""
         if x0 > SRC_W - 1 or y0 > SRC_H - 1:
@@ -518,6 +572,11 @@ class Model:
                 self.blit(src & 0x1FFFFF, stride & 0xFFFF, hw & 0xFFFF, hw >> 16, s16(a2), s16(a2 >> 16),
                           (w >> 16) & 15, w & 0xFFFF)
                 i += 5
+            elif op == OP_STRETCH:
+                src, hw, a2, a3, xs, ys = words[i + 1:i + 7]
+                self.stretch(src & 0x1FFFFF, a3 & 0xFFFF, a3 >> 16, hw & 0xFFFF, hw >> 16, s16(a2), s16(a2 >> 16),
+                             (w >> 16) & 15, w & 0xFFFF, xs, ys)
+                i += 7
             elif op == OP_REG_WRITE:
                 name = {v: k for k, v in LAYER_REGS.items()}.get((w >> 16) & 0xFF)
                 if name:
