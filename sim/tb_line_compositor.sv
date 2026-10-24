@@ -13,6 +13,8 @@
 //   - 8bpp のビットマップ (K1): 1 ワードに 4 ピクセルのパレットの番号を、パレット (0..255) を引いて出す。透過色 (番号) のところは
 //     背景色、順位 3 ならタイル (低) の上で、透過色のところからタイルが見える
 //   - ライトマップ (K4): 出力の色に、セルの R, G, B の倍率を掛ける (min(最大値, (c * L) >> 4))。倍率 0・1 倍・上限で切れる値、背景色にも掛かる
+//   - 霧 (E7): 行の倍率 LINE_MUL (セルの倍率と掛けて 63 で切る) と加算 LINE_ADD (各色で飽和)。ライトマップのあり / なし、
+//     霧の表 (VRAM から 1 ラインに 1 語) でラインごとに違う値
 //   - メモリが遅すぎると UNDERFLOW を数える
 `timescale 1ns/1ps
 module tb_line_compositor;
@@ -41,6 +43,9 @@ module tb_line_compositor;
     logic [15:0] bg_color = 16'h0000, bitmap_key = 16'h0000;
     logic [5:0]  layer_ctrl = 6'b000001;
     logic        light_we = 0;
+    logic        xreg_we = 0;
+    logic [4:0]  xreg_idx = '0;
+    logic [15:0] xreg_data = '0;
     logic [13:0] tileb_map_base = 14'd64;
     logic [5:0]  win_v = '0;
     logic [1:0]  hs_mode = '0;
@@ -70,7 +75,7 @@ module tb_line_compositor;
         .tileb_scroll_x(10'd0), .tileb_scroll_y(10'd0), .tileb_map_base, .tileb_pat_base(PAT), .tileb_ctrl(8'd0),
         .win_h(6'd0), .win_v, .win_map_base(WMAP), .hs_mode, .hs_base(HSB),
         .spr_pat_base(PAT), .spr_bank(4'd1), .spr_line_cols(spr_line_px[9:3]),
-        .vram_we, .vram_waddr, .vram_wdata, .pal_we, .pal_waddr, .pal_wdata, .oam_we, .light_we,
+        .vram_we, .vram_waddr, .vram_wdata, .pal_we, .pal_waddr, .pal_wdata, .oam_we, .light_we, .xreg_we, .xreg_idx, .xreg_data,
         .mark_req, .mark_toggle, .line_start, .line_num,
         .mem_req, .mem_addr, .mem_len, .mem_ack, .mem_rvalid, .mem_rdata, .underflow_count,
         .clk_pix, .rst_pix(rst), .x, .y, .rgb
@@ -99,6 +104,36 @@ module tb_line_compositor;
         b = (int'(c[4:0]) * int'(l[17:12])) >> 4;
         return {5'((r > 31) ? 31 : r), 6'((g > 63) ? 63 : g), 5'((b > 31) ? 31 : b)};
     endfunction
+    // 霧の参照: L_eff = min(63, (L_cell * L_line) >> 4)、色は lit のあとに各色で加算して飽和
+    function automatic logic [17:0] leff(input logic [17:0] l, input logic [14:0] m);
+        int r, g, b;
+        r = (int'(l[5:0]) * int'(m[4:0])) >> 4;
+        g = (int'(l[11:6]) * int'(m[9:5])) >> 4;
+        b = (int'(l[17:12]) * int'(m[14:10])) >> 4;
+        return {6'((b > 63) ? 63 : b), 6'((g > 63) ? 63 : g), 6'((r > 63) ? 63 : r)};
+    endfunction
+    function automatic logic [15:0] fog(input logic [15:0] c, input logic [17:0] l, input logic [14:0] m, input logic [15:0] k);
+        logic [15:0] t;
+        int r, g, b;
+        t = lit(c, leff(l, m));
+        r = int'(t[15:11]) + int'(k[15:11]);
+        g = int'(t[10:5]) + int'(k[10:5]);
+        b = int'(t[4:0]) + int'(k[4:0]);
+        return {5'((r > 31) ? 31 : r), 6'((g > 63) ? 63 : g), 5'((b > 31) ? 31 : b)};
+    endfunction
+    logic [14:0] fog_mul = {5'd16, 5'd16, 5'd16};
+    logic [15:0] fog_add = '0;
+    bit          fog_light = 0;
+    function automatic logic [14:0] tab_mul(input int ln);
+        return {5'(ln * 7 + 3), 5'(31 - ln * 5), 5'(ln * 9 + 8)};
+    endfunction
+    function automatic logic [15:0] tab_add(input int ln);
+        return 16'(16'h0841 * (ln * 5 + 1) + 16'h3000 * ln);
+    endfunction
+    task automatic write_xreg(input int idx, input logic [15:0] v);
+        @(negedge clk_sys); xreg_we = 1; xreg_idx = 5'(idx); xreg_data = v;
+        @(negedge clk_sys); xreg_we = 0;
+    endtask
     task automatic write_light(input logic [17:0] l);         // セル 0 (この小さい画面はセル 1 つ)
         @(negedge clk_sys); light_we = 1; vram_waddr = 14'd0; vram_wdata = {10'd0, l[17:12], 2'd0, l[11:6], 2'd0, l[5:0]};
         @(negedge clk_sys); light_we = 0;
@@ -256,7 +291,7 @@ module tb_line_compositor;
     // 3 = タイル + ビットマップ、4 = タイル + 背景色、5 = ビットマップ (透過色あり) が上でタイルが下、
     // 6 = スプライト + タイル + ビットマップ (mixed)、7 = 面 A + 面 B (+ ウィンドウ、横スクロールの表) + 背景色 (planes)、
     // 8 = 8bpp のビットマップ (透過色の番号 key8 は背景色)、9 = 8bpp (順位 3、透過色あり) が上でタイル (低) が下、
-    // 10 = RGB565 のビットマップにライトマップ、11 = 背景色にライトマップ
+    // 10 = RGB565 のビットマップにライトマップ、11 = 背景色にライトマップ、12 = 霧 (レジスタ)、13 = 霧の表 (ラインごと)
     logic [10:0] x_d;
     logic [9:0]  y_d;
     logic        de_d;
@@ -283,6 +318,8 @@ module tb_line_compositor;
                        (tile_nib(sx, sy) != 0) ? pal8(tile_nib(sx, sy)) : 16'h0123;
                 10: e = lit(pixel(sx, sy), light_l);
                 11: e = lit(16'hABCD, light_l);
+                12: e = fog(pixel(sx, sy), fog_light ? light_l : {6'd16, 6'd16, 6'd16}, fog_mul, fog_add);
+                13: e = fog(pixel(sx, sy), {6'd16, 6'd16, 6'd16}, tab_mul(sy), tab_add(sy));
                 default: e = (pixel(sx, sy) != key_px) ? pixel(sx, sy) :
                              (tile_nib(sx, sy) != 0) ? 16'h7C00 + 16'(tile_nib(sx, sy)) : 16'h0123;
             endcase
@@ -477,6 +514,25 @@ module tb_line_compositor;
         write_light({6'd63, 6'd7, 6'd16});
         check_frames(11, 2);
         layer_ctrl = 6'b000001;
+
+        // 霧: ライトマップあり (セル x 行で 63 を超えて切れる、加算の飽和)、なし (セルは 16)、霧の表
+        layer_ctrl = 6'b100001;
+        write_light({6'd40, 6'd63, 6'd5});
+        fog_light = 1; fog_mul = {5'd31, 5'd20, 5'd9}; fog_add = 16'h8410;
+        write_xreg(15, {1'b0, fog_mul}); write_xreg(16, fog_add);
+        check_frames(12, 2);
+        layer_ctrl = 6'b000001;
+        fog_light = 0; fog_mul = {5'd4, 5'd16, 5'd0}; fog_add = 16'hFFFF ^ 16'h0820;
+        write_xreg(15, {1'b0, fog_mul}); write_xreg(16, fog_add);
+        check_frames(12, 2);
+        for (int i = 0; i < SRC_H; i++) begin
+            @(negedge clk_sys); vram_we = 1; vram_waddr = 14'h300 + 14'(i); vram_wdata = {tab_add(i), 1'b0, tab_mul(i)};
+        end
+        @(negedge clk_sys); vram_we = 0;
+        write_xreg(18, 16'h0300); write_xreg(17, 16'h0001);
+        check_frames(13, 2);
+        write_xreg(17, 16'h0000); write_xreg(15, 16'h4210); write_xreg(16, 16'h0000);
+        check_frames(0, 1);           // 既定に戻すと元のまま
 
         // line_start の順番と、印 (次のライン 0 で 1 回だけ)
         if (line_order_errors != 0) begin $display("  line_start out of order: %0d", line_order_errors); errors++; end

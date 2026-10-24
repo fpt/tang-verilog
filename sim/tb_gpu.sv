@@ -19,6 +19,9 @@ module tb_gpu;
     logic [15:0] bg_color, bitmap_key;
     logic [5:0]  layer_ctrl;
     logic        light_we;
+    logic        xreg_we;           // E7 のレジスタ (gpu -> line_compositor)
+    logic [4:0]  xreg_idx;
+    logic [15:0] xreg_data;
     logic        audio_en, audio_clear;
     logic [12:0] pcm_base;
     logic [3:0]  pcm_size;
@@ -65,7 +68,7 @@ module tb_gpu;
         .mem_rdata(rdata32),
         .fb_base, .base_latched, .bg_color, .layer_ctrl, .bitmap_key, .bitmap_rank, .bitmap_fmt,
         .tile_scroll_x, .tile_scroll_y, .tile_map_base, .tile_pat_base, .tile_ctrl,
-        .spr_pat_base, .spr_bank, .spr_line_cols, .oam_we, .light_we,
+        .spr_pat_base, .spr_bank, .spr_line_cols, .oam_we, .light_we, .xreg_we, .xreg_idx, .xreg_data,
         .tileb_scroll_x, .tileb_scroll_y, .tileb_map_base, .tileb_pat_base, .tileb_ctrl, .win_h, .win_v, .win_map_base, .hs_mode, .hs_base,
         .vram_we, .vram_waddr, .vram_wdata, .pal_we, .pal_waddr, .pal_wdata,
         .audio_en, .audio_clear, .pcm_base, .pcm_size, .pcm_wr,
@@ -351,6 +354,9 @@ module tb_gpu;
     always @(posedge clk) if (trace && mark_req) $display("  [trace] mark_req at t=%0t", $time);
     int clear_pulses = 0;
     always @(posedge clk) if (audio_clear) clear_pulses++;
+    int xreg_n = 0;
+    logic [20:0] xreg_log [0:7];
+    always @(posedge clk) if (xreg_we) begin xreg_log[xreg_n % 8] <= {xreg_idx, xreg_data}; xreg_n++; end
     int mark_count_tb = 0, mark_line = -1;
     int prev_line = 0;
     always @(posedge clk) begin
@@ -704,6 +710,18 @@ module tb_gpu;
             $display("  audio REG_WRITE: %b %h %0d %h, %0d clear pulses", audio_en, pcm_base, pcm_size, pcm_wr, clear_pulses); errors++;
         end
         cmd(32'h0917_0000); cmd(32'h0918_1FE0); cmd(32'h0919_000B); cmd(32'h091A_0000);
+        // E7 のレジスタ (32..50): line_compositor への 1 クロックの書き込み。51 はエラー
+        begin
+            logic [7:0] st;
+            rd_re(7'h40, st);
+            xreg_n = 0;
+            cmd(32'h0920_1234); cmd(32'h0932_ABCD); cmd(32'h0933_0001);
+            wait_idle();
+            rd_re(7'h40, st);                  // 読むとエラーが消える
+            if (xreg_n != 2 || xreg_log[0] !== {5'd0, 16'h1234} || xreg_log[1] !== {5'd18, 16'hABCD} || !st[1]) begin
+                $display("  E7 REG_WRITE: %0d writes %h %h, error %b", xreg_n, xreg_log[0], xreg_log[1], st[1]); errors++;
+            end
+        end
         // OAM_WRITE 3 ワードを 0xFE から (0x00 に折り返す)。VRAM には書かない
         vram_writes = 0; oam_writes = 0;
         cmd(32'h0F00_0003); cmd(32'h0000_00FE); cmd(32'h1111_0001); cmd(32'h2222_0002); cmd(32'h3333_0003);

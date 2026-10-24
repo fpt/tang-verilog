@@ -17,13 +17,21 @@
 //            8bpp (bitmap_fmt = 1) のときは行 (80 ワード) をいったん bm_buf に読み、1 クロックに 1 ピクセルずつパレット (0..255) を引いて書く。
 //            透過色は bitmap_key[7:0] (パレットの番号)
 //         4. 出力: 作業ラインをライン バッファに写し (順位 0 = どのレイヤも書かなかったところは背景色)、作業ラインを空に戻す。
-//            ライトマップが有効 (layer_ctrl[5]) なら、ここで色にセルの倍率を掛ける (K4、下の「ライトマップ」)
+//            ライトマップが有効 (layer_ctrl[5]) なら、ここで色にセルの倍率を掛ける (K4、下の「ライトマップ」)。行の倍率と加算 (霧、E7) もここ
 //         2 と 3 は「不透明で、順位が今の値より大きいピクセルだけ」書くので、パスの順番によらず順位の高いものが残る (同じ順位なら先のパス)。
 //         順位 (3bit): 0 背景色、1 面 B (低)、2 面 A (低)、3 スプライト (低)、4 面 B (高)、5 面 A (高)、6 スプライト (高)。
 //   横スクロールの表 (hs_mode != 0): ラインを始めるときに VRAM の hs_base + 番号 の 1 ワードを読み、[25:16] を面 A、[9:0] を面 B の
 //         横スクロールの値にする (メガドラの表をビッグエンディアンの 32bit ワードで読んだ並び。値の向きもメガドラと同じで、
 //         正の値で面が右に動く = scroll_x = -値)。番号は hs_mode 1: 0 (画面全体)、2: ライン & ~7 (8 ラインごと)、3: ライン
 //   VRAM (16K ワード x 32bit) とパレット (512 x RGB565) はここに置き、読み出しのポートを横スクロールの表・スプライト・タイルのパスが順番に使う。
+//   Mode 7 (E7、mode7_layer.sv): M7_CTRL bit0 なら、面 A のタイルのパスの代わりに mode7_layer がピクセルを出す (順位は面 A と同じ。
+//         ウィンドウは描かない)。ラインの先頭の計算 (setup) は横スクロールの表を読んだ直後に始め、スプライト・面 B のパスと同時に動く。
+//         M7_CTRL[3:2] が 1 なら行列 {B, A}, {D, C} を VRAM の m7_tbl + 2 * ライン から、2 なら遠近の奥行き z を m7_tbl + ライン から読む
+//   霧 (E7): 出力のパスで、各色 c を min(最大値, ((c * L_eff) >> 4) + ADD) にする。L_eff = min(63, (L_cell * L_line) >> 4)
+//         (L_cell はライトマップのセル、ライトマップが無効なら 16)、L_line = LINE_MUL (5bit x 3、16 = 1 倍)、ADD = LINE_ADD (RGB565)。
+//         LINE_FX_CTRL bit0 なら {LINE_ADD, LINE_MUL} を VRAM の LINE_FX_BASE + ライン から読む。既定 (16 x 3、0) なら出力は変わらない
+//   E7 のレジスタ (GPU の REG_WRITE 32..50 → xreg_idx 0..18): 0 M7_SEL、1 M7_CTRL、2..5 M7_A..D、6 M7_X0、7 M7_Y0、8 M7_HOFS、9 M7_VOFS、
+//         10 M7_MAP_BASE、11 M7_PAT_BASE、12 M7_TBL_BASE、13 M7_SX、14 M7_SY、15 LINE_MUL、16 LINE_ADD、17 LINE_FX_CTRL、18 LINE_FX_BASE
 //   レジスタはラインの合成を始めるときに取り込むので、GPU の WAIT_LINE n のあとの REG_WRITE はライン n から効く。
 //   そのために、合成を始めるたびに line_start とライン番号 line_num を出す。
 //
@@ -86,6 +94,9 @@ module line_compositor #(
     input  logic [15:0] pal_wdata,
     input  logic        oam_we,
     input  logic        light_we,         // ライトマップの書き込み: vram_waddr[10:0] のセルに {vram_wdata[21:16], [13:8], [5:0]}
+    input  logic        xreg_we,          // E7 のレジスタの書き込み (GPU の REG_WRITE 32..50)
+    input  logic [4:0]  xreg_idx,
+    input  logic [15:0] xreg_data,
     input  logic        mark_req,         // 次のフレームに印を付ける (1 クロック)
     output logic        mark_toggle,      // 印を付けたフレームの合成を始めるたびに反転
     output logic        line_start,       // ラインの合成を始めたとき 1 クロック
@@ -169,7 +180,7 @@ module line_compositor #(
     end
 
     typedef enum logic [1:0] {TP_B, TP_A, TP_W, TP_NONE} tpass_t;      // タイルのパス
-    typedef enum logic [3:0] {P_IDLE, P_HS, P_HS_DATA, P_SPRITE, P_TILE, P_ISSUE, P_BITMAP, P_BM8, P_OUT_PRE, P_OUT} phase_t;
+    typedef enum logic [3:0] {P_IDLE, P_HS, P_SPRITE, P_TILE, P_ISSUE, P_BITMAP, P_BM8, P_OUT_PRE, P_OUT} phase_t;
     phase_t phase;
 
     logic [2:0]  req_s;
@@ -197,16 +208,44 @@ module line_compositor #(
     logic [3:0]  l_sbank;
     logic [6:0]  l_scols;
     logic [20:0] l_addr;         // ビットマップの行のアドレス
-    logic        t_start, t_busy;
+    // E7 のレジスタ (今の値) と、このラインの値
+    logic [3:0]  m7_sel;         // M7_SEL の {[7:6], [1:0]}
+    logic [3:0]  m7_ctrl;
+    logic [15:0] m7_a, m7_b, m7_c, m7_d;
+    logic [12:0] m7_x0, m7_y0, m7_hofs, m7_vofs;
+    logic [13:0] m7_map, m7_pat, m7_tbl, fx_base;
+    logic [9:0]  m7_sx;
+    logic [8:0]  m7_sy;
+    logic [14:0] fx_mul;
+    logic [15:0] fx_add;
+    logic        fx_tab;
+    logic        l_m7, l_extbg, l_fx_tab;
+    logic [1:0]  l_m7_tab, l_flip, l_over;
+    logic [15:0] l_m7a, l_m7b, l_m7c, l_m7d, l_z;
+    logic [12:0] l_x0, l_y0, l_hofs, l_vofs;
+    logic [13:0] l_m7map, l_m7pat, l_m7tbl, l_fxbase;
+    logic [9:0]  l_m7sx;
+    logic [8:0]  l_m7sy;
+    logic [14:0] l_mul;
+    logic [15:0] l_add;
+    logic [2:0]  rd_k;           // ラインの先頭で VRAM から読む表の番号 (横スクロール、Mode 7 の 2 語、霧)
+    logic        m_setup, m_start, m_busy, m_valid, m_pri;
+    logic [7:0]  m_next;
+    logic [8:0]  m_x;
+    logic [15:0] m_color;
+    logic [13:0] m_vram_raddr;
+    logic [8:0]  m_pal_raddr;
+    logic        m7_pass;        // 面 A のパスを Mode 7 で描いている
+    logic        t_start, t_busy, tl_busy;
     // 動かしているタイルのパス。yosys の FSM の抽出が符号を付け直すと $buf が残って nextpnr が置けないので、ふつうのレジスタのままにする
     (* fsm_encoding = "none" *) tpass_t tpass;
     logic [9:0]  t_sx, t_sy;
     logic [13:0] t_map, t_pat;
     logic [7:0]  t_ctrl;
-    logic        t_valid, t_opaque, t_pri;
-    logic [7:0]  t_next;
-    logic [8:0]  t_x;
-    logic [15:0] t_color;
+    logic        t_valid, t_opaque, t_pri, tl_valid, tl_opaque, tl_pri;
+    logic [7:0]  t_next, tl_next;
+    logic [8:0]  t_x, tl_x;
+    logic [15:0] t_color, tl_color;
     logic        s_start, s_busy;
     logic        s_valid, s_pri;
     logic [7:0]  s_next;
@@ -218,8 +257,8 @@ module line_compositor #(
     // VRAM とパレット。読み出しは 横スクロールの表 (P_HS)、スプライトのパスのあいだ sprite_layer、それ以外は tile_layer
     logic [31:0] vram [0:VRAM_WORDS-1];
     logic [15:0] pal  [0:511];
-    logic [13:0] vram_raddr, t_vram_raddr, s_vram_raddr;
-    logic [8:0]  pal_raddr, t_pal_raddr, s_pal_raddr;
+    logic [13:0] vram_raddr, t_vram_raddr, s_vram_raddr, tl_vram_raddr;
+    logic [8:0]  pal_raddr, t_pal_raddr, s_pal_raddr, tl_pal_raddr;
     logic [31:0] vram_q;
     logic [15:0] pal_q;
     logic [13:0] hs_addr;
@@ -230,7 +269,17 @@ module line_compositor #(
             default: hs_addr = l_hs_base;
         endcase
     end
-    assign vram_raddr = (phase == P_SPRITE) ? s_vram_raddr : (phase == P_HS) ? hs_addr : t_vram_raddr;
+    // ラインの先頭で読む表: rd_k = 0 横スクロール、1 / 2 Mode 7 (直接は 2 語、遠近は 1 語)、3 霧
+    logic [13:0] tab_addr;
+    always_comb begin
+        unique case (rd_k)
+            3'd0:    tab_addr = hs_addr;
+            3'd1:    tab_addr = (l_m7_tab == 2'd1) ? l_m7tbl + 14'({line_num, 1'b0}) : l_m7tbl + 14'(line_num);
+            3'd2:    tab_addr = l_m7tbl + 14'({line_num, 1'b1});
+            default: tab_addr = l_fxbase + 14'(line_num);
+        endcase
+    end
+    assign vram_raddr = (phase == P_SPRITE) ? s_vram_raddr : (phase == P_HS) ? tab_addr : t_vram_raddr;
     // 8bpp のビットマップ: 行を読んでおくバッファと、パレットを引くパイプライン
     //   bi のクロック: bm_buf を読む → 1 段目 (p1): バイトを選んでパレットと作業ラインを読む → 2 段目 (p2): 作業ラインに書く
     logic [31:0] bm_buf [0:127];
@@ -265,11 +314,34 @@ module line_compositor #(
 
     tile_layer #(.SRC_W(SRC_W)) u_tile (
         .clk(clk_sys), .rst(rst_sys),
-        .vram_raddr(t_vram_raddr), .vram_q, .pal_raddr(t_pal_raddr), .pal_q,
-        .start(t_start), .line(line_num), .scroll_x(t_sx), .scroll_y(t_sy), .map_base(t_map), .pat_base(t_pat),
-        .ctrl(t_ctrl), .busy(t_busy), .next_word(t_next),
-        .px_valid(t_valid), .px_x(t_x), .px_opaque(t_opaque), .px_pri(t_pri), .px_color(t_color)
+        .vram_raddr(tl_vram_raddr), .vram_q, .pal_raddr(tl_pal_raddr), .pal_q,
+        .start(t_start && !m7_pass), .line(line_num), .scroll_x(t_sx), .scroll_y(t_sy), .map_base(t_map), .pat_base(t_pat),
+        .ctrl(t_ctrl), .busy(tl_busy), .next_word(tl_next),
+        .px_valid(tl_valid), .px_x(tl_x), .px_opaque(tl_opaque), .px_pri(tl_pri), .px_color(tl_color)
     );
+
+    mode7_layer #(.SRC_W(SRC_W)) u_mode7 (
+        .clk(clk_sys), .rst(rst_sys),
+        .vram_raddr(m_vram_raddr), .vram_q, .pal_raddr(m_pal_raddr), .pal_q,
+        .setup(m_setup), .line(line_num), .flip(l_flip), .over(l_over), .extbg(l_extbg), .persp(l_m7_tab == 2'd2),
+        .a(l_m7a), .b(l_m7b), .c(l_m7c), .d(l_m7d), .z(l_z), .x0(l_x0), .y0(l_y0), .hofs(l_hofs), .vofs(l_vofs),
+        .sx(l_m7sx), .sy(l_m7sy), .map_base(l_m7map), .pat_base(l_m7pat),
+        .start(m_start), .busy(m_busy), .next_word(m_next),
+        .px_valid(m_valid), .px_x(m_x), .px_pri(m_pri), .px_color(m_color)
+    );
+
+    // 面 A のパスを Mode 7 で描くとき (m7_pass)、タイルのパスの信号を mode7_layer のものにする
+    assign m7_pass       = l_m7 && tpass == TP_A;
+    assign m_start       = t_start && m7_pass;
+    assign t_busy        = m7_pass ? m_busy : tl_busy;
+    assign t_next        = m7_pass ? m_next : tl_next;
+    assign t_valid       = m7_pass ? m_valid : tl_valid;
+    assign t_x           = m7_pass ? m_x : tl_x;
+    assign t_opaque      = m7_pass ? 1'b1 : tl_opaque;
+    assign t_pri         = m7_pass ? m_pri : tl_pri;
+    assign t_color       = m7_pass ? m_color : tl_color;
+    assign t_vram_raddr  = m7_pass ? m_vram_raddr : tl_vram_raddr;
+    assign t_pal_raddr   = m7_pass ? m_pal_raddr : tl_pal_raddr;
 
     // タイルのパスごとの設定 (パスのあいだは変わらない)
     logic hs_on;
@@ -304,7 +376,7 @@ module line_compositor #(
     // 次のタイルのパス: B → A → ウィンドウ の順に、有効なもの
     tpass_t     tp_first, tp_after;
     logic       en_w;
-    assign en_w     = l_tile_en && win_run;
+    assign en_w     = l_tile_en && win_run && !l_m7;      // Mode 7 のあいだはウィンドウを描かない
     // (Icarus Verilog は enum の三項演算子の代入を受け付けないので if で書く)
     always_comb begin
         if (l_b_en)         tp_first = TP_B;
@@ -337,7 +409,7 @@ module line_compositor #(
     logic [2:0] t_rank, s_rank;
     logic       t_ok, bm_lo_ok, bm_hi_ok;
     assign t_rank   = (tpass == TP_B) ? (t_pri ? RANK_B_HI : RANK_B_LO) : (t_pri ? RANK_A_HI : RANK_A_LO);
-    assign t_ok     = t_valid && t_opaque && (tpass == TP_A ? !t_in_win : tpass == TP_W ? t_in_win : 1'b1);
+    assign t_ok     = t_valid && t_opaque && (tpass == TP_A ? (l_m7 || !t_in_win) : tpass == TP_W ? t_in_win : 1'b1);
     assign s_rank   = s_pri ? RANK_S_HI : RANK_S_LO;
     assign bm_lo_ok = !(l_key_en && mem_rdata[15:0] == l_key) && l_bm_rank > wl_q_even[18:16];
     assign bm_hi_ok = !(l_key_en && mem_rdata[31:16] == l_key) && l_bm_rank > wl_q_odd[18:16];
@@ -399,14 +471,81 @@ module line_compositor #(
         return {(r[6:5] != 2'd0) ? 5'd31 : r[4:0], (g[7:6] != 2'd0) ? 6'd63 : g[5:0], (b[6:5] != 2'd0) ? 5'd31 : b[4:0]};
     endfunction
 
+    // 霧 (E7): セルの倍率に行の倍率 (l_mul、5bit x 3) を掛けて 63 で切る。ライトマップが無効ならセルの倍率は 16
+    function automatic logic [5:0] mul_sat(input logic [5:0] cl, input logic [4:0] ln);
+        logic [6:0] q;
+        q = 7'((11'(cl) * 11'(ln)) >> 4);
+        return q[6] ? 6'd63 : q[5:0];
+    endfunction
+    // 色 c に行の加算 (RGB565) を各色で足して最大値で切る
+    function automatic logic [15:0] add_sat(input logic [15:0] c, input logic [15:0] k);
+        logic [5:0] r, b;
+        logic [6:0] g;
+        r = 6'(c[15:11]) + 6'(k[15:11]);
+        g = 7'(c[10:5])  + 7'(k[10:5]);
+        b = 6'(c[4:0])   + 6'(k[4:0]);
+        return {r[5] ? 5'd31 : r[4:0], g[6] ? 6'd63 : g[5:0], b[5] ? 5'd31 : b[4:0]};
+    endfunction
+
+    // 出力は 2 段: 1 段目 (P_OUT) で背景色を選び L_eff を出し、2 段目で掛けて足してライン バッファに書く
     logic [15:0] out_lo, out_hi;
-    logic [31:0] out_word;
-    assign out_lo   = (wl_q_even[18:16] == 3'd0) ? l_bg : wl_q_even[15:0];
-    assign out_hi   = (wl_q_odd[18:16] == 3'd0) ? l_bg : wl_q_odd[15:0];
-    assign out_word = l_light ? {lit(out_hi, lm_q), lit(out_lo, lm_q)} : {out_hi, out_lo};
-    always_ff @(posedge clk_sys) if (phase == P_OUT) line_buf[{line_bank, oidx}] <= out_word;
+    logic [17:0] l_cell, l_eff;
+    assign out_lo = (wl_q_even[18:16] == 3'd0) ? l_bg : wl_q_even[15:0];
+    assign out_hi = (wl_q_odd[18:16] == 3'd0) ? l_bg : wl_q_odd[15:0];
+    assign l_cell = l_light ? lm_q : {6'd16, 6'd16, 6'd16};
+    assign l_eff  = {mul_sat(l_cell[17:12], l_mul[14:10]), mul_sat(l_cell[11:6], l_mul[9:5]), mul_sat(l_cell[5:0], l_mul[4:0])};
+
+    logic        o_we, o_bank;
+    logic [7:0]  o_idx;
+    logic [15:0] o_lo, o_hi;
+    logic [17:0] o_l;
+    always_ff @(posedge clk_sys) begin
+        o_we   <= phase == P_OUT;
+        o_bank <= line_bank;
+        o_idx  <= oidx;
+        o_lo   <= out_lo;
+        o_hi   <= out_hi;
+        o_l    <= l_eff;
+        if (o_we) line_buf[{o_bank, o_idx}] <= {add_sat(lit(o_hi, o_l), l_add), add_sat(lit(o_lo, o_l), l_add)};
+    end
 
     assign mem_len = l_fmt8 ? 9'(SRC_W / 4) : 9'(WORDS);
+
+    // E7 のレジスタ
+    always_ff @(posedge clk_sys) begin
+        if (rst_sys) begin
+            m7_sel  <= '0;  m7_ctrl <= '0;
+            m7_a    <= 16'h0100;  m7_b <= '0;  m7_c <= '0;  m7_d <= 16'h0100;
+            m7_x0   <= '0;  m7_y0   <= '0;  m7_hofs <= '0;  m7_vofs <= '0;
+            m7_map  <= '0;  m7_pat  <= '0;  m7_tbl  <= '0;
+            m7_sx   <= '0;  m7_sy   <= '0;
+            fx_mul  <= {5'd16, 5'd16, 5'd16};
+            fx_add  <= '0;  fx_tab  <= 1'b0;  fx_base <= '0;
+        end else if (xreg_we) begin
+            unique case (xreg_idx)
+                5'd0:  m7_sel  <= {xreg_data[7:6], xreg_data[1:0]};
+                5'd1:  m7_ctrl <= xreg_data[3:0];
+                5'd2:  m7_a    <= xreg_data;
+                5'd3:  m7_b    <= xreg_data;
+                5'd4:  m7_c    <= xreg_data;
+                5'd5:  m7_d    <= xreg_data;
+                5'd6:  m7_x0   <= xreg_data[12:0];
+                5'd7:  m7_y0   <= xreg_data[12:0];
+                5'd8:  m7_hofs <= xreg_data[12:0];
+                5'd9:  m7_vofs <= xreg_data[12:0];
+                5'd10: m7_map  <= xreg_data[13:0];
+                5'd11: m7_pat  <= xreg_data[13:0];
+                5'd12: m7_tbl  <= xreg_data[13:0];
+                5'd13: m7_sx   <= xreg_data[9:0];
+                5'd14: m7_sy   <= xreg_data[8:0];
+                5'd15: fx_mul  <= xreg_data[14:0];
+                5'd16: fx_add  <= xreg_data;
+                5'd17: fx_tab  <= xreg_data[0];
+                5'd18: fx_base <= xreg_data[13:0];
+                default: ;
+            endcase
+        end
+    end
 
     always_ff @(posedge clk_sys) begin
         if (rst_sys) begin
@@ -422,12 +561,14 @@ module line_compositor #(
             mark_toggle     <= 1'b0;
             t_start         <= 1'b0;
             s_start         <= 1'b0;
+            m_setup         <= 1'b0;
             tpass           <= TP_A;
         end else begin
             base_latched <= 1'b0;
             line_start   <= 1'b0;
             t_start      <= 1'b0;
             s_start      <= 1'b0;
+            m_setup      <= 1'b0;
             if (mark_req) mark_pending <= 1'b1;
 
             // 新しい依頼が来たときにまだ合成していたら、表示に間に合っていない
@@ -470,6 +611,29 @@ module line_compositor #(
                     l_spat     <= spr_pat_base;
                     l_sbank    <= spr_bank;
                     l_scols    <= spr_line_cols;
+                    l_m7       <= m7_ctrl[0];
+                    l_extbg    <= m7_ctrl[1];
+                    l_m7_tab   <= m7_ctrl[3:2];
+                    l_flip     <= m7_sel[1:0];
+                    l_over     <= m7_sel[3:2];
+                    l_m7a      <= m7_a;
+                    l_m7b      <= m7_b;
+                    l_m7c      <= m7_c;
+                    l_m7d      <= m7_d;
+                    l_x0       <= m7_x0;
+                    l_y0       <= m7_y0;
+                    l_hofs     <= m7_hofs;
+                    l_vofs     <= m7_vofs;
+                    l_m7map    <= m7_map;
+                    l_m7pat    <= m7_pat;
+                    l_m7tbl    <= m7_tbl;
+                    l_m7sx     <= m7_sx;
+                    l_m7sy     <= m7_sy;
+                    l_mul      <= fx_mul;
+                    l_add      <= fx_add;
+                    l_fx_tab   <= fx_tab;
+                    l_fxbase   <= fx_base;
+                    rd_k       <= '0;
                     l_addr     <= (req_line == 9'd0) ? {fb_base, 8'b0} : {frame_base + 13'(req_line), 8'b0};
                     widx       <= '0;
                     if (req_line == 9'd0) begin
@@ -482,20 +646,44 @@ module line_compositor #(
                     end
                     phase <= P_HS;
                 end
-                // 横スクロールの表を読む (使わないときも読むだけ読む)
-                P_HS: phase <= P_HS_DATA;
-                P_HS_DATA: begin
-                    hs_a <= vram_q[25:16];
-                    hs_b <= vram_q[9:0];
-                    if (l_spr_en) begin
-                        s_start <= 1'b1;
-                        phase   <= P_SPRITE;
-                    end else if (tp_first != TP_NONE) begin
-                        tpass   <= tp_first;
-                        t_start <= 1'b1;
-                        phase   <= P_TILE;
-                    end else begin
-                        phase <= P_ISSUE;
+                // ラインの先頭の表を読む。横スクロールの表は使わないときも読むだけ読む (rd_k = 0)。Mode 7 か霧の表を使うときだけ
+                // 続けて 3 語 (rd_k = 1..3) 読む。アドレスを出した次のクロックにデータ (rd_k = 1..4 で受ける)
+                P_HS: begin
+                    rd_k <= rd_k + 3'd1;
+                    unique case (rd_k)
+                        3'd1: begin
+                            hs_a <= vram_q[25:16];
+                            hs_b <= vram_q[9:0];
+                        end
+                        3'd2: begin
+                            if (l_m7_tab == 2'd1) begin
+                                l_m7a <= vram_q[15:0];
+                                l_m7b <= vram_q[31:16];
+                            end
+                            if (l_m7_tab == 2'd2) l_z <= vram_q[15:0];
+                        end
+                        3'd3: if (l_m7_tab == 2'd1) begin
+                            l_m7c <= vram_q[15:0];
+                            l_m7d <= vram_q[31:16];
+                        end
+                        3'd4: if (l_fx_tab) begin
+                            l_mul <= vram_q[14:0];
+                            l_add <= vram_q[31:16];
+                        end
+                        default: ;
+                    endcase
+                    if (rd_k == ((l_m7_tab != 2'd0 || l_fx_tab) ? 3'd4 : 3'd1)) begin
+                        m_setup <= l_m7;      // Mode 7 のラインの先頭の計算は、ここからスプライト・面 B のパスと同時に
+                        if (l_spr_en) begin
+                            s_start <= 1'b1;
+                            phase   <= P_SPRITE;
+                        end else if (tp_first != TP_NONE) begin
+                            tpass   <= tp_first;
+                            t_start <= 1'b1;
+                            phase   <= P_TILE;
+                        end else begin
+                            phase <= P_ISSUE;
+                        end
                     end
                 end
                 // s_start / t_start のクロックの busy はまだ 0 (次のクロックから busy)
