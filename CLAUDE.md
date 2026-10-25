@@ -22,8 +22,10 @@ Tang Nano 20K (FPGA, VDP 本体) + RP2350 (ホスト CPU) でレトロゲーム�
   - Icarus Verilog は `@(posedge clk iff ...)` や、ブロック途中での `automatic` 変数宣言に対応していない (テストベンチで注意)
 - Gowin プリミティブを新たに使うときは `rtl/gowin/blackbox/gowin_prims.sv` にブラックボックス定義を足す (read_slang はパラメータ付きの未知モジュールを受け付けないため)
 - Tang Nano 20K の HDMI ピンは TLVDS (`TLVDS_OBUF`, `IO_TYPE=LVDS25`, p/n を個別に制約)。`synth_gowin` には `-family gw2a` が必要。迷ったら apicula の `examples/` (特に `tangnano20k.cst`, `DVI/`) を参照する
-- `rtl/vdp/` はベンダ非依存に保つ。Gowin のプリミティブ (rPLL, CLKDIV, OSER10, TLVDS_OBUF など) は `rtl/gowin/` にだけ置く
-- `rtl/vdp/` にモジュールを足したら `sim/tb_<名前>.sv` にテストベンチを書く。テストベンチは成功時に `PASS:`、失敗時に `FAIL:` を出力し、VCD は `build/sim/` に出す
+- `rtl/vdp/` と `rtl/gpu3d/` はベンダ非依存に保つ。Gowin のプリミティブ (rPLL, CLKDIV, OSER10, TLVDS_OBUF など) は `rtl/gowin/` にだけ置く
+- **符号付きの乗算を DSP に置かせない**。yosys は `*` を Gowin の DSP (MULT9X9 / MULT18X18) に置くが、符号付き (`ASIGN` / `BSIGN`) は実機で効かず、符号なしで掛けた値になる
+  (docs/GPU3D_PLAN.md の G0)。符号付きの値は符号なしで掛けて補正する (`rtl/gpu3d/mul_probe.sv` の Q) か、シフトと加算で組む
+- `rtl/vdp/`・`rtl/gpu3d/` にモジュールを足したら `sim/tb_<名前>.sv` にテストベンチを書く。テストベンチは成功時に `PASS:`、失敗時に `FAIL:` を出力し、VCD は `build/sim/` に出す
 - 映像まわりを変えたら `make render` で PNG を出し、見た目を確認する
 
 ## よく使うコマンド

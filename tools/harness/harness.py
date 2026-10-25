@@ -34,6 +34,7 @@ usage: harness.py [--port PORT] <command> [args...]
                             アップロードして表示し、FRAME_CRC と UNDERFLOW を参照モデル (fbmodel.py) と比べ、
                             HDMI キャプチャも比べる。--keep でそのまま表示を残す
   mem read <word_addr> [n]  SDRAM を 1 ワードずつ読む
+  mulprobe [--iterations N] 3D GPU のビットストリーム (make TARGET=gpu3d) の乗算器 (mul_probe、DSP) を端の値と乱数で確かめる
   mem write <word_addr> <hex32>...  SDRAM に書く
 
 出力は 1 つの JSON (標準出力)。"ok" が true でなければ終了コード 1。
@@ -614,6 +615,41 @@ def fps(bridge, path, frames):
             "display_frames_per_drawn_frame": round(shown / frames, 2), "underflow": under, "gpu_status": st}
 
 
+def mulprobe(bridge, iterations):
+    """3D GPU のビットストリームの mul_probe (0x50..: A, B は符号付き 18bit。P = 符号付きの DSP の乗算、Q = 符号なしの DSP + 符号の補正、
+    どちらも 36bit) を端の値と乱数で確かめる (docs/GPU3D_PLAN.md の G0)。符号の組み合わせごとに数える"""
+    import random
+    vdp = Vdp(bridge)
+    version = vdp.read1(REGS["VERSION"])
+    if not version & 0x80:
+        return {"ok": False, "error": f"not a gpu3d bitstream (VERSION 0x{version:02x})"}
+    rng = random.Random(1)
+    lo, hi = -(1 << 17), (1 << 17) - 1
+    pairs = [(0, 0), (1, -1), (hi, hi), (lo, lo), (lo, hi), (hi, -1)]
+    pairs += [(rng.randint(lo, hi), rng.randint(lo, hi)) for _ in range(iterations)]
+
+    def s36(v):
+        v &= (1 << 36) - 1
+        return v - (1 << 36) if v >> 35 else v
+
+    stats = {k: {"n": 0, "p_errors": 0, "q_errors": 0} for k in ("++", "+-", "-+", "--")}
+    first = []
+    for a, b in pairs:
+        vdp.write(0x50, (a & 0x3FFFF).to_bytes(3, "little") + (b & 0x3FFFF).to_bytes(3, "little"))
+        raw = int.from_bytes(vdp.read(0x56, 10), "little")
+        p, q = s36(raw), s36(raw >> 40)
+        st = stats[("-" if a < 0 else "+") + ("-" if b < 0 else "+")]
+        st["n"] += 1
+        st["p_errors"] += p != a * b
+        st["q_errors"] += q != a * b
+        if (p != a * b or q != a * b) and len(first) < 3:
+            first.append({"a": a, "b": b, "p": p, "q": q, "expected": a * b})
+    q_ok = all(v["q_errors"] == 0 for v in stats.values())
+    p_ok = all(v["p_errors"] == 0 for v in stats.values())
+    return {"ok": q_ok, "signed_dsp_ok": p_ok, "version": f"0x{version:02x}", "checked": len(pairs),
+            "by_sign": stats, "first_errors": first}
+
+
 def demo(bridge, frames, start):
     """M9 のデモ (demo.py) を流し続ける。フレームは WAIT_VBLANK で区切られるので、間に合っていれば 60 フレーム / 秒"""
     import demo as demo_mod
@@ -838,7 +874,8 @@ def main():
         # make の出力は標準エラーへ (標準出力は JSON だけにする)
         r = subprocess.run(["make", "prog", f"TARGET={a.args[0]}"], cwd=REPO, stdout=sys.stderr)
         result = {"ok": r.returncode == 0, "target": a.args[0]}
-    elif a.command in ("reg", "selftest", "memtest", "mem", "frametest", "fb", "fbtest", "scenario", "fps", "demo", "audio"):
+    elif a.command in ("reg", "selftest", "memtest", "mem", "frametest", "fb", "fbtest", "scenario", "fps", "demo", "audio",
+                       "mulprobe"):
         bridge = Bridge(find_port(a.port))
         try:
             vdp = Vdp(bridge)
@@ -850,6 +887,8 @@ def main():
                 result = fps(bridge, a.args[0], a.frames)
             elif a.command == "demo":
                 result = demo(bridge, a.frames, a.start)
+            elif a.command == "mulprobe":
+                result = mulprobe(bridge, a.iterations)
             elif a.command == "audio":
                 result = audio(bridge, a.seconds, a.tone, a.stream, a.ring, a.lead)
             elif a.command == "scenario":

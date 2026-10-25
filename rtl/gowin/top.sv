@@ -5,7 +5,12 @@
 //   ハーネス (docs/HARNESS.md, harness/pins.json) の線もここで出す
 //   パッケージ内 SDRAM は 63MHz で動かし、SDRAM のクロックは CLKOUTP を ODDR で反転して出す。
 //   位相 (PSDA、1/16 周期 = 約 1ns 刻み) は MEM_CLK レジスタで実行時に変えられる。PSDA = 0 で以前と同じ逆相 (180°)
-module top (
+//   GPU3D = 1 (make TARGET=gpu3d): VDP を外した 3D GPU のビットストリーム (docs/GPU3D_PLAN.md)。line_compositor の代わりに
+//   fb_line (ビットマップ RGB565 + 背景色・透過色だけ) で表示し、音はない (アンプは切る)。0x50..0x5F は mul_probe (DSP の確かめ)。
+//   VERSION の bit7 が 1 になる
+module top #(
+    parameter int GPU3D = 0
+) (
     input  logic       clk,          // 27MHz
     input  logic       btn_s1,       // リセット (押下で 1)
     input  logic       btn_s2,
@@ -187,7 +192,7 @@ module top (
         .frame_error(spi_frame_error)
     );
 
-    vdp_regs u_regs (
+    vdp_regs #(.VERSION(GPU3D != 0 ? 8'h81 : 8'h01)) u_regs (
         .clk(clk_sys), .rst(rst_sys),
         .addr(reg_addr), .wdata(reg_wdata), .we(reg_we && !sel_mem && !sel_gpu && !sel_audio), .re(reg_re && !sel_mem && !sel_gpu && !sel_audio),
         .rdata(vdp_rdata),
@@ -253,17 +258,28 @@ module top (
     logic        mark_req, line_start;
     logic [7:0]  line_num;
 
-    line_compositor u_comp (
-        .clk_sys, .rst_sys, .fb_base, .base_latched,
-        .bg_color, .layer_ctrl, .bitmap_key, .bitmap_rank, .bitmap_fmt, .mark_req, .mark_toggle, .line_start, .line_num,
-        .tile_scroll_x, .tile_scroll_y, .tile_map_base, .tile_pat_base, .tile_ctrl,
-        .spr_pat_base, .spr_bank, .spr_line_cols, .oam_we, .light_we, .xreg_we, .xreg_idx, .xreg_data,
-        .tileb_scroll_x, .tileb_scroll_y, .tileb_map_base, .tileb_pat_base, .tileb_ctrl, .win_h, .win_v, .win_map_base, .hs_mode, .hs_base,
-        .vram_we, .vram_waddr, .vram_wdata, .pal_we, .pal_waddr, .pal_wdata,
-        .mem_req(fb_req), .mem_addr(fb_addr), .mem_len(fb_len), .mem_ack(fb_ack),
-        .mem_rvalid(fb_rvalid), .mem_rdata(mem_rdata32), .underflow_count,
-        .clk_pix, .rst_pix(rst), .x(vx), .y(vy), .rgb(fb_rgb)
-    );
+    if (GPU3D != 0) begin : g_fb
+        // 3D GPU: ビットマップだけの表示。gpu の面・スプライト・VRAM などの出力はつながず、合成で消える
+        fb_line u_fb (
+            .clk_sys, .rst_sys, .fb_base, .base_latched,
+            .bg_color, .layer_ctrl(layer_ctrl[1:0]), .bitmap_key, .mark_req, .mark_toggle, .line_start, .line_num,
+            .mem_req(fb_req), .mem_addr(fb_addr), .mem_len(fb_len), .mem_ack(fb_ack),
+            .mem_rvalid(fb_rvalid), .mem_rdata(mem_rdata32), .underflow_count,
+            .clk_pix, .rst_pix(rst), .x(vx), .y(vy), .rgb(fb_rgb)
+        );
+    end else begin : g_comp
+        line_compositor u_comp (
+            .clk_sys, .rst_sys, .fb_base, .base_latched,
+            .bg_color, .layer_ctrl, .bitmap_key, .bitmap_rank, .bitmap_fmt, .mark_req, .mark_toggle, .line_start, .line_num,
+            .tile_scroll_x, .tile_scroll_y, .tile_map_base, .tile_pat_base, .tile_ctrl,
+            .spr_pat_base, .spr_bank, .spr_line_cols, .oam_we, .light_we, .xreg_we, .xreg_idx, .xreg_data,
+            .tileb_scroll_x, .tileb_scroll_y, .tileb_map_base, .tileb_pat_base, .tileb_ctrl, .win_h, .win_v, .win_map_base, .hs_mode, .hs_base,
+            .vram_we, .vram_waddr, .vram_wdata, .pal_we, .pal_waddr, .pal_wdata,
+            .mem_req(fb_req), .mem_addr(fb_addr), .mem_len(fb_len), .mem_ack(fb_ack),
+            .mem_rvalid(fb_rvalid), .mem_rdata(mem_rdata32), .underflow_count,
+            .clk_pix, .rst_pix(rst), .x(vx), .y(vy), .rgb(fb_rgb)
+        );
+    end
 
     // 音のレジスタ (gpu -> audio_out)
     logic        audio_en, audio_clear;
@@ -288,13 +304,24 @@ module top (
     // 音: PCM のリング (SDRAM) -> I2S
     logic        p_req, p_ack, p_rvalid;
     logic [20:0] p_addr;
-    audio_out u_audio (
-        .clk(clk_sys), .rst(rst_sys),
-        .enable(audio_en), .clear(audio_clear), .base(pcm_base), .size_log2(pcm_size), .wr(pcm_wr),
-        .addr(reg_addr[3:0]), .re(reg_re && sel_audio), .rdata(audio_rdata),
-        .mem_req(p_req), .mem_addr(p_addr), .mem_ack(p_ack), .mem_rvalid(p_rvalid), .mem_rdata(mem_rdata32),
-        .bck(hp_bck), .ws(hp_ws), .din(hp_din), .pa_en
-    );
+    if (GPU3D != 0) begin : g_no_audio
+        // 音はない。0x50..0x5F の窓は乗算器の確かめ (mul_probe、G0) に使う
+        assign p_req = 1'b0;
+        assign p_addr = '0;
+        assign {hp_bck, hp_ws, hp_din, pa_en} = 4'b0000;
+        mul_probe u_mul (
+            .clk(clk_sys), .rst(rst_sys),
+            .addr(reg_addr[3:0]), .wdata(reg_wdata), .we(reg_we && sel_audio), .rdata(audio_rdata)
+        );
+    end else begin : g_audio
+        audio_out u_audio (
+            .clk(clk_sys), .rst(rst_sys),
+            .enable(audio_en), .clear(audio_clear), .base(pcm_base), .size_log2(pcm_size), .wr(pcm_wr),
+            .addr(reg_addr[3:0]), .re(reg_re && sel_audio), .rdata(audio_rdata),
+            .mem_req(p_req), .mem_addr(p_addr), .mem_ack(p_ack), .mem_rvalid(p_rvalid), .mem_rdata(mem_rdata32),
+            .bck(hp_bck), .ws(hp_ws), .din(hp_din), .pa_en
+        );
+    end
 
     mem_test u_mem_test (
         .clk(clk_sys), .rst(rst_sys),

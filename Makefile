@@ -11,12 +11,22 @@ PICO       := $(DOCKER_RUN) $(PICO_IMAGE)
 # --- FPGA ---
 # TARGET でビルドするトップを選ぶ (HDMI と 40 ピン LCD はピンを共用しているので別のビットストリームにする)
 # VIDEO_MODE は make render で使う vdp_video の MODE (0: 640x480, 1: 800x480)
-TARGET   ?= hdmi                # hdmi | lcd | harness_probe
+# gpu3d は HDMI と同じトップ (top.sv) の GPU3D = 1 (VDP を外した 3D GPU のビットストリーム、docs/GPU3D_PLAN.md)。成果物は build/gpu3d/
+TARGET   ?= hdmi                # hdmi | lcd | harness_probe | gpu3d
+TOP_PARAMS :=
+OUT_DIR    := build
 ifeq ($(strip $(TARGET)),hdmi)
 TOP        := top
 CST        := constraints/tangnano20k.cst
 VIDEO_MODE := 0
 RENDER_DIR := build/render
+else ifeq ($(strip $(TARGET)),gpu3d)
+TOP        := top
+CST        := constraints/tangnano20k.cst
+VIDEO_MODE := 0
+RENDER_DIR := build/render
+TOP_PARAMS := -G GPU3D=1
+OUT_DIR    := build/gpu3d
 else ifeq ($(strip $(TARGET)),lcd)
 TOP        := top_lcd
 CST        := constraints/tangnano20k_lcd.cst
@@ -28,7 +38,7 @@ CST        := constraints/tangnano20k_harness_probe.cst
 VIDEO_MODE := 0
 RENDER_DIR := build/render
 else
-$(error TARGET=$(strip $(TARGET)) は未対応です (hdmi | lcd | harness_probe))
+$(error TARGET=$(strip $(TARGET)) は未対応です (hdmi | lcd | harness_probe | gpu3d))
 endif
 ifeq ($(strip $(FREEZE)),1)
 RENDER_DIR := $(RENDER_DIR)_frozen
@@ -39,9 +49,11 @@ FAMILY   := GW2A-18C
 BOARD    := tangnano20k
 
 VDP_SRC   := $(wildcard rtl/vdp/*.sv)
+GPU3D_SRC := $(wildcard rtl/gpu3d/*.sv)
+RTL_SRC   := $(VDP_SRC) $(GPU3D_SRC)            # ベンダ非依存の RTL (シミュレーションと lint)
 GOWIN_SRC := $(wildcard rtl/gowin/*.sv)
 GOWIN_BB  := $(wildcard rtl/gowin/blackbox/*.sv)   # 合成専用のプリミティブ定義
-SYN_SRC   := $(VDP_SRC) $(GOWIN_SRC)
+SYN_SRC   := $(RTL_SRC) $(GOWIN_SRC)
 
 TBS      := $(basename $(notdir $(wildcard sim/tb_*.sv)))
 SIM_LIB  := $(filter-out sim/tb_%.sv,$(wildcard sim/*.sv))   # テストベンチが使うモデル (sdram_model など)
@@ -113,29 +125,31 @@ $(BUILD)/sim $(RENDER_DIR):
 
 # ---------------------------------------------------------------- 検証
 lint:
-	$(FPGA) verilator --lint-only -Wall --top-module vdp_video -GMODE=0 $(VDP_SRC)
-	$(FPGA) verilator --lint-only -Wall --top-module vdp_video -GMODE=1 $(VDP_SRC)
-	$(FPGA) verilator --lint-only -Wall --top-module spi_slave $(VDP_SRC)
-	$(FPGA) verilator --lint-only -Wall --top-module vdp_regs $(VDP_SRC)
-	$(FPGA) verilator --lint-only -Wall --top-module sdram_ctrl $(VDP_SRC)
-	$(FPGA) verilator --lint-only -Wall --top-module mem_test $(VDP_SRC)
-	$(FPGA) verilator --lint-only -Wall --top-module sdram_arb $(VDP_SRC)
-	$(FPGA) verilator --lint-only -Wall --top-module line_compositor $(VDP_SRC)
-	$(FPGA) verilator --lint-only -Wall --top-module tile_layer $(VDP_SRC)
-	$(FPGA) verilator --lint-only -Wall --top-module sprite_layer $(VDP_SRC)
-	$(FPGA) verilator --lint-only -Wall --top-module audio_out $(VDP_SRC)
-	$(FPGA) verilator --lint-only -Wall --top-module mode7_layer $(VDP_SRC)
-	$(FPGA) verilator --lint-only -Wall --top-module gpu $(VDP_SRC)
+	$(FPGA) verilator --lint-only -Wall --top-module vdp_video -GMODE=0 $(RTL_SRC)
+	$(FPGA) verilator --lint-only -Wall --top-module vdp_video -GMODE=1 $(RTL_SRC)
+	$(FPGA) verilator --lint-only -Wall --top-module spi_slave $(RTL_SRC)
+	$(FPGA) verilator --lint-only -Wall --top-module vdp_regs $(RTL_SRC)
+	$(FPGA) verilator --lint-only -Wall --top-module sdram_ctrl $(RTL_SRC)
+	$(FPGA) verilator --lint-only -Wall --top-module mem_test $(RTL_SRC)
+	$(FPGA) verilator --lint-only -Wall --top-module sdram_arb $(RTL_SRC)
+	$(FPGA) verilator --lint-only -Wall --top-module line_compositor $(RTL_SRC)
+	$(FPGA) verilator --lint-only -Wall --top-module tile_layer $(RTL_SRC)
+	$(FPGA) verilator --lint-only -Wall --top-module sprite_layer $(RTL_SRC)
+	$(FPGA) verilator --lint-only -Wall --top-module audio_out $(RTL_SRC)
+	$(FPGA) verilator --lint-only -Wall --top-module mode7_layer $(RTL_SRC)
+	$(FPGA) verilator --lint-only -Wall --top-module gpu $(RTL_SRC)
+	$(FPGA) verilator --lint-only -Wall --top-module fb_line $(RTL_SRC)
+	$(FPGA) verilator --lint-only -Wall --top-module mul_probe $(RTL_SRC)
 
 sim: $(addprefix sim-,$(TBS))
 
-$(addprefix sim-,$(TBS)): sim-%: sim/%.sv $(VDP_SRC) $(SIM_LIB) | $(BUILD)/sim
+$(addprefix sim-,$(TBS)): sim-%: sim/%.sv $(RTL_SRC) $(SIM_LIB) | $(BUILD)/sim
 ifeq ($(strip $(SIM)),verilator)
 	$(FPGA) verilator --binary --timing -Wno-fatal -Wno-lint -Wno-style \
-		--top-module $* -Mdir $(BUILD)/sim/obj_$* -o $* $< $(VDP_SRC) $(SIM_LIB)
+		--top-module $* -Mdir $(BUILD)/sim/obj_$* -o $* $< $(RTL_SRC) $(SIM_LIB)
 	$(FPGA) $(BUILD)/sim/obj_$*/$*
 else
-	$(FPGA) iverilog -g2012 -Wall -Wno-timescale -o $(BUILD)/sim/$*.vvp -s $* $< $(VDP_SRC) $(SIM_LIB)
+	$(FPGA) iverilog -g2012 -Wall -Wno-timescale -o $(BUILD)/sim/$*.vvp -s $* $< $(RTL_SRC) $(SIM_LIB)
 	$(FPGA) vvp -n $(BUILD)/sim/$*.vvp
 endif
 
@@ -149,50 +163,54 @@ render: | $(RENDER_DIR)
 
 # シナリオをシステム全体の RTL (Verilator) で走らせ、参照モデル (tools/harness/gpu_model.py) と比べる
 SCENARIO ?= scenarios/m5_basic.json
-SCN_DIR   = $(BUILD)/scenario/$(basename $(notdir $(SCENARIO)))
+SCN_DIR   = $(BUILD)/scenario$(SCN_SUFFIX)/$(basename $(notdir $(SCENARIO)))
+ifeq ($(strip $(TARGET)),gpu3d)
+SCN_SUFFIX := _gpu3d
+SCN_PARAMS := -GGPU3D=1
+endif
 
 scenario:
 	@mkdir -p $(SCN_DIR)
 	$(FPGA) python3 tools/harness/gpu_model.py export $(SCENARIO) $(SCN_DIR)
 	$(FPGA) verilator --binary --timing -O2 -Wno-fatal -Wno-lint -Wno-style \
-		--top-module gpu_scenario_tb -Mdir $(BUILD)/scenario/obj -o gpu_scenario \
-		sim/scenario/gpu_scenario_tb.sv $(VDP_SRC) $(SIM_LIB)
-	$(FPGA) $(BUILD)/scenario/obj/gpu_scenario +cmds=$(SCN_DIR)/cmds.hex +checks=$(SCN_DIR)/checks.txt +out=$(SCN_DIR)
+		--top-module gpu_scenario_tb $(SCN_PARAMS) -Mdir $(BUILD)/scenario$(SCN_SUFFIX)/obj -o gpu_scenario \
+		sim/scenario/gpu_scenario_tb.sv $(RTL_SRC) $(SIM_LIB)
+	$(FPGA) $(BUILD)/scenario$(SCN_SUFFIX)/obj/gpu_scenario +cmds=$(SCN_DIR)/cmds.hex +checks=$(SCN_DIR)/checks.txt +out=$(SCN_DIR)
 	$(FPGA) python3 tools/harness/gpu_model.py compare $(SCENARIO) $(SCN_DIR)
 
 # ---------------------------------------------------------------- 実装
-synth: $(BUILD)/$(TOP).json
-pnr: $(BUILD)/$(TOP)_pnr.json
-bitstream: $(BUILD)/$(TOP).fs
+synth: $(OUT_DIR)/$(TOP).json
+pnr: $(OUT_DIR)/$(TOP)_pnr.json
+bitstream: $(OUT_DIR)/$(TOP).fs
 
 # SystemVerilog は yosys-slang プラグイン (read_slang) で読む
-$(BUILD)/$(TOP).json: $(SYN_SRC) $(GOWIN_BB)
-	@mkdir -p $(BUILD)
-	$(FPGA) yosys -m slang -q -l $(BUILD)/$(TOP)_yosys.log \
-		-p "read_slang --top $(TOP) $(SYN_SRC) $(GOWIN_BB); synth_gowin -family gw2a -top $(TOP) -json $@"
+$(OUT_DIR)/$(TOP).json: $(SYN_SRC) $(GOWIN_BB)
+	@mkdir -p $(OUT_DIR)
+	$(FPGA) yosys -m slang -q -l $(OUT_DIR)/$(TOP)_yosys.log \
+		-p "read_slang --top $(TOP) $(TOP_PARAMS) $(SYN_SRC) $(GOWIN_BB); synth_gowin -family gw2a -top $(TOP) -json $@"
 	$(FPGA) python3 scripts/fix_netlist.py $@ $(TOP)
 
-$(BUILD)/$(TOP)_pnr.json: $(BUILD)/$(TOP).json $(CST)
-	$(FPGA) nextpnr-himbaechel -q -l $(BUILD)/$(TOP)_nextpnr.log \
+$(OUT_DIR)/$(TOP)_pnr.json: $(OUT_DIR)/$(TOP).json $(CST)
+	$(FPGA) nextpnr-himbaechel -q -l $(OUT_DIR)/$(TOP)_nextpnr.log \
 		--json $< --write $@ --device $(DEVICE) \
 		--vopt family=$(FAMILY) --vopt cst=$(CST) --vopt sspi_as_gpio
 
-$(BUILD)/$(TOP).fs: $(BUILD)/$(TOP)_pnr.json
+$(OUT_DIR)/$(TOP).fs: $(OUT_DIR)/$(TOP)_pnr.json
 	$(FPGA) gowin_pack -d $(FAMILY) --sspi_as_gpio -o $@ $<
-	@grep -A30 'Device utilisation' $(BUILD)/$(TOP)_nextpnr.log | grep -E 'LUT|DFF|BSRAM|PLL|OSER|IOB' || true
-	@grep -E 'Max frequency' $(BUILD)/$(TOP)_nextpnr.log | tail -n 4 || true
+	@grep -A30 'Device utilisation' $(OUT_DIR)/$(TOP)_nextpnr.log | grep -E 'LUT|DFF|BSRAM|PLL|OSER|IOB' || true
+	@grep -E 'Max frequency' $(OUT_DIR)/$(TOP)_nextpnr.log | tail -n 4 || true
 
 # ハーネスが駆動するピン (harness/pins.json) を FPGA も駆動しようとしていないか検査する。
 # ハーネスがつながっている前提なので、prog / flash は必ずこれを通してから書き込む
-pincheck: $(BUILD)/$(TOP).fs
-	$(FPGA) python3 scripts/pincheck.py $(HARNESS_PINS) $(CST) $(BUILD)/$(TOP).json $<
+pincheck: $(OUT_DIR)/$(TOP).fs
+	$(FPGA) python3 scripts/pincheck.py $(HARNESS_PINS) $(CST) $(OUT_DIR)/$(TOP).json $<
 
 # Docker Desktop (macOS) のコンテナからは USB が見えないので書き込みだけはホストで行う
 prog: pincheck
-	openFPGALoader -b $(BOARD) $(BUILD)/$(TOP).fs
+	openFPGALoader -b $(BOARD) $(OUT_DIR)/$(TOP).fs
 
 flash: pincheck
-	openFPGALoader -b $(BOARD) -f $(BUILD)/$(TOP).fs
+	openFPGALoader -b $(BOARD) -f $(OUT_DIR)/$(TOP).fs
 
 # M9 のデモ: ハーネス (USB) を使うのでホストで動かす。FPGA に HDMI の設計が入っている前提
 FRAMES ?= 0
