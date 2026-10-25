@@ -6,9 +6,11 @@
 //     Ah * B = uAh * uB - (Ah < 0 ? uB << 18 : 0) - (B < 0 ? uAh << 18 : 0)    (36bit で回る。|Ah * B| < 2^35 なので正しい)
 //     Al * B = uAl * uB - (B < 0 ? uAl << 18 : 0)                              (同じ)
 //     P = (Ah * B) << 18 + Al * B
-//   1 クロックに 1 つ入れられる。結果は入れてから 3 クロック後 (in_valid → out_valid)。tag は結果と一緒に出てくる
+//   1 クロックに 1 つ入れられる。結果は入れてから 3 クロック後 (in_valid → out_valid)。tag は結果と一緒に出てくる。
+//   P_W を小さくすると積の下位 P_W ビットだけ出す (2 の補数で回った値)
 module smul36x18 #(
-    parameter int TAG_W = 8
+    parameter int TAG_W = 8,
+    parameter int P_W   = 54
 ) (
     input  logic               clk,
     input  logic               in_valid,
@@ -16,7 +18,7 @@ module smul36x18 #(
     input  logic signed [17:0] b,
     input  logic [TAG_W-1:0]   in_tag,
     output logic               out_valid,
-    output logic signed [53:0] p,
+    output logic signed [P_W-1:0] p,
     output logic [TAG_W-1:0]   out_tag
 );
     // 1 段目: 入力
@@ -53,6 +55,6 @@ module smul36x18 #(
     always_ff @(posedge clk) begin
         out_valid <= v2;
         out_tag   <= t2;
-        p         <= (54'(signed'(hb)) <<< 18) + 54'(signed'(lb));
+        p         <= P_W'((54'(signed'(hb)) <<< 18) + 54'(signed'(lb)));
     end
 endmodule

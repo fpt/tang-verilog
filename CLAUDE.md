@@ -19,7 +19,9 @@ Tang Nano 20K (FPGA, VDP 本体) + RP2350 (ホスト CPU) でレトロゲーム�
 
 - SystemVerilog (`.sv`) で書く。合成は yosys-slang (`yosys -m slang` の `read_slang`)、シミュレーションは Icarus Verilog と Verilator の両方で通る書き方にする
   - Yosys 標準の `read_verilog -sv` は関数内の `return` などを読めないので使わない
-  - Icarus Verilog は `@(posedge clk iff ...)` や、ブロック途中での `automatic` 変数宣言に対応していない (テストベンチで注意)
+  - Icarus Verilog は `@(posedge clk iff ...)` や、ブロック途中での `automatic` 変数宣言に対応していない (テストベンチで注意)。
+    enum の三項演算子の代入 (if で書く)、関数の戻り値の部分選択 (`f(x)[3:0]`)、連想配列も通らない
+  - yosys-slang は宣言より前に使った名前をエラーにする (Verilator と Icarus は通す)。`assign` は使う信号の宣言のあとに置く
 - Gowin プリミティブを新たに使うときは `rtl/gowin/blackbox/gowin_prims.sv` にブラックボックス定義を足す (read_slang はパラメータ付きの未知モジュールを受け付けないため)
 - Tang Nano 20K の HDMI ピンは TLVDS (`TLVDS_OBUF`, `IO_TYPE=LVDS25`, p/n を個別に制約)。`synth_gowin` には `-family gw2a` が必要。迷ったら apicula の `examples/` (特に `tangnano20k.cst`, `DVI/`) を参照する
 - `rtl/vdp/` と `rtl/gpu3d/` はベンダ非依存に保つ。Gowin のプリミティブ (rPLL, CLKDIV, OSER10, TLVDS_OBUF など) は `rtl/gowin/` にだけ置く

@@ -118,7 +118,7 @@ module gpu_scenario_tb #(
     logic [15:0] pcm_wr;
     logic [20:0] p_addr;
 
-    logic        t3_push, t3_go, t3_busy;
+    logic        t3_push, t3_go, t3_busy, t3_error;
     logic [31:0] t3_word;
     logic [12:0] draw_base, z_base;
     logic [8:0]  clip_x0, clip_x1;
@@ -139,30 +139,36 @@ module gpu_scenario_tb #(
         .tileb_scroll_x, .tileb_scroll_y, .tileb_map_base, .tileb_pat_base, .tileb_ctrl, .win_h, .win_v, .win_map_base, .hs_mode, .hs_base,
         .vram_we, .vram_waddr, .vram_wdata, .pal_we, .pal_waddr, .pal_wdata,
         .audio_en, .audio_clear, .pcm_base, .pcm_size, .pcm_wr,
-        .t3_push, .t3_word, .t3_go, .t3_busy, .draw_base_o(draw_base), .z_base, .clip_x0, .clip_x1, .clip_y0, .clip_y1
+        .t3_push, .t3_word, .t3_go, .t3_busy, .t3_error, .draw_base_o(draw_base), .z_base, .clip_x0, .clip_x1, .clip_y0, .clip_y1
     );
 
     if (GPU3D != 0) begin : g_tri
         // 3D GPU: 三角形の描画 (アービタの d)。走査・描いたピクセルと busy のクロックを最後に出す (測る用)
-        logic [31:0] walked, drawn, cycles;
-        tri_engine u_tri (
+        logic [31:0] bin, pairs, prep, fetch, mul, walk, outc, walked, drawn;
+        raster3d u_r3d (
             .clk(clk_sys), .rst,
-            .push(t3_push), .word(t3_word), .go(t3_go), .busy(t3_busy),
+            .push(t3_push), .word(t3_word), .go(t3_go), .busy(t3_busy), .error(t3_error),
             .draw_base, .z_base, .cx0(clip_x0), .cx1(clip_x1), .cy0(clip_y0), .cy1(clip_y1),
             .mem_req(p_req), .mem_we(p_we), .mem_addr(p_addr), .mem_len(p_len), .mem_wdata(p_wdata), .mem_wmask(p_wmask),
             .mem_ack(p_ack), .mem_wnext(p_wnext), .mem_rvalid(p_rvalid), .mem_rdata(m_rdata),
-            .walked, .drawn, .cycles
+            .st_bin(bin), .st_pairs(pairs), .st_prep(prep), .st_fetch(fetch), .st_mul(mul), .st_walk(walk), .st_out(outc),
+            .st_walked(walked), .st_drawn(drawn)
         );
-        int d_words = 0, tris = 0;
+        int d_words = 0, tris = 0, errs = 0;
         always @(posedge clk_sys) begin
             if (p_rvalid || p_wnext) d_words++;
             if (t3_go) tris++;
+            if (t3_error) errs++;
         end
-        final $display("  tri: %0d triangles, %0d pixels walked, %0d drawn, %0d busy cycles, %0d SDRAM words", tris, walked, drawn, cycles, d_words);
+        final begin
+            $display("  tri: %0d commands, binning %0d cycles, %0d tile pairs, %0d SDRAM words, %0d errors", tris, bin, pairs, d_words, errs);
+            $display("  tiles: prep %0d, fetch %0d, mul %0d, walk %0d (walked %0d, drawn %0d), out %0d cycles",
+                     prep, fetch, mul, walk, walked, drawn, outc);
+        end
     end else begin : g_audio
         // 音 (K5a): 実機と同じく SDRAM の PCM のリングを読む (I2S の出力は見ない。表示の読み出しの待ちに効かないことを数える)
         assign {p_we, p_wdata, p_wmask, p_len} = {1'b0, 32'h0, 4'h0, 9'd1};
-        assign t3_busy = 1'b0;
+        assign {t3_busy, t3_error} = 2'b00;
         audio_out u_audio (
             .clk(clk_sys), .rst, .enable(audio_en), .clear(audio_clear), .base(pcm_base), .size_log2(pcm_size), .wr(pcm_wr),
             .addr(4'd0), .re(1'b0), .rdata(),

@@ -72,7 +72,7 @@ module tb_gpu;
         .tileb_scroll_x, .tileb_scroll_y, .tileb_map_base, .tileb_pat_base, .tileb_ctrl, .win_h, .win_v, .win_map_base, .hs_mode, .hs_base,
         .vram_we, .vram_waddr, .vram_wdata, .pal_we, .pal_waddr, .pal_wdata,
         .audio_en, .audio_clear, .pcm_base, .pcm_size, .pcm_wr,
-        .mark_req, .line_start, .line_num, .ready, .t3_busy(1'b0)
+        .mark_req, .line_start, .line_num, .ready, .t3_busy(1'b0), .t3_error(1'b0)
     );
 
     // VRAM とパレットへの書き込みを記録する
