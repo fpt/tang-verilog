@@ -118,7 +118,17 @@ module gpu_scenario_tb #(
     logic [15:0] pcm_wr;
     logic [20:0] p_addr;
 
-    gpu u_gpu (
+    logic        t3_push, t3_go, t3_busy;
+    logic [31:0] t3_word;
+    logic [12:0] draw_base, z_base;
+    logic [8:0]  clip_x0, clip_x1;
+    logic [7:0]  clip_y0, clip_y1;
+    logic        p_we, p_wnext;
+    logic [31:0] p_wdata;
+    logic [3:0]  p_wmask;
+    logic [8:0]  p_len;
+
+    gpu #(.GPU3D(GPU3D)) u_gpu (
         .clk(clk_sys), .rst, .addr, .wdata, .we, .re, .rdata,
         .mem_req(g_req), .mem_we(g_we), .mem_addr(g_addr), .mem_wdata(g_wdata), .mem_wmask(g_wmask),
         .mem_len(g_len), .mem_ack(g_ack), .mem_wnext(g_wnext), .mem_rvalid(g_rvalid), .mem_rdata(m_rdata),
@@ -128,18 +138,39 @@ module gpu_scenario_tb #(
         .spr_pat_base, .spr_bank, .spr_line_cols, .oam_we, .light_we, .xreg_we, .xreg_idx, .xreg_data,
         .tileb_scroll_x, .tileb_scroll_y, .tileb_map_base, .tileb_pat_base, .tileb_ctrl, .win_h, .win_v, .win_map_base, .hs_mode, .hs_base,
         .vram_we, .vram_waddr, .vram_wdata, .pal_we, .pal_waddr, .pal_wdata,
-        .audio_en, .audio_clear, .pcm_base, .pcm_size, .pcm_wr
+        .audio_en, .audio_clear, .pcm_base, .pcm_size, .pcm_wr,
+        .t3_push, .t3_word, .t3_go, .t3_busy, .draw_base_o(draw_base), .z_base, .clip_x0, .clip_x1, .clip_y0, .clip_y1
     );
 
-    // 音 (K5a): 実機と同じく SDRAM の PCM のリングを読む (I2S の出力は見ない。表示の読み出しの待ちに効かないことを数える)
-    audio_out u_audio (
-        .clk(clk_sys), .rst, .enable(audio_en), .clear(audio_clear), .base(pcm_base), .size_log2(pcm_size), .wr(pcm_wr),
-        .addr(4'd0), .re(1'b0), .rdata(),
-        .mem_req(p_req), .mem_addr(p_addr), .mem_ack(p_ack), .mem_rvalid(p_rvalid), .mem_rdata(m_rdata),
-        .bck(), .ws(), .din(), .pa_en()
-    );
-
-    final $display("  audio: %0d samples played, %0d underruns", u_audio.rd, u_audio.underrun);
+    if (GPU3D != 0) begin : g_tri
+        // 3D GPU: 三角形の描画 (アービタの d)。走査・描いたピクセルと busy のクロックを最後に出す (測る用)
+        logic [31:0] walked, drawn, cycles;
+        tri_engine u_tri (
+            .clk(clk_sys), .rst,
+            .push(t3_push), .word(t3_word), .go(t3_go), .busy(t3_busy),
+            .draw_base, .z_base, .cx0(clip_x0), .cx1(clip_x1), .cy0(clip_y0), .cy1(clip_y1),
+            .mem_req(p_req), .mem_we(p_we), .mem_addr(p_addr), .mem_len(p_len), .mem_wdata(p_wdata), .mem_wmask(p_wmask),
+            .mem_ack(p_ack), .mem_wnext(p_wnext), .mem_rvalid(p_rvalid), .mem_rdata(m_rdata),
+            .walked, .drawn, .cycles
+        );
+        int d_words = 0, tris = 0;
+        always @(posedge clk_sys) begin
+            if (p_rvalid || p_wnext) d_words++;
+            if (t3_go) tris++;
+        end
+        final $display("  tri: %0d triangles, %0d pixels walked, %0d drawn, %0d busy cycles, %0d SDRAM words", tris, walked, drawn, cycles, d_words);
+    end else begin : g_audio
+        // 音 (K5a): 実機と同じく SDRAM の PCM のリングを読む (I2S の出力は見ない。表示の読み出しの待ちに効かないことを数える)
+        assign {p_we, p_wdata, p_wmask, p_len} = {1'b0, 32'h0, 4'h0, 9'd1};
+        assign t3_busy = 1'b0;
+        audio_out u_audio (
+            .clk(clk_sys), .rst, .enable(audio_en), .clear(audio_clear), .base(pcm_base), .size_log2(pcm_size), .wr(pcm_wr),
+            .addr(4'd0), .re(1'b0), .rdata(),
+            .mem_req(p_req), .mem_addr(p_addr), .mem_ack(p_ack), .mem_rvalid(p_rvalid), .mem_rdata(m_rdata),
+            .bck(), .ws(), .din(), .pa_en()
+        );
+        final $display("  audio: %0d samples played, %0d underruns", u_audio.rd, u_audio.underrun);
+    end
 
     sdram_arb u_arb (
         .clk(clk_sys), .rst,
@@ -149,7 +180,8 @@ module gpu_scenario_tb #(
         .b_ack(g_ack), .b_rvalid(g_rvalid), .b_wnext(g_wnext),
         .c_req(1'b0), .c_we(1'b0), .c_addr(21'h0), .c_wdata(32'h0), .c_wmask(4'h0), .c_len(9'd1),
         .c_ack(), .c_rvalid(), .c_wnext(),
-        .d_req(p_req), .d_addr(p_addr), .d_len(9'd1), .d_ack(p_ack), .d_rvalid(p_rvalid),
+        .d_req(p_req), .d_we(p_we), .d_addr(p_addr), .d_wdata(p_wdata), .d_wmask(p_wmask), .d_len(p_len),
+        .d_ack(p_ack), .d_rvalid(p_rvalid), .d_wnext(p_wnext),
         .m_req, .m_we, .m_addr, .m_wdata, .m_wmask, .m_len, .m_ack, .m_rvalid, .m_wnext
     );
 

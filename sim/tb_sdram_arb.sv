@@ -1,4 +1,4 @@
-// SDRAM の調停: 4 つ同時に頼まれたら a -> d -> b -> c の順。ack / rvalid / wnext は許可した利用者にだけ返る
+// SDRAM の調停: 4 つ同時に頼まれたら a -> d -> b -> c の順。ack / rvalid / wnext は許可した利用者にだけ返る。d の書き込み (3D GPU) も
 `timescale 1ns/1ps
 module tb_sdram_arb;
     logic        clk = 0, rst = 1;
@@ -9,8 +9,10 @@ module tb_sdram_arb;
     logic [3:0]  a_wmask = 4'h1, b_wmask = 4'h2, c_wmask = 4'h4;
     logic [8:0]  a_len = 9'd3, b_len = 9'd2, c_len = 9'd1;
     logic        a_ack, a_rvalid, a_wnext, b_ack, b_rvalid, b_wnext, c_ack, c_rvalid, c_wnext;
-    logic        d_req = 0, d_ack, d_rvalid;
+    logic        d_req = 0, d_ack, d_rvalid, d_wnext, d_we = 0;
     logic [20:0] d_addr = 21'h000DDD;
+    logic [31:0] d_wdata = 32'hDDDD_DDDD;
+    logic [3:0]  d_wmask = 4'h8;
     logic [8:0]  d_len = 9'd1;
     logic        m_req, m_we, m_ack = 0, m_rvalid = 0, m_wnext = 0;
     logic [20:0] m_addr;
@@ -26,6 +28,7 @@ module tb_sdram_arb;
     int acks [4] = '{0, 0, 0, 0};
     int rvalids [4] = '{0, 0, 0, 0};
     int wnexts [3] = '{0, 0, 0};
+    int dwn = 0;
     always @(posedge clk) begin
         if (a_ack) acks[0]++;
         if (b_ack) acks[1]++;
@@ -35,6 +38,7 @@ module tb_sdram_arb;
         if (c_rvalid) rvalids[2]++;
         if (d_ack) acks[3]++;
         if (d_rvalid) rvalids[3]++;
+        if (d_wnext) dwn++;
         if (a_wnext) wnexts[0]++;
         if (b_wnext) wnexts[1]++;
         if (c_wnext) wnexts[2]++;
@@ -84,6 +88,18 @@ module tb_sdram_arb;
         if (rvalids[0] != 3 || rvalids[1] != 0 || rvalids[2] != 0) begin $display("  rvalid: %0d %0d %0d", rvalids[0], rvalids[1], rvalids[2]); errors++; end
         if (wnexts[0] != 0 || wnexts[1] != 2 || wnexts[2] != 1) begin $display("  wnext: %0d %0d %0d", wnexts[0], wnexts[1], wnexts[2]); errors++; end
         if (m_req !== 1'b0) begin $display("  m_req still high"); errors++; end
+
+        // d の書き込み (b と同時): d が先、wnext は d にだけ、データとマスクも d のもの
+        d_we = 1; d_len = 9'd3; b_req = 1; d_req = 1;
+        begin
+            logic [20:0] ad; logic [3:0] mk;
+            @(negedge clk);
+            if (m_wdata !== 32'hDDDD_DDDD) begin $display("  d write data not routed: %h", m_wdata); errors++; end
+            serve(ad, mk); d_req = 0;
+            if (ad !== 21'h000DDD || mk !== 4'h8 || dwn != 3) begin $display("  d write: addr %h mask %h wnext %0d", ad, mk, dwn); errors++; end
+            serve(ad, mk); b_req = 0;
+        end
+        if (wnexts[1] != 4) begin $display("  b wnext after d write: %0d", wnexts[1]); errors++; end
 
         if (errors == 0) $display("PASS: tb_sdram_arb");
         else             $display("FAIL: tb_sdram_arb (%0d errors)", errors);

@@ -25,6 +25,8 @@ Tang Nano 20K (FPGA, VDP 本体) + RP2350 (ホスト CPU) でレトロゲーム�
 - `rtl/vdp/` と `rtl/gpu3d/` はベンダ非依存に保つ。Gowin のプリミティブ (rPLL, CLKDIV, OSER10, TLVDS_OBUF など) は `rtl/gowin/` にだけ置く
 - **符号付きの乗算を DSP に置かせない**。yosys は `*` を Gowin の DSP (MULT9X9 / MULT18X18) に置くが、符号付き (`ASIGN` / `BSIGN`) は実機で効かず、符号なしで掛けた値になる
   (docs/GPU3D_PLAN.md の G0)。符号付きの値は符号なしで掛けて補正する (`rtl/gpu3d/mul_probe.sv` の Q) か、シフトと加算で組む
+- **LUT の RAM (RAM16SDP4) を使わない**。オープンソースのツールで作った分散 RAM は実機で値が化ける (docs/GPU3D_PLAN.md の G1)。
+  Makefile の `synth_gowin -nolutram` で止めている。小さい配列はフリップフロップ、大きいものは BSRAM (同期読み出し) に置く
 - `rtl/vdp/`・`rtl/gpu3d/` にモジュールを足したら `sim/tb_<名前>.sv` にテストベンチを書く。テストベンチは成功時に `PASS:`、失敗時に `FAIL:` を出力し、VCD は `build/sim/` に出す
 - 映像まわりを変えたら `make render` で PNG を出し、見た目を確認する
 
