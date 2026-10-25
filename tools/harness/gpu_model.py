@@ -48,6 +48,9 @@ rtl/vdp/gpu.sv と同じ規則でコマンドを解釈し、表示される面�
       {"op": "begin_scene", "color": "#rrggbb", "clear_z": true, "write_z": false}   # TBDR のシーン (G2)。color があれば描く面を
                                                  # その色から、clear_z なら Z を 0xFFFF から (なければ今の面と Z_BASE を読む)。write_z で Z を書き戻す
       {"op": "end_scene"}                       # シーンをタイルごとに描く
+      {"op": "upload_tex", "addr": 655360, "fmt": "16", "w": 64, "h": 64, "kind": "checker"}   # テクスチャを SDRAM に (G3)
+      {"op": "set_tex", "base": 655360, "fmt": "16", "w": 64, "h": 64, "clut": 0}   # 今のテクスチャ (fmt "16" / "8" / "4")。TRI に "uv": [[u, v], ...] (テクセル)
+      {"op": "clut", "index": 0, "colors": ["#rrggbb", ...]}   # CLUT (256 色、8 / 4bpp のテクスチャの色)
       {"op": "demo_setup"}, {"op": "demo_frame", "frame": 120, "mark": true}   # M9 のデモ (demo.py) のコマンド
       {"op": "md_frame", "variant": 0, "mark": true}   # メガドラの形式の決まったフレーム (md.py) を直したもの。印付きの 1 フレーム
   ]}
@@ -67,6 +70,8 @@ OP_VRAM_WRITE, OP_PAL_WRITE, OP_STRETCH, OP_OAM_WRITE = 0x0C, 0x0D, 0x0E, 0x0F
 OP_LIGHT_WRITE = 0x10
 OP_TRI, OP_CLEAR_Z = 0x20, 0x24           # 3D GPU (docs/GPU3D_PLAN.md、make TARGET=gpu3d のビットストリームだけ)
 OP_BEGIN_SCENE, OP_END_SCENE = 0x25, 0x26  # 3D GPU の TBDR (G2)
+OP_SET_TEX, OP_CLUT_WRITE = 0x21, 0x28      # 3D GPU のテクスチャ (G3)
+TEX_FMT = {"16": 0, "8": 1, "4": 2}
 SCENE_MAX_TRIS, TILE_MAX_TRIS = 4096, 1024  # 1 シーンの三角形、1 タイルのリストの上限 (超えた分は描かない)
 LIGHT_W = SRC_W // 8      # ライトマップの 1 行のセル数 (40)
 # 合成のレジスタ: 名前 -> (REG_WRITE の番号, ビットの幅のマスク)
@@ -215,6 +220,18 @@ def encode(step):
         return [OP_BEGIN_SCENE << 24 | flags << 16 | (color565(step["color"]) if "color" in step else 0)]
     if op == "end_scene":
         return [OP_END_SCENE << 24]
+    if op == "set_tex":
+        fmt, wl, hl = TEX_FMT[str(step.get("fmt", "16"))], int(step["w"]).bit_length() - 1, int(step["h"]).bit_length() - 1
+        return [OP_SET_TEX << 24 | fmt << 16 | (step.get("clut", 0) & 0xFF) << 8 | wl << 4 | hl, step["base"] & 0x1FFFFF]
+    if op == "clut":
+        cols = [color565(c) for c in step["colors"]]
+        n = len(cols)
+        ws = [cols[i] | (cols[i + 1] << 16 if i + 1 < n else 0) for i in range(0, n, 2)]
+        return [OP_CLUT_WRITE << 24 | (step.get("index", 0) & 0xFF) << 16 | n] + ws
+    if op == "upload_tex":
+        fmt = TEX_FMT[str(step.get("fmt", "16"))]
+        words = tex_words(fmt, step["w"], step["h"], step.get("kind", "checker"), step.get("seed", 1))
+        return [OP_UPLOAD << 24 | len(words), step["addr"]] + words
     if op == "clear_z":
         return [OP_CLEAR_Z << 24 | (step.get("value", 0xFFFF) & 0xFFFF)]
     if op == "md_frame":
@@ -232,10 +249,11 @@ def encode(step):
 
 
 def tri_words(step):
-    """TRI のワード列: [0x20 | flags | 単色 565]、頂点ごとに {y, x} (12.4)、Gouraud なら {r, g, b}、Z なら {z}"""
+    """TRI のワード列: [0x20 | flags | 単色 565]、頂点ごとに {y, x} (12.4)、Gouraud なら {r, g, b}、Z なら {z}、テクスチャなら {v, u} (10.6)"""
     import raster
-    gouraud, zs = "rgb" in step, step.get("z")
-    flags = (raster.FLAG_GOURAUD if gouraud else 0) | (raster.FLAG_Z if zs is not None else 0)
+    gouraud, zs, uv = "rgb" in step, step.get("z"), step.get("uv")
+    flags = ((raster.FLAG_GOURAUD if gouraud else 0) | (raster.FLAG_Z if zs is not None else 0)
+             | (raster.FLAG_TEX if uv is not None else 0))
     words = [OP_TRI << 24 | flags << 16 | (color565(step["color"]) if "color" in step else 0)]
     for k, (x, y) in enumerate(step["v"]):
         xi, yi = int(round(x * 16)), int(round(y * 16))
@@ -245,6 +263,34 @@ def tri_words(step):
             words.append(int(c, 16))
         if zs is not None:
             words.append(zs[k] & 0xFFFF)
+        if uv is not None:
+            u, v = (int(round(t * 64)) & 0xFFFF for t in uv[k])     # 10.6
+            words.append(v << 16 | u)
+    return words
+
+
+def tex_words(fmt, w, h, kind="checker", seed=1):
+    """テクスチャの中身 (raster.py の並び)。16bpp は RGB565、8 / 4bpp は CLUT の番号。checker: 市松と縞、0 (透明) のところもある"""
+    import random
+    rng = random.Random(seed)
+    sh = {0: 1, 1: 2, 2: 3}[fmt]
+    words = [0] * ((w * h) >> sh)
+    for v in range(h):
+        for u in range(w):
+            if kind == "checker":
+                c = ((u >> 2) ^ (v >> 2)) & 1
+                val = (0x07E0 if c else 0xF800) ^ ((u * 37 + v * 11) & 0x1F) if fmt == 0 else (1 + c * 3 + ((u + v) >> 3)) % (256 if fmt == 1 else 16)
+                if (u + 2 * v) % 13 == 0:
+                    val = 0
+            else:
+                val = rng.randrange(1 << 16) if fmt == 0 else rng.randrange(256 if fmt == 1 else 16)
+            a = (v << (int(w).bit_length() - 1 - sh)) + (u >> sh)
+            if fmt == 0:
+                words[a] |= val << (16 * (u & 1))
+            elif fmt == 1:
+                words[a] |= val << (8 * (u & 3))
+            else:
+                words[a] |= val << (28 - 4 * (u & 7))
     return words
 
 
@@ -575,6 +621,8 @@ class Model:
         self.oam = {}                                 # OAM: ワードアドレス -> 32bit
         self.light = {}                               # ライトマップ: セルの番号 -> (R, G, B) の倍率
         self.scene = None                             # TBDR のシーン (BEGIN_SCENE から END_SCENE まで): {"flags", "color", "tris"}
+        self.tex = (0, 3, 3, 0, 0)                     # 今のテクスチャ (形式, 幅の log2, 高さの log2, CLUT のずらし, base)
+        self.clut = [0] * 256
         # 印を付けたフレーム: {"line_regs": {ライン: レジスタ}, "fb_base": ..} と、記録中かどうか・今のライン
         self.marked = None
         self.recording = False
@@ -754,10 +802,20 @@ class Model:
                 import raster
                 n = raster.words_per_tri((w >> 16) & 0xFF)
                 if self.scene is not None:
-                    self.scene["tris"].append((words[i:i + n], self.clip))
+                    self.scene["tris"].append((words[i:i + n], self.clip, self.tex))
                 else:
                     self.tri(words[i:i + n])
                 i += n
+            elif op == OP_SET_TEX:
+                w1 = words[i + 1]
+                self.tex = ((w >> 16) & 3, (w >> 4) & 15, w & 15, (w >> 8) & 0xFF, w1 & 0x1FFFFF)
+                i += 2
+            elif op == OP_CLUT_WRITE:
+                n, idx = w & 0x1FF, (w >> 16) & 0xFF
+                for k in range(n):
+                    d = words[i + 1 + k // 2]
+                    self.clut[(idx + k) & 0xFF] = d >> 16 if k % 2 else d & 0xFFFF
+                i += 1 + (n + 1) // 2
             elif op == OP_BEGIN_SCENE:
                 self.scene = {"flags": (w >> 16) & 0xFF, "color": w & 0xFFFF, "tris": []}
                 i += 1
@@ -808,7 +866,7 @@ class Model:
         w = self.mem.get(a, 0)
         self.mem[a] = (w & 0xFFFF) | z << 16 if x % 2 else (w & 0xFFFF0000) | z
 
-    def tri(self, words, clip=None, zget=None, zset=None, keep=None):
+    def tri(self, words, clip=None, zget=None, zset=None, keep=None, tex=None):
         """raster.py の規則で三角形を描く面 (RGB565) に描く。Z なら Z バッファ (既定は Z_BASE、シーンでは zget / zset) でテストして書く。
         keep(x, y) が偽のピクセルは描かない (タイルのリストから落ちた分)"""
         import raster
@@ -817,14 +875,28 @@ class Model:
         rec = raster.setup(vs, clip or self.clip)
         if rec is None:
             return
-        for x, y, inside, rgb, z in raster.pixels(rec):
+        tex = tex or self.tex
+        for x, y, inside, rgb, z, uv in raster.pixels(rec):
             if not inside or (keep and not keep(x, y)):
                 continue
+            if flags & raster.FLAG_TEX:
+                t = raster.texel(self.tex_read, tex, self.clut, uv)
+                if t == 0:
+                    continue                      # 透明
+                c = raster.modulate(t, rgb) if flags & raster.FLAG_GOURAUD else t
+            else:
+                c = raster.to565(rgb) if flags & raster.FLAG_GOURAUD else color
             if flags & raster.FLAG_Z:
                 if not z < zget(x, y):
                     continue
                 zset(x, y, z)
-            self.put565(self.draw_base, x, y, raster.to565(rgb) if flags & raster.FLAG_GOURAUD else color)
+            self.put565(self.draw_base, x, y, c)
+
+    def tex_read(self, a):
+        w = self.mem.get(a)
+        if w is None:
+            raise ValueError(f"texture reads unwritten SDRAM word {a:#x}")
+        return w
 
     def put565(self, base, x, y, c):
         a = (base + y) * 256 + x // 2
@@ -849,7 +921,7 @@ class Model:
                 return zbuf[x, y]
             return 0xFFFF if flags & 2 else self.zget(x, y)
         counts = [0] * 80
-        for k, (words, clip) in enumerate(sc["tris"][:SCENE_MAX_TRIS]):
+        for k, (words, clip, tex) in enumerate(sc["tris"][:SCENE_MAX_TRIS]):
             _, _, vs = raster.parse(words)
             rec = raster.setup(vs, clip)
             if rec is None:
@@ -863,7 +935,7 @@ class Model:
                         counts[t] += 1
                         listed.add(t)
             self.tri(words, clip, zget, lambda x, y, z: zbuf.__setitem__((x, y), z),
-                     lambda x, y: (y >> 5) * 10 + (x >> 5) in listed)
+                     lambda x, y: (y >> 5) * 10 + (x >> 5) in listed, tex)
         if flags & 4:
             for y in range(SRC_H):
                 for x in range(SRC_W):
