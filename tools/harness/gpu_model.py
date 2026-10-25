@@ -45,6 +45,9 @@ rtl/vdp/gpu.sv と同じ規則でコマンドを解釈し、表示される面�
       {"op": "tri", "v": [[x, y], [x, y], [x, y]], "color": "#rrggbb"}   # 三角形 (3D GPU、raster.py)。座標はピクセル (小数可、1/16 に丸める)。
                                                  # "rgb": ["#..", "#..", "#.."] で Gouraud、"z": [z0, z1, z2] で Z テスト / 書き込み
       {"op": "clear_z", "value": 65535}         # Z バッファ (Z_BASE、320 x 240 x 16bit) を塗る
+      {"op": "begin_scene", "color": "#rrggbb", "clear_z": true, "write_z": false}   # TBDR のシーン (G2)。color があれば描く面を
+                                                 # その色から、clear_z なら Z を 0xFFFF から (なければ今の面と Z_BASE を読む)。write_z で Z を書き戻す
+      {"op": "end_scene"}                       # シーンをタイルごとに描く
       {"op": "demo_setup"}, {"op": "demo_frame", "frame": 120, "mark": true}   # M9 のデモ (demo.py) のコマンド
       {"op": "md_frame", "variant": 0, "mark": true}   # メガドラの形式の決まったフレーム (md.py) を直したもの。印付きの 1 フレーム
   ]}
@@ -63,6 +66,8 @@ OP_REG_WRITE, OP_WAIT_LINE, OP_WAIT_VBLANK = 0x09, 0x0A, 0x0B
 OP_VRAM_WRITE, OP_PAL_WRITE, OP_STRETCH, OP_OAM_WRITE = 0x0C, 0x0D, 0x0E, 0x0F
 OP_LIGHT_WRITE = 0x10
 OP_TRI, OP_CLEAR_Z = 0x20, 0x24           # 3D GPU (docs/GPU3D_PLAN.md、make TARGET=gpu3d のビットストリームだけ)
+OP_BEGIN_SCENE, OP_END_SCENE = 0x25, 0x26  # 3D GPU の TBDR (G2)
+SCENE_MAX_TRIS, TILE_MAX_TRIS = 4096, 1024  # 1 シーンの三角形、1 タイルのリストの上限 (超えた分は描かない)
 LIGHT_W = SRC_W // 8      # ライトマップの 1 行のセル数 (40)
 # 合成のレジスタ: 名前 -> (REG_WRITE の番号, ビットの幅のマスク)
 LAYER_REGS = {"bg_color": 0, "layer_ctrl": 1, "bitmap_key": 2, "tile_scroll_x": 3, "tile_scroll_y": 4,
@@ -205,6 +210,11 @@ def encode(step):
         return oam_write_words(0, oam_words(step["sprites"]))
     if op == "tri":
         return tri_words(step)
+    if op == "begin_scene":
+        flags = (1 if "color" in step else 0) | (2 if step.get("clear_z") else 0) | (4 if step.get("write_z") else 0)
+        return [OP_BEGIN_SCENE << 24 | flags << 16 | (color565(step["color"]) if "color" in step else 0)]
+    if op == "end_scene":
+        return [OP_END_SCENE << 24]
     if op == "clear_z":
         return [OP_CLEAR_Z << 24 | (step.get("value", 0xFFFF) & 0xFFFF)]
     if op == "md_frame":
@@ -564,6 +574,7 @@ class Model:
         self.pal = {}                                 # パレット: 番号 -> RGB565
         self.oam = {}                                 # OAM: ワードアドレス -> 32bit
         self.light = {}                               # ライトマップ: セルの番号 -> (R, G, B) の倍率
+        self.scene = None                             # TBDR のシーン (BEGIN_SCENE から END_SCENE まで): {"flags", "color", "tris"}
         # 印を付けたフレーム: {"line_regs": {ライン: レジスタ}, "fb_base": ..} と、記録中かどうか・今のライン
         self.marked = None
         self.recording = False
@@ -742,8 +753,19 @@ class Model:
             elif op == OP_TRI:
                 import raster
                 n = raster.words_per_tri((w >> 16) & 0xFF)
-                self.tri(words[i:i + n])
+                if self.scene is not None:
+                    self.scene["tris"].append((words[i:i + n], self.clip))
+                else:
+                    self.tri(words[i:i + n])
                 i += n
+            elif op == OP_BEGIN_SCENE:
+                self.scene = {"flags": (w >> 16) & 0xFF, "color": w & 0xFFFF, "tris": []}
+                i += 1
+            elif op == OP_END_SCENE:
+                if self.scene is not None:
+                    self.end_scene()
+                self.scene = None
+                i += 1
             elif op == OP_CLEAR_Z:
                 zb = self.regs["z_base"]
                 for y in range(SRC_H):
@@ -775,29 +797,78 @@ class Model:
             else:          # NOP と知らないコマンドは 1 ワード
                 i += 1
 
-    def tri(self, words):
-        """raster.py の規則で三角形を描く面 (RGB565) に描く。Z なら Z_BASE の Z バッファでテストして書く"""
+    def zget(self, x, y):
+        a = (self.regs["z_base"] + y) * 256 + x // 2
+        if a not in self.mem:
+            raise ValueError(f"TRI reads unwritten Z at ({x},{y}) (clear_z first)")
+        return self.mem[a] >> 16 if x % 2 else self.mem[a] & 0xFFFF
+
+    def zset(self, x, y, z):
+        a = (self.regs["z_base"] + y) * 256 + x // 2
+        w = self.mem.get(a, 0)
+        self.mem[a] = (w & 0xFFFF) | z << 16 if x % 2 else (w & 0xFFFF0000) | z
+
+    def tri(self, words, clip=None, zget=None, zset=None, keep=None):
+        """raster.py の規則で三角形を描く面 (RGB565) に描く。Z なら Z バッファ (既定は Z_BASE、シーンでは zget / zset) でテストして書く。
+        keep(x, y) が偽のピクセルは描かない (タイルのリストから落ちた分)"""
         import raster
+        zget, zset = zget or self.zget, zset or self.zset
         flags, color, vs = raster.parse(words)
-        rec = raster.setup(vs, self.clip)
+        rec = raster.setup(vs, clip or self.clip)
         if rec is None:
             return
-        zb = self.regs["z_base"]
         for x, y, inside, rgb, z in raster.pixels(rec):
-            if not inside:
+            if not inside or (keep and not keep(x, y)):
                 continue
             if flags & raster.FLAG_Z:
-                a = (zb + y) * 256 + x // 2
-                if a not in self.mem:
-                    raise ValueError(f"TRI reads unwritten Z at ({x},{y}) (clear_z first)")
-                old = self.mem[a] >> 16 if x % 2 else self.mem[a] & 0xFFFF
-                if not z < old:
+                if not z < zget(x, y):
                     continue
-                self.mem[a] = (self.mem[a] & 0xFFFF) | z << 16 if x % 2 else (self.mem[a] & 0xFFFF0000) | z
-            a = (self.draw_base + y) * 256 + x // 2
-            c = raster.to565(rgb) if flags & raster.FLAG_GOURAUD else color
-            w = self.mem.get(a, 0)
-            self.mem[a] = (w & 0xFFFF) | c << 16 if x % 2 else (w & 0xFFFF0000) | c
+                zset(x, y, z)
+            self.put565(self.draw_base, x, y, raster.to565(rgb) if flags & raster.FLAG_GOURAUD else color)
+
+    def put565(self, base, x, y, c):
+        a = (base + y) * 256 + x // 2
+        w = self.mem.get(a, 0)
+        self.mem[a] = (w & 0xFFFF) | c << 16 if x % 2 else (w & 0xFFFF0000) | c
+
+    def end_scene(self):
+        """TBDR (rtl/gpu3d/tile_engine.sv と同じ結果): タイル (32 x 32、80 個) ごとに、そのタイルに触れる三角形を投入順に描く。
+        BEGIN_SCENE のフラグ: bit0 描く面を色で消してから (でなければ今の面の上に)、bit1 Z を 0xFFFF から (でなければ Z_BASE から読む)、
+        bit2 最後の Z を Z_BASE に書き戻す。1 シーン 4,096 個、1 タイル 1,024 個を超えた三角形はそのタイルでは描かない"""
+        import raster
+        sc = self.scene
+        flags = sc["flags"]
+        if flags & 1:
+            for y in range(SRC_H):
+                for x in range(SRC_W):
+                    self.put565(self.draw_base, x, y, sc["color"])
+        zbuf = {}                                 # このシーンで書いた z (タイルの Z バッファ)。ほかは 0xFFFF か Z_BASE の値
+
+        def zget(x, y):
+            if (x, y) in zbuf:
+                return zbuf[x, y]
+            return 0xFFFF if flags & 2 else self.zget(x, y)
+        counts = [0] * 80
+        for k, (words, clip) in enumerate(sc["tris"][:SCENE_MAX_TRIS]):
+            _, _, vs = raster.parse(words)
+            rec = raster.setup(vs, clip)
+            if rec is None:
+                continue
+            bx0, by0, bx1, by1 = rec["bbox"]
+            listed = set()
+            for ty in range(by0 >> 5, (by1 >> 5) + 1):
+                for tx in range(bx0 >> 5, (bx1 >> 5) + 1):
+                    t = ty * 10 + tx
+                    if counts[t] < TILE_MAX_TRIS:
+                        counts[t] += 1
+                        listed.add(t)
+            self.tri(words, clip, zget, lambda x, y, z: zbuf.__setitem__((x, y), z),
+                     lambda x, y: (y >> 5) * 10 + (x >> 5) in listed)
+        if flags & 4:
+            for y in range(SRC_H):
+                for x in range(SRC_W):
+                    if (x, y) in zbuf or flags & 2:
+                        self.zset(x, y, zget(x, y))
 
     def vram_word(self, a):
         w = self.vram.get(a % VRAM_WORDS)

@@ -68,6 +68,7 @@
 //   0x20 TRI        (GPU3D = 1 のときだけ) 三角形。[23:16] フラグ (bit0 Gouraud、bit3 Z)、[15:0] 単色。続けて頂点ごとに {y, x} (12.4)、
 //                   [{r, g, b}]、[{z}]。描き方は rtl/gpu3d/tri_engine.sv、計算の規則は tools/harness/raster.py
 //   0x24 CLEAR_Z    (GPU3D = 1 のときだけ) Z バッファ (Z_BASE から 320 x 240 x 16bit) を [15:0] で塗る
+//   0x25 BEGIN_SCENE / 0x26 END_SCENE  (GPU3D = 1 のときだけ) TBDR のシーン。意味は rtl/gpu3d/raster3d.sv
 //   それ以外        エラーを立て、1 ワードのコマンドとして読み飛ばす
 //
 // WAIT_LINE のあとの REG_WRITE は、FIFO にすでに入っていれば数クロックで実行されるので、次のラインの合成 (約 63us 後) に間に合う。
@@ -163,6 +164,7 @@ module gpu #(
     output logic [31:0] t3_word,
     output logic        t3_go,
     input  logic        t3_busy,
+    input  logic        t3_error,        // 3D の描画のエラー (シーンの上限) を GPU_STATUS のエラーに
     output logic [12:0] draw_base_o,     // 描く面 (tri_engine へ)
     output logic [12:0] z_base,          // Z バッファの先頭 (REG_WRITE 27、256 ワード単位。既定 0x0E00 = SDRAM の 0x380000 バイト)
     output logic [8:0]  clip_x0, clip_x1,
@@ -177,7 +179,8 @@ module gpu #(
                            OP_POINT = 8'h05, OP_DRAW_LINE = 8'h06, OP_CLIP = 8'h07, OP_BLIT = 8'h08,
                            OP_REG_WRITE = 8'h09, OP_WAIT_LINE = 8'h0A, OP_WAIT_VBLANK = 8'h0B,
                            OP_VRAM_WRITE = 8'h0C, OP_PAL_WRITE = 8'h0D, OP_STRETCH = 8'h0E, OP_OAM_WRITE = 8'h0F,
-                           OP_LIGHT_WRITE = 8'h10, OP_TRI = 8'h20, OP_CLEAR_Z = 8'h24;
+                           OP_LIGHT_WRITE = 8'h10, OP_TRI = 8'h20, OP_CLEAR_Z = 8'h24,
+                           OP_BEGIN_SCENE = 8'h25, OP_END_SCENE = 8'h26;
     localparam int BLIT_MAX_W = 512;      // ライン バッファ (256 ワード) に入る幅
     localparam int STRETCH_MAX = 1024;    // STRETCH_BLIT の描く大きさの上限
 
@@ -204,7 +207,7 @@ module gpu #(
         S_UPLOAD_WRITE, S_LINE_STEP, S_LINE_PLOT, S_LINE_ADV,
         S_BLIT_SETUP, S_BLIT_SKIP, S_BLIT_READ, S_BLIT_WRITE, S_WAIT_LINE,
         S_ST_SETUP, S_ST_ROW, S_ST_GEN, S_ST_WRITE,
-        S_VRAM_WRITE, S_PAL_WRITE, S_PAL_HI, S_TRI_ARG, S_TRI_WAIT
+        S_VRAM_WRITE, S_PAL_WRITE, S_PAL_HI, S_TRI_ARG, S_T3_GO, S_TRI_WAIT
     } state_t;
     state_t state, after_fetch;
 
@@ -545,6 +548,7 @@ module gpu #(
             t3_go    <= 1'b0;
             if (flush) rd_ptr <= wr_ptr;
             if (re && addr == A_STATUS) error <= 1'b0;
+            if (t3_error) error <= 1'b1;
 
             // 表示用レジスタはホストからも書ける
             if (we) begin
@@ -588,6 +592,11 @@ module gpu #(
                         up_left     <= 24'd3 * (24'd1 + 24'(word[16]) + 24'(word[19]));
                         state       <= S_FETCH;
                         after_fetch <= S_TRI_ARG;
+                    end else if (GPU3D != 0 && (word[31:24] == OP_BEGIN_SCENE || word[31:24] == OP_END_SCENE)) begin
+                        // BEGIN_SCENE / END_SCENE: 先頭ワードだけを渡し、次のクロックに go
+                        t3_push <= 1'b1;
+                        t3_word <= word;
+                        state   <= S_T3_GO;
                     end else if (nargs(word[31:24]) != 3'd0) begin
                         arg_last    <= nargs(word[31:24]) - 3'd1;
                         state       <= S_FETCH;
@@ -779,6 +788,10 @@ module gpu #(
                     end else begin
                         state <= S_FETCH;
                     end
+                end
+                S_T3_GO: begin
+                    t3_go <= 1'b1;
+                    state <= S_TRI_WAIT;
                 end
                 // t3_go のクロックの t3_busy はまだ 0 のことがあるので、go の次のクロックから見る
                 S_TRI_WAIT: if (!t3_go && !t3_busy) state <= S_FETCH;

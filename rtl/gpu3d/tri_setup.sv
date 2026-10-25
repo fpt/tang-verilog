@@ -49,7 +49,7 @@ module tri_setup (
     logic signed [31:0] area;
     logic signed [35:0] nx [0:3];
     logic signed [35:0] ny [0:3];
-    logic signed [53:0] tt [0:3];
+    logic signed [53:0] acc;                         // 同じ置き場所への 1〜2 回の乗算を足していく (置き場所ごとの乗算は続けて出る)
     logic        [2:0]  bias;                        // 辺 i が上左でなければ 1 (値に -1)
 
     typedef enum logic [3:0] {S_IDLE, S_AREA, S_AREA_W, S_ORIENT, S_BBOX, S_BBOX2, S_BBOX3, S_OPS1, S_OPS2, S_OPS3, S_DRAIN, S_FINAL} state_t;
@@ -193,20 +193,21 @@ module tri_setup (
             done <= 1'b0;
             pend <= pend + 3'(m_in_v) - 3'(m_out_v);
 
-            // 乗算の結果
+            // 乗算の結果: val = (最初なら初期値、でなければ acc) ± 積。置き場所に val (増分は (積 >>> n) を飽和、左上の値は
+            // sat32((a0 << 12) + (T >>> 4))) を入れる。加算器は 1 つ
             if (m_out_v) begin
+                logic signed [53:0] base, val;
+                base = r_first ? ((r_dest >= D_E && r_dest < D_NX && bias[ri_e]) ? -54'sd1 : 54'sd0) : acc;
+                val  = r_neg ? base - m_p : base + m_p;
+                acc <= val;
                 unique case (r_dest)
-                    D_AREA: area <= r_first ? (r_neg ? -32'(m_p) : 32'(m_p)) : (r_neg ? area - 32'(m_p) : area + 32'(m_p));
-                    6'd1, 6'd2, 6'd3: begin
-                        logic signed [31:0] base;
-                        base = r_first ? (bias[ri_e] ? -32'sd1 : 32'sd0) : signed'(e[ri_e]);
-                        e[ri_e] <= r_neg ? base - 32'(m_p) : base + 32'(m_p);
-                    end
-                    6'd4, 6'd5, 6'd6, 6'd7:   nx[ri] <= (r_first ? 36'sd0 : nx[ri]) + 36'(m_p);
-                    6'd8, 6'd9, 6'd10, 6'd11: ny[ri] <= (r_first ? 36'sd0 : ny[ri]) + 36'(m_p);
+                    D_AREA:                     area   <= 32'(val);
+                    6'd1, 6'd2, 6'd3:           e[ri_e] <= 32'(val);
+                    6'd4, 6'd5, 6'd6, 6'd7:     nx[ri] <= 36'(val);
+                    6'd8, 6'd9, 6'd10, 6'd11:   ny[ri] <= 36'(val);
                     6'd12, 6'd13, 6'd14, 6'd15: gx[ri] <= shsat(m_p, nb);
                     6'd16, 6'd17, 6'd18, 6'd19: gy[ri] <= shsat(m_p, nb);
-                    default: tt[ri] <= (r_first ? 54'sd0 : tt[ri]) + m_p;
+                    default:                    s[ri]  <= sat32(signed'(54'({va[ri][0], 12'd0})) + (val >>> 4));
                 endcase
             end
 
@@ -317,8 +318,6 @@ module tri_setup (
                     state <= after_drain;
                 end
                 S_FINAL: begin
-                    // s = sat32((a0 << 12) + (T >>> 4))
-                    for (int j = 0; j < 4; j++) s[j] <= sat32(signed'(54'({va[j][0], 12'd0})) + (tt[j] >>> 4));
                     done  <= 1'b1;
                     state <= S_IDLE;
                 end

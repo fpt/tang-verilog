@@ -25,7 +25,7 @@ TOP        := top
 CST        := constraints/tangnano20k.cst
 VIDEO_MODE := 0
 RENDER_DIR := build/render
-TOP_PARAMS := -G GPU3D=1
+TOP_PARAMS := -G GPU3D=1 $(if $(filter 1,$(MUL_PROBE)),-G MUL_PROBE=1)
 OUT_DIR    := build/gpu3d
 else ifeq ($(strip $(TARGET)),lcd)
 TOP        := top_lcd
@@ -143,6 +143,8 @@ lint:
 	$(FPGA) verilator --lint-only -Wall --top-module smul36x18 $(RTL_SRC)
 	$(FPGA) verilator --lint-only -Wall --top-module tri_setup $(RTL_SRC)
 	$(FPGA) verilator --lint-only -Wall --top-module tri_engine $(RTL_SRC)
+	$(FPGA) verilator --lint-only -Wall --top-module tile_engine $(RTL_SRC)
+	$(FPGA) verilator --lint-only -Wall --top-module raster3d $(RTL_SRC)
 	$(FPGA) verilator --lint-only -Wall --top-module gpu -GGPU3D=1 $(RTL_SRC)
 
 sim: $(addprefix sim-,$(TBS))
