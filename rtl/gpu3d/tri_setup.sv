@@ -7,10 +7,10 @@
 //     e[i]       辺 i の関数の、外接矩形の左上のピクセルの中心での値 (上左の規則の -1 込み)。中は全部 >= 0
 //     ex[i], ey[i]  辺 i の関数の、1 ピクセル右 / 1 行下での増分
 //     s[k], gx[k], gy[k]  属性 k (0 r, 1 g, 2 b, 3 z, 4 u, 5 v) の左上での値と、1 ピクセル右 / 1 行下での増分 (固定小数点 12bit)
-//   計算: 乗算は smul36x18 (符号なしの DSP + 符号の補正) を 1 クロックに 1 つ。順番は
+//   計算: 乗算は smul36x18 (符号なしの DSP + 符号の補正) を 2 クロックに 1 つ。順番は
 //     面積 (2) → 向きを揃える (負なら v1 と v2 を入れ替える) → 外接矩形 → 辺の値 (6) と属性の分子 Nx, Ny (24)、並行して
 //     面積の逆数の仮数 m (17 回の引き戻し除算) → 増分 gx, gy (12、(N * m) >> n を 32bit で飽和) → 左上の値 s (12)
-//   約 80 クロック
+//   約 140 クロック (乗算は 2 クロックに 1 つ)
 module tri_setup (
     input  logic        clk,
     input  logic        rst,
@@ -65,7 +65,7 @@ module tri_setup (
     logic [7:0]         m_in_tag, m_out_tag;        // {first, neg, dest[5:0]}
     logic signed [53:0] m_p;
     smul36x18 #(.TAG_W(8)) u_mul (
-        .clk, .in_valid(m_in_v), .a(m_a), .b(m_b), .in_tag(m_in_tag),
+        .clk, .rst, .in_valid(m_in_v), .a(m_a), .b(m_b), .in_tag(m_in_tag),
         .out_valid(m_out_v), .p(m_p), .out_tag(m_out_tag)
     );
 
@@ -80,6 +80,7 @@ module tri_setup (
     typedef enum logic [3:0] {S_IDLE, S_AREA, S_AREA_W, S_ORIENT, S_BBOX, S_BBOX2, S_BBOX3, S_OPS1, S_OPS2, S_OPS3, S_DRAIN, S_FINAL} state_t;
     state_t state, after_drain;
     logic [4:0] k;                                   // 今のフェーズで出す乗算の番号
+    logic       ph;                                  // 乗算を出すのは 2 クロックに 1 回 (smul36x18)。1 なら休み
 
     // 左上のピクセルの中心 (1/16 ピクセル)
     logic signed [15:0] sx, sy;
@@ -187,6 +188,7 @@ module tri_setup (
             end
             default: ;
         endcase
+        if (ph) m_in_v = 1'b0;
     end
 
     // 乗算の数 (フェーズごと)
@@ -220,9 +222,11 @@ module tri_setup (
             done  <= 1'b0;
             dbusy <= 1'b0;
             pend  <= '0;
+            ph    <= 1'b0;
         end else begin
             done <= 1'b0;
             pend <= pend + 3'(m_in_v) - 3'(m_out_v);
+            ph   <= (state == S_AREA || state == S_OPS1 || state == S_OPS2 || state == S_OPS3) ? !ph : 1'b0;
 
             // 乗算の結果: val = (最初なら初期値、でなければ acc) ± 積。置き場所に val (増分は (積 >>> n) を飽和、左上の値は
             // sat32((a0 << 12) + (T >>> 4))) を入れる。加算器は 1 つ
@@ -256,7 +260,7 @@ module tri_setup (
                     k     <= '0;
                     state <= S_AREA;
                 end
-                S_AREA: begin
+                S_AREA: if (!ph) begin
                     k <= k + 5'd1;
                     if (k == k_last) state <= S_AREA_W;
                 end
@@ -324,7 +328,7 @@ module tri_setup (
                         state <= S_OPS1;
                     end
                 end
-                S_OPS1, S_OPS2, S_OPS3: begin
+                S_OPS1, S_OPS2, S_OPS3: if (!ph) begin
                     k <= k + 5'd1;
                     if (k == k_last) begin
                         // (Icarus Verilog は enum の三項演算子の代入を受け付けないので if で書く)

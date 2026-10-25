@@ -170,7 +170,7 @@ module tb_tri_setup;
             if (n % 50 == 25) begin cx0 = 0; cx1 = 319; cy0 = 0; cy1 = 239; end
         end
         $display("  %0d triangles (%0d empty), setup %0d clk at most", tris, empties, max_cyc);
-        if (max_cyc > 120) begin $display("  setup too slow"); errors++; end
+        if (max_cyc > 160) begin $display("  setup too slow"); errors++; end
         if (errors == 0) $display("PASS: tb_tri_setup");
         else             $display("FAIL: tb_tri_setup (%0d errors)", errors);
         $finish;

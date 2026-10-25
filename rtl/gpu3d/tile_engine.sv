@@ -66,7 +66,15 @@ module tile_engine (
     logic [5:0]  rows;                                // 32 (一番下は 16)
     logic [4:0]  r;                                   // 今の行 (準備と書き出し)
     logic [3:0]  w_cur;                               // 行の中のワード
-    logic [3:0]  w_rd;
+    // 書き出しの先読み: タイルバッファの読み出しの番号は FF から直接 (DP の BSRAM の B ポートのアドレスは nextpnr が
+    // タイミングを見ないので、論理を挟まない)。読んだワードは 2 ワードの FIFO に入れ、mem_wnext で出す
+    logic [3:0]  ra;                                  // 次に読むワード
+    logic [4:0]  o_issued;                            // この行で読んだワード数
+    logic        o_qv;                                // 前のクロックに読んだ (今 cq / zq に出ている)
+    logic [1:0]  o_cnt;
+    logic [31:0] o_f0, o_f1;
+    logic        o_pop, o_issue;
+    logic [31:0] o_word;
     logic [8:0]  sw_i;                                // T_SWEEP の番号
     assign tile = 7'(ty) * 7'd10 + 7'(tx);
     assign cnt_raddr = tile;
@@ -124,9 +132,10 @@ module tile_engine (
     logic signed [31:0] m_p;                          // 積の下位 32bit (値は 32bit で回る)
     logic [4:0]         mk;                           // 出した乗算の数 (0..17)
     logic [4:0]         mdone;
+    logic               mph;                          // 乗算を出すのは 2 クロックに 1 回 (smul36x18)
     logic [31:0]        macc;                         // 乗算の結果を足していく (組ごと)
     smul36x18 #(.TAG_W(5), .P_W(32)) u_mul (
-        .clk, .in_valid(m_in_v), .a(m_a), .b(m_b), .in_tag(m_in_tag),
+        .clk, .rst, .in_valid(m_in_v), .a(m_a), .b(m_b), .in_tag(m_in_tag),
         .out_valid(m_out_v), .p(m_p), .out_tag(m_out_tag)
     );
     logic [8:0] dxp;
@@ -135,7 +144,7 @@ module tile_engine (
     assign dyp = oy0 - rby0;
     always_comb begin
         int d;
-        m_in_v = state == T_MUL;
+        m_in_v = state == T_MUL && !mph;
         d = int'(mk) / 2;
         m_in_tag = {!mk[0], 4'(d)};
         m_b = mk[0] ? 18'({10'd0, dyp}) : 18'({9'd0, dxp});
@@ -219,41 +228,69 @@ module tile_engine (
     logic        c_v, c_in, c_odd, c_txd;
     logic [8:0]  c_idx;
     logic [15:0] c_z, c_col, c_t16;
+    logic [7:0]  c_cla;                               // CLUT の番号 (FF から直接 CLUT を読む)
     logic [23:0] c_rgb;
     // ---- D 段: 透明、変調、Z ----
     logic        d_v, d_in, d_odd, d_txd;
     logic [8:0]  d_idx;
-    logic [15:0] d_z, d_col, d_tex565;
+    logic [15:0] d_z, d_col, d_t16, d_tex565;
     logic [23:0] d_rgb;
     logic        d_pass;
-    logic [15:0] d_out;
-    // 小さい符号なしの乗算 (a x b、6bit x 8bit) をシフトと加算で。`*` だと yosys が DSP (MULT9X9) に置き、MULT18X18 と混ざると
+    logic        d_mod;                               // 変調する
+    logic [15:0] d_raw;                               // 変調しないときの色
+    logic [10:0] d_plo [0:2];                         // 変調の部分積: テクセルの色 (6bit) の下位 3bit x 頂点の色 (8bit)
+    logic [10:0] d_phi [0:2];                         //               上位 3bit x 頂点の色
+    // ---- E 段: 部分積を足して飽和 (変調を 2 段に分けた。6bit x 8bit を 1 クロックで足すと実機で緑のビットが化けた。
+    //            nextpnr の報告では間に合っていた) ----
+    logic        e_v, e_zw, e_odd, e_mod;
+    logic [8:0]  e_idx;
+    logic [15:0] e_z, e_raw, e_out;
+    logic [10:0] e_plo [0:2];
+    logic [10:0] e_phi [0:2];
+    // ---- F 段: タイルバッファに書く ----
+    logic        f_v, f_zw, f_odd;
+    logic [8:0]  f_idx;
+    logic [15:0] f_out, f_z;
+    // 小さい符号なしの乗算 (a x b、3bit x 8bit) をシフトと加算で。`*` だと yosys が DSP (MULT9X9) に置き、MULT18X18 と混ざると
     // nextpnr が配置できなかった (G3)
-    function automatic logic [13:0] umul6x8(input logic [5:0] a, input logic [7:0] b);
-        logic [13:0] p;
+    function automatic logic [10:0] umul3x8(input logic [2:0] a, input logic [7:0] b);
+        logic [10:0] p;
         p = '0;
-        for (int i = 0; i < 6; i++) if (a[i]) p = p + (14'(b) << i);
+        for (int i = 0; i < 3; i++) if (a[i]) p = p + (11'(b) << i);
         return p;
     endfunction
-    function automatic logic [15:0] modulate(input logic [15:0] t, input logic [23:0] c);
-        logic [5:0] mr, mb;
-        logic [6:0] mg;
-        mr = 6'(umul6x8({1'b0, t[15:11]}, c[23:16]) >> 7);
-        mg = 7'(umul6x8(t[10:5], c[15:8]) >> 7);
-        mb = 6'(umul6x8({1'b0, t[4:0]}, c[7:0]) >> 7);
-        return {mr[5] ? 5'd31 : mr[4:0], mg[6] ? 6'd63 : mg[5:0], mb[5] ? 5'd31 : mb[4:0]};
-    endfunction
+    assign d_tex565 = (tfmt == 2'd0) ? d_t16 : clq;
     always_comb begin
-        d_out  = d_txd ? (gour ? modulate(d_tex565, d_rgb) : d_tex565) : d_col;
+        logic [5:0] tc [0:2];
+        tc[0] = {1'b0, d_tex565[15:11]};
+        tc[1] = d_tex565[10:5];
+        tc[2] = {1'b0, d_tex565[4:0]};
+        for (int i = 0; i < 3; i++) begin
+            d_plo[i] = umul3x8(tc[i][2:0], d_rgb[23 - 8 * i -: 8]);
+            d_phi[i] = umul3x8(tc[i][5:3], d_rgb[23 - 8 * i -: 8]);
+        end
+        d_mod  = d_txd && gour;
+        d_raw  = d_txd ? d_tex565 : d_col;
         d_pass = d_v && d_in && !(d_txd && d_tex565 == 16'd0) && (!zen || d_z < (d_odd ? zq_o : zq_e));
+    end
+    // (PS1 と同じく 128 = 1 倍): min(最大, (テクセル x 頂点の色) >> 7)、テクセル x 頂点の色 = 下位の部分積 + (上位の部分積 << 3)
+    always_comb begin
+        logic [6:0] m [0:2];
+        for (int i = 0; i < 3; i++) m[i] = 7'((14'(e_plo[i]) + (14'(e_phi[i]) << 3)) >> 7);
+        e_out = e_mod ? {m[0][6:5] != 2'd0 ? 5'd31 : m[0][4:0], m[1][6] ? 6'd63 : m[1][5:0], m[2][6:5] != 2'd0 ? 5'd31 : m[2][4:0]}
+                      : e_raw;
     end
 
     // タイルバッファの読み出しの番号: 走査は C 段のピクセル、準備と書き出しは {行, ワード}
     logic [4:0] lx, ly;
     assign lx = 5'(x - tx0p);
     assign ly = 5'(y - ty0p);
-    assign w_rd = ((state == T_OUTC || state == T_OUTZ) && mem_wnext) ? w_cur + 4'd1 : w_cur;
-    assign rd_idx = c_v ? c_idx : {r, w_rd};
+    assign rd_idx = c_v ? c_idx : {r, ra};
+    assign o_word  = (state == T_OUTZ) ? {zq_o, zq_e} : {cq_o, cq_e};
+    assign o_pop   = mem_req && mem_wnext && (state == T_OUTC || state == T_OUTZ);
+    // 走査の最後のピクセルが書き終わってから (D 段の書き込みと同じ番地を先に読まないように)。FIFO + 読んでいる分が 2 を超えないように
+    assign o_issue = (state == T_OUTC || state == T_OUTZ) && !mem_ack && !b_v && !c_v && !d_v && !e_v && !f_v && o_issued != 5'd16 &&
+                     3'(o_cnt) + 3'(o_qv) - 3'(o_pop) <= 3'd1;
     assign wr_idx = {r, w_cur};
 
     always_ff @(posedge clk) begin
@@ -263,7 +300,7 @@ module tile_engine (
         zq_o <= zb_o[rd_idx];
         lq   <= lbuf[k[5:0]];
         tq   <= tcache[tc_raddr];
-        clq  <= clut[cl_raddr];
+        clq  <= clut[c_cla];
         if (clut_we) clut[clut_waddr] <= clut_wdata;
         if (state == T_TFILL && mem_req && mem_rvalid) tcache[{tf_line, tf_w}] <= mem_rdata;
         if (state == T_LFETCH && mem_req && mem_rvalid) lbuf[lw] <= mem_rdata[11:0];
@@ -274,9 +311,9 @@ module tile_engine (
             cb_e[wr_idx] <= mem_rdata[15:0]; cb_o[wr_idx] <= mem_rdata[31:16];
         end else if (state == T_OUTC && mem_wnext && clear_color) begin
             cb_e[wr_idx] <= ccol; cb_o[wr_idx] <= ccol;
-        end else if (d_pass) begin
-            if (d_odd) cb_o[d_idx] <= d_out;
-            else       cb_e[d_idx] <= d_out;
+        end else if (f_v) begin
+            if (f_odd) cb_o[f_idx] <= f_out;
+            else       cb_e[f_idx] <= f_out;
         end
         // Z
         if (state == T_SWEEP) begin
@@ -285,22 +322,41 @@ module tile_engine (
             zb_e[wr_idx] <= mem_rdata[15:0]; zb_o[wr_idx] <= mem_rdata[31:16];
         end else if (((state == T_OUTZ) || (state == T_OUTC && !write_z)) && mem_wnext && clear_z) begin
             zb_e[wr_idx] <= 16'hFFFF; zb_o[wr_idx] <= 16'hFFFF;
-        end else if (d_pass && zen) begin
-            if (d_odd) zb_o[d_idx] <= d_z;
-            else       zb_e[d_idx] <= d_z;
+        end else if (f_zw) begin
+            if (f_odd) zb_o[f_idx] <= f_z;
+            else       zb_e[f_idx] <= f_z;
         end
     end
 
     assign mem_wmask = 4'hF;
-    assign mem_wdata = (state == T_OUTZ) ? {zq_o, zq_e} : {cq_o, cq_e};
+    assign mem_wdata = o_f0;
     assign busy = state != T_IDLE || start;
+
+    // 書き出しの FIFO (行ごとに空から。mem_ack のクロックとほかの状態では空にする)
+    always_ff @(posedge clk) begin
+        if (rst || !(state == T_OUTC || state == T_OUTZ) || mem_ack) begin
+            ra <= '0; o_issued <= '0; o_qv <= 1'b0; o_cnt <= '0;
+        end else begin
+            o_qv <= o_issue;
+            if (o_issue) begin ra <= ra + 4'd1; o_issued <= o_issued + 5'd1; end
+            if (o_qv && o_pop) begin
+                if (o_cnt == 2'd1) o_f0 <= o_word;
+                else begin o_f0 <= o_f1; o_f1 <= o_word; end
+            end else if (o_pop) begin
+                o_f0 <= o_f1; o_cnt <= o_cnt - 2'd1;
+            end else if (o_qv) begin
+                if (o_cnt == 2'd0) o_f0 <= o_word; else o_f1 <= o_word;
+                o_cnt <= o_cnt + 2'd1;
+            end
+        end
+    end
 
     always_ff @(posedge clk) begin
         if (rst) begin
             state   <= T_IDLE;
             mem_req <= 1'b0;
             mem_we  <= 1'b0;
-            b_v <= 1'b0; c_v <= 1'b0; d_v <= 1'b0;
+            b_v <= 1'b0; c_v <= 1'b0; d_v <= 1'b0; e_v <= 1'b0; e_zw <= 1'b0; f_v <= 1'b0; f_zw <= 1'b0;
             tvalid  <= '0;
             {c_prep, c_fetch, c_mul, c_walk, c_out, walked, drawn, tex_looks, tex_miss, c_tex} <= '0;
         end else begin
@@ -315,12 +371,16 @@ module tile_engine (
                 default: ;
             endcase
 
-            // B → C → D (いつも進む。A が止まっているあいだは空が流れる)
+            // B → C → D → E → F (いつも進む。A が止まっているあいだは空が流れる)
             c_v <= b_v; c_in <= b_in; c_odd <= b_odd; c_txd <= b_txd; c_idx <= b_idx;
-            c_z <= b_z; c_col <= b_col; c_rgb <= b_rgb; c_t16 <= b_t16;
+            c_z <= b_z; c_col <= b_col; c_rgb <= b_rgb; c_t16 <= b_t16; c_cla <= cl_raddr;
             d_v <= c_v; d_in <= c_in; d_odd <= c_odd; d_txd <= c_txd; d_idx <= c_idx;
+            e_v <= d_pass; e_zw <= d_pass && zen; e_odd <= d_odd; e_idx <= d_idx; e_z <= d_z;
+            e_mod <= d_mod; e_raw <= d_raw;
+            for (int i = 0; i < 3; i++) begin e_plo[i] <= d_plo[i]; e_phi[i] <= d_phi[i]; end   // (Icarus Verilog は配列ごとの代入を通さない)
+            f_v <= e_v; f_zw <= e_zw; f_odd <= e_odd; f_idx <= e_idx; f_z <= e_z; f_out <= e_out;
             d_z <= c_z; d_col <= c_col; d_rgb <= c_rgb;
-            d_tex565 <= (tfmt == 2'd0) ? c_t16 : clq;
+            d_t16 <= c_t16;
             b_v <= 1'b0;
 
             // 乗算の結果を足す (辺の値と属性。どちらも 32bit で回る)
@@ -449,6 +509,7 @@ module tile_engine (
                         if (mem_ack) begin
                             mem_req <= 1'b0;
                             mk      <= '0;
+                            mph     <= 1'b0;
                             mdone   <= '0;
                             state   <= T_MUL;
                         end
@@ -456,8 +517,11 @@ module tile_engine (
                 end
                 // 重なりの左上: er = e + ex dx + ey dy、ar = s + gx dx + gy dy (乗算 18 回を足していく)
                 T_MUL: begin
-                    mk <= mk + 5'd1;
-                    if (mk == 5'd17) state <= T_MULW;
+                    mph <= !mph;
+                    if (!mph) begin
+                        mk <= mk + 5'd1;
+                        if (mk == 5'd17) state <= T_MULW;
+                    end
                 end
                 T_MULW: if (mdone == 5'd18 || (mdone == 5'd17 && m_out_v)) begin
                     y     <= oy0;
@@ -530,10 +594,10 @@ module tile_engine (
                         state <= T_ENTRY;
                     end
                 end
-                // タイルの色 (と Z) を書く。1 行 16 ワード (走査の最後のピクセルが書き終わってから。D 段は 3 クロック後)
+                // タイルの色 (と Z) を書く。1 行 16 ワード (走査の最後のピクセルが書き終わってから。F 段は 5 クロック後)
                 T_OUTC, T_OUTZ: begin
                     if (!mem_req) begin
-                        if (!b_v && !c_v && !d_v) begin
+                        if (o_cnt == 2'd2) begin
                             mem_req  <= 1'b1;
                             mem_we   <= 1'b1;
                             mem_addr <= {((state == T_OUTZ) ? z_base : draw_base) + 13'({ty[2:0], r}), tx, 4'd0};
