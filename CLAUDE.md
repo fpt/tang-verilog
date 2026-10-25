@@ -29,6 +29,9 @@ Tang Nano 20K (FPGA, VDP 本体) + RP2350 (ホスト CPU) でレトロゲーム�
   (docs/GPU3D_PLAN.md の G0)。符号付きの値は符号なしで掛けて補正する (`rtl/gpu3d/mul_probe.sv` の Q) か、シフトと加算で組む
 - **LUT の RAM (RAM16SDP4) を使わない**。オープンソースのツールで作った分散 RAM は実機で値が化ける (docs/GPU3D_PLAN.md の G1)。
   Makefile の `synth_gowin -nolutram` で止めている。小さい配列はフリップフロップ、大きいものは BSRAM (同期読み出し) に置く
+- **nextpnr の Fmax の報告を信じきらない**。Gowin のタイミングのモデルは DSP (`MULT*`) の経路と、真のデュアルポートの BSRAM の B ポートのアドレスを見ない。
+  長い桁上げの連鎖も報告より遅い (docs/GPU3D_PLAN.md の G3)。DSP の乗算は 2 クロックかける (`rtl/gpu3d/smul36x18.sv`)、BSRAM の読み出しのアドレスは
+  FF から直接 (論理を挟まない)、BSRAM に書くデータも FF から、長い加算の連鎖は段に分ける。配置の種 (`nextpnr --seed`) を変えて実機の結果が変わるならこれを疑う
 - `rtl/vdp/`・`rtl/gpu3d/` にモジュールを足したら `sim/tb_<名前>.sv` にテストベンチを書く。テストベンチは成功時に `PASS:`、失敗時に `FAIL:` を出力し、VCD は `build/sim/` に出す
 - 映像まわりを変えたら `make render` で PNG を出し、見た目を確認する
 
