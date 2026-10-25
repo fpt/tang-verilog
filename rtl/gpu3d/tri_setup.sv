@@ -1,16 +1,16 @@
 // 三角形のセットアップ (docs/GPU3D_PLAN.md の 3.4 節、G1)。計算の規則は tools/harness/raster.py が正 (同じ整数の計算)
 //
-//   入力: 頂点 3 つ (x, y は符号付き 12.4、色 {r, g, b} 8bit ずつ、z 16bit)、クリップ矩形 (ピクセル、両端を含む)
+//   入力: 頂点 3 つ (x, y は符号付き 12.4、色 {r, g, b} 8bit ずつ、z 16bit、テクスチャの {v, u} 16bit ずつ)、クリップ矩形 (ピクセル、両端を含む)
 //   出力 (done のクロックから次の start まで保持):
 //     empty      描くものがない (面積 0、外接矩形とクリップ矩形が重ならない)
 //     bx0..by1   走査する外接矩形 (ピクセル、両端を含む)
 //     e[i]       辺 i の関数の、外接矩形の左上のピクセルの中心での値 (上左の規則の -1 込み)。中は全部 >= 0
 //     ex[i], ey[i]  辺 i の関数の、1 ピクセル右 / 1 行下での増分
-//     s[k], gx[k], gy[k]  属性 k (0 r, 1 g, 2 b, 3 z) の左上での値と、1 ピクセル右 / 1 行下での増分 (固定小数点 12bit)
+//     s[k], gx[k], gy[k]  属性 k (0 r, 1 g, 2 b, 3 z, 4 u, 5 v) の左上での値と、1 ピクセル右 / 1 行下での増分 (固定小数点 12bit)
 //   計算: 乗算は smul36x18 (符号なしの DSP + 符号の補正) を 1 クロックに 1 つ。順番は
-//     面積 (2) → 向きを揃える (負なら v1 と v2 を入れ替える) → 外接矩形 → 辺の値 (6) と属性の分子 Nx, Ny (16)、並行して
-//     面積の逆数の仮数 m (17 回の引き戻し除算) → 増分 gx, gy (8、(N * m) >> n を 32bit で飽和) → 左上の値 s (8)
-//   約 60 クロック
+//     面積 (2) → 向きを揃える (負なら v1 と v2 を入れ替える) → 外接矩形 → 辺の値 (6) と属性の分子 Nx, Ny (24)、並行して
+//     面積の逆数の仮数 m (17 回の引き戻し除算) → 増分 gx, gy (12、(N * m) >> n を 32bit で飽和) → 左上の値 s (12)
+//   約 80 クロック
 module tri_setup (
     input  logic        clk,
     input  logic        rst,
@@ -18,6 +18,7 @@ module tri_setup (
     input  logic [15:0] x0, y0, x1, y1, x2, y2,     // 符号付き 12.4
     input  logic [23:0] c0, c1, c2,                 // {r, g, b}
     input  logic [15:0] z0, z1, z2,
+    input  logic [31:0] t0, t1, t2,                 // テクスチャの {v, u}
     input  logic [8:0]  cx0, cx1,
     input  logic [7:0]  cy0, cy1,
     output logic        done,                       // 1 クロック
@@ -26,12 +27,12 @@ module tri_setup (
     output logic [7:0]  by0, by1,
     output logic [2:0][31:0] e,
     output logic [2:0][20:0] ex, ey,
-    output logic [3:0][31:0] s, gx, gy
+    output logic [5:0][31:0] s, gx, gy
 );
     // ---- 頂点 (向きを揃えたあと) ----
     logic signed [15:0] vx [0:2];
     logic signed [15:0] vy [0:2];
-    logic        [15:0] va [0:3][0:2];             // 属性 k の頂点 i の値
+    logic        [15:0] va [0:5][0:2];             // 属性 k の頂点 i の値
 
     // ---- 乗算器 ----
     logic               m_in_v, m_out_v;
@@ -44,11 +45,11 @@ module tri_setup (
         .out_valid(m_out_v), .p(m_p), .out_tag(m_out_tag)
     );
 
-    // 結果の置き場所 (dest): 0 面積、1..3 辺、4..7 Nx、8..11 Ny、12..15 gx、16..19 gy、20..23 T (左上の値の途中)
-    localparam logic [5:0] D_AREA = 6'd0, D_E = 6'd1, D_NX = 6'd4, D_NY = 6'd8, D_GX = 6'd12, D_GY = 6'd16, D_T = 6'd20;
+    // 結果の置き場所 (dest): 0 面積、1..3 辺、4..9 Nx、10..15 Ny、16..21 gx、22..27 gy、28..33 T (左上の値の途中)
+    localparam logic [5:0] D_AREA = 6'd0, D_E = 6'd1, D_NX = 6'd4, D_NY = 6'd10, D_GX = 6'd16, D_GY = 6'd22, D_T = 6'd28;
     logic signed [31:0] area;
-    logic signed [35:0] nx [0:3];
-    logic signed [35:0] ny [0:3];
+    logic signed [35:0] nx [0:5];
+    logic signed [35:0] ny [0:5];
     logic signed [53:0] acc;                         // 同じ置き場所への 1〜2 回の乗算を足していく (置き場所ごとの乗算は続けて出る)
     logic        [2:0]  bias;                        // 辺 i が上左でなければ 1 (値に -1)
 
@@ -74,10 +75,10 @@ module tri_setup (
     end
 
     // 属性の差 d1 = a1 - a0、d2 = a2 - a0 (17bit)
-    logic signed [16:0] d1 [0:3];
-    logic signed [16:0] d2 [0:3];
+    logic signed [16:0] d1 [0:5];
+    logic signed [16:0] d2 [0:5];
     always_comb begin
-        for (int j = 0; j < 4; j++) begin
+        for (int j = 0; j < 6; j++) begin
             d1[j] = 17'({1'b0, va[j][1]}) - 17'({1'b0, va[j][0]});
             d2[j] = 17'({1'b0, va[j][2]}) - 17'({1'b0, va[j][0]});
         end
@@ -169,8 +170,8 @@ module tri_setup (
     always_comb begin
         unique case (state)
             S_AREA:  k_last = 5'd1;
-            S_OPS1:  k_last = 5'd21;
-            default: k_last = 5'd7;
+            S_OPS1:  k_last = 5'd29;
+            default: k_last = 5'd11;
         endcase
     end
 
@@ -178,9 +179,15 @@ module tri_setup (
     logic [5:0]         r_dest;
     logic               r_first, r_neg;
     assign {r_first, r_neg, r_dest} = m_out_tag;
-    logic [1:0]         ri, ri_e;                      // 置き場所の中の番号 (辺は 1..3 → 0..2)
-    assign ri   = r_dest[1:0];
-    assign ri_e = r_dest[1:0] - 2'd1;
+    logic [2:0]         ri;                             // 置き場所の中の番号 (辺 0..2、属性 0..5)
+    always_comb begin
+        if (r_dest < D_NX)      ri = 3'(r_dest - D_E);
+        else if (r_dest < D_NY) ri = 3'(r_dest - D_NX);
+        else if (r_dest < D_GX) ri = 3'(r_dest - D_NY);
+        else if (r_dest < D_GY) ri = 3'(r_dest - D_GX);
+        else if (r_dest < D_T)  ri = 3'(r_dest - D_GY);
+        else                    ri = 3'(r_dest - D_T);
+    end
     logic [2:0]         pend;                        // 乗算器の中にある数 (0..3)
 
     always_ff @(posedge clk) begin
@@ -197,18 +204,16 @@ module tri_setup (
             // sat32((a0 << 12) + (T >>> 4))) を入れる。加算器は 1 つ
             if (m_out_v) begin
                 logic signed [53:0] base, val;
-                base = r_first ? ((r_dest >= D_E && r_dest < D_NX && bias[ri_e]) ? -54'sd1 : 54'sd0) : acc;
+                base = r_first ? ((r_dest >= D_E && r_dest < D_NX && bias[2'(ri)]) ? -54'sd1 : 54'sd0) : acc;
                 val  = r_neg ? base - m_p : base + m_p;
                 acc <= val;
-                unique case (r_dest)
-                    D_AREA:                     area   <= 32'(val);
-                    6'd1, 6'd2, 6'd3:           e[ri_e] <= 32'(val);
-                    6'd4, 6'd5, 6'd6, 6'd7:     nx[ri] <= 36'(val);
-                    6'd8, 6'd9, 6'd10, 6'd11:   ny[ri] <= 36'(val);
-                    6'd12, 6'd13, 6'd14, 6'd15: gx[ri] <= shsat(m_p, nb);
-                    6'd16, 6'd17, 6'd18, 6'd19: gy[ri] <= shsat(m_p, nb);
-                    default:                    s[ri]  <= sat32(signed'(54'({va[ri][0], 12'd0})) + (val >>> 4));
-                endcase
+                if (r_dest == D_AREA)   area       <= 32'(val);
+                else if (r_dest < D_NX) e[2'(ri)]  <= 32'(val);
+                else if (r_dest < D_NY) nx[ri]     <= 36'(val);
+                else if (r_dest < D_GX) ny[ri]     <= 36'(val);
+                else if (r_dest < D_GY) gx[ri]     <= shsat(m_p, nb);
+                else if (r_dest < D_T)  gy[ri]     <= shsat(m_p, nb);
+                else                    s[ri]      <= sat32(signed'(54'({va[ri][0], 12'd0})) + (val >>> 4));
             end
 
             // 面積の逆数 (S_BBOX で始める)
@@ -229,6 +234,8 @@ module tri_setup (
                     va[1][0] <= {8'd0, c0[15:8]};  va[1][1] <= {8'd0, c1[15:8]};  va[1][2] <= {8'd0, c2[15:8]};
                     va[2][0] <= {8'd0, c0[7:0]};   va[2][1] <= {8'd0, c1[7:0]};   va[2][2] <= {8'd0, c2[7:0]};
                     va[3][0] <= z0;                va[3][1] <= z1;                va[3][2] <= z2;
+                    va[4][0] <= t0[15:0];          va[4][1] <= t1[15:0];          va[4][2] <= t2[15:0];
+                    va[5][0] <= t0[31:16];         va[5][1] <= t1[31:16];         va[5][2] <= t2[31:16];
                     k     <= '0;
                     state <= S_AREA;
                 end
@@ -246,7 +253,7 @@ module tri_setup (
                         if (area < 0) begin
                             vx[1] <= vx[2]; vx[2] <= vx[1];
                             vy[1] <= vy[2]; vy[2] <= vy[1];
-                            for (int j = 0; j < 4; j++) begin va[j][1] <= va[j][2]; va[j][2] <= va[j][1]; end
+                            for (int j = 0; j < 6; j++) begin va[j][1] <= va[j][2]; va[j][2] <= va[j][1]; end
                             area <= -area;
                         end
                         state <= S_BBOX;

@@ -14,6 +14,8 @@ module tb_tri_engine;
     logic [7:0]  by0, by1;
     logic [8:0]  cx0 = 0, cx1 = 319;
     logic [7:0]  cy0 = 0, cy1 = 239;
+    logic [17:0] tex_cfg = {2'd0, 8'd0, 4'd3, 4'd3};
+    logic [20:0] tex_base = '0;
     logic [6:0]  cnt_raddr = '0;
     logic [10:0] cnt_q;
     logic [31:0] bin_pairs, cycles;

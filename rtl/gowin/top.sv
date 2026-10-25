@@ -333,7 +333,8 @@ module top #(
             .draw_base, .z_base, .cx0(clip_x0), .cx1(clip_x1), .cy0(clip_y0), .cy1(clip_y1),
             .mem_req(p_req), .mem_we(p_we), .mem_addr(p_addr), .mem_len(p_len), .mem_wdata(p_wdata), .mem_wmask(p_wmask),
             .mem_ack(p_ack), .mem_wnext(p_wnext), .mem_rvalid(p_rvalid), .mem_rdata(mem_rdata32),
-            .st_bin(), .st_pairs(), .st_prep(), .st_fetch(), .st_mul(), .st_walk(), .st_out(), .st_walked(), .st_drawn()
+            .st_bin(), .st_pairs(), .st_prep(), .st_fetch(), .st_mul(), .st_walk(), .st_out(), .st_walked(), .st_drawn(),
+            .st_tlook(), .st_tmiss(), .st_tstall()
         );
     end else begin : g_audio
         assign {p_we, p_wdata, p_wmask, p_len} = {1'b0, 32'h0, 4'h0, 9'd1};

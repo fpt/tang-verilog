@@ -144,7 +144,7 @@ module gpu_scenario_tb #(
 
     if (GPU3D != 0) begin : g_tri
         // 3D GPU: 三角形の描画 (アービタの d)。走査・描いたピクセルと busy のクロックを最後に出す (測る用)
-        logic [31:0] bin, pairs, prep, fetch, mul, walk, outc, walked, drawn;
+        logic [31:0] bin, pairs, prep, fetch, mul, walk, outc, walked, drawn, tlook, tmiss, tstall;
         raster3d u_r3d (
             .clk(clk_sys), .rst,
             .push(t3_push), .word(t3_word), .go(t3_go), .busy(t3_busy), .error(t3_error),
@@ -152,7 +152,7 @@ module gpu_scenario_tb #(
             .mem_req(p_req), .mem_we(p_we), .mem_addr(p_addr), .mem_len(p_len), .mem_wdata(p_wdata), .mem_wmask(p_wmask),
             .mem_ack(p_ack), .mem_wnext(p_wnext), .mem_rvalid(p_rvalid), .mem_rdata(m_rdata),
             .st_bin(bin), .st_pairs(pairs), .st_prep(prep), .st_fetch(fetch), .st_mul(mul), .st_walk(walk), .st_out(outc),
-            .st_walked(walked), .st_drawn(drawn)
+            .st_walked(walked), .st_drawn(drawn), .st_tlook(tlook), .st_tmiss(tmiss), .st_tstall(tstall)
         );
         int d_words = 0, tris = 0, errs = 0;
         always @(posedge clk_sys) begin
@@ -164,6 +164,7 @@ module gpu_scenario_tb #(
             $display("  tri: %0d commands, binning %0d cycles, %0d tile pairs, %0d SDRAM words, %0d errors", tris, bin, pairs, d_words, errs);
             $display("  tiles: prep %0d, fetch %0d, mul %0d, walk %0d (walked %0d, drawn %0d), out %0d cycles",
                      prep, fetch, mul, walk, walked, drawn, outc);
+            $display("  texture: %0d texel lookups, %0d misses, %0d stall cycles", tlook, tmiss, tstall);
         end
     end else begin : g_audio
         // 音 (K5a): 実機と同じく SDRAM の PCM のリングを読む (I2S の出力は見ない。表示の読み出しの待ちに効かないことを数える)

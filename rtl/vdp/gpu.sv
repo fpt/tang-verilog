@@ -69,6 +69,7 @@
 //                   [{r, g, b}]、[{z}]。描き方は rtl/gpu3d/tri_engine.sv、計算の規則は tools/harness/raster.py
 //   0x24 CLEAR_Z    (GPU3D = 1 のときだけ) Z バッファ (Z_BASE から 320 x 240 x 16bit) を [15:0] で塗る
 //   0x25 BEGIN_SCENE / 0x26 END_SCENE  (GPU3D = 1 のときだけ) TBDR のシーン。意味は rtl/gpu3d/raster3d.sv
+//   0x21 SET_TEX / 0x28 CLUT_WRITE     (GPU3D = 1 のときだけ) テクスチャ。意味は rtl/gpu3d/raster3d.sv
 //   それ以外        エラーを立て、1 ワードのコマンドとして読み飛ばす
 //
 // WAIT_LINE のあとの REG_WRITE は、FIFO にすでに入っていれば数クロックで実行されるので、次のラインの合成 (約 63us 後) に間に合う。
@@ -180,7 +181,8 @@ module gpu #(
                            OP_REG_WRITE = 8'h09, OP_WAIT_LINE = 8'h0A, OP_WAIT_VBLANK = 8'h0B,
                            OP_VRAM_WRITE = 8'h0C, OP_PAL_WRITE = 8'h0D, OP_STRETCH = 8'h0E, OP_OAM_WRITE = 8'h0F,
                            OP_LIGHT_WRITE = 8'h10, OP_TRI = 8'h20, OP_CLEAR_Z = 8'h24,
-                           OP_BEGIN_SCENE = 8'h25, OP_END_SCENE = 8'h26;
+                           OP_BEGIN_SCENE = 8'h25, OP_END_SCENE = 8'h26,
+                           OP_SET_TEX = 8'h21, OP_CLUT_WRITE = 8'h28;
     localparam int BLIT_MAX_W = 512;      // ライン バッファ (256 ワード) に入る幅
     localparam int STRETCH_MAX = 1024;    // STRETCH_BLIT の描く大きさの上限
 
@@ -586,10 +588,17 @@ module gpu #(
                     up_left <= word[23:0];
                     arg_idx <= 3'd0;
                     if (GPU3D != 0 && word[31:24] == OP_TRI) begin
-                        // TRI: 先頭ワードと、頂点 3 つ x (1 + Gouraud + Z) ワードを tri_engine に渡す
+                        // TRI: 先頭ワードと、頂点 3 つ x (1 + Gouraud + テクスチャ + Z) ワードを tri_engine に渡す
                         t3_push     <= 1'b1;
                         t3_word     <= word;
-                        up_left     <= 24'd3 * (24'd1 + 24'(word[16]) + 24'(word[19]));
+                        up_left     <= 24'd3 * (24'd1 + 24'(word[16]) + 24'(word[17]) + 24'(word[19]));
+                        state       <= S_FETCH;
+                        after_fetch <= S_TRI_ARG;
+                    end else if (GPU3D != 0 && (word[31:24] == OP_SET_TEX || (word[31:24] == OP_CLUT_WRITE && word[8:0] != 9'd0))) begin
+                        // SET_TEX (1 ワード) / CLUT_WRITE ((n + 1) / 2 ワード): TRI と同じく渡す
+                        t3_push     <= 1'b1;
+                        t3_word     <= word;
+                        up_left     <= (word[31:24] == OP_SET_TEX) ? 24'd1 : 24'(word[8:1]) + 24'(word[0]);
                         state       <= S_FETCH;
                         after_fetch <= S_TRI_ARG;
                     end else if (GPU3D != 0 && (word[31:24] == OP_BEGIN_SCENE || word[31:24] == OP_END_SCENE)) begin
