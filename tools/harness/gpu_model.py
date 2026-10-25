@@ -221,7 +221,9 @@ def encode(step):
     if op == "end_scene":
         return [OP_END_SCENE << 24]
     if op == "set_tex":
+        import raster
         fmt, wl, hl = TEX_FMT[str(step.get("fmt", "16"))], int(step["w"]).bit_length() - 1, int(step["h"]).bit_length() - 1
+        assert step["base"] % (1 << (wl + hl - raster.TEX_SHIFT[fmt])) == 0, "set_tex: base はテクスチャのワード数の倍数にする"
         return [OP_SET_TEX << 24 | fmt << 16 | (step.get("clut", 0) & 0xFF) << 8 | wl << 4 | hl, step["base"] & 0x1FFFFF]
     if op == "clut":
         cols = [color565(c) for c in step["colors"]]

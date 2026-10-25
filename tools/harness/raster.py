@@ -21,7 +21,8 @@
     tu = (acc_u >>> 18) & (幅 - 1)、tv = (acc_v >>> 18) & (高さ - 1) (はみ出した分は折り返す)
     テクスチャ (SET_TEX): 形式 0 = 16bpp (RGB565、1 ワードに 2 つ、下位が偶数の u)、1 = 8bpp (1 ワードに 4 つ、u % 4 番目のバイト)、
     2 = 4bpp (1 ワードに 8 つ、u % 8 番目は [31 - 4k -: 4] = タイルの行と同じ並び)。8bpp / 4bpp は CLUT[(値 + clut) & 255] の色
-    テクセル (tu, tv) のワードアドレスは base + (tv << (幅の log2 - s)) + (tu >> s) (s は 16bpp 1、8bpp 2、4bpp 3)
+    テクセル (tu, tv) のワードアドレスは base | (tv << (幅の log2 - s)) | (tu >> s) (s は 16bpp 1、8bpp 2、4bpp 3)。
+    base はテクスチャのワード数 (2 ^ (幅の log2 + 高さの log2 - s)) の倍数にする (足し算でなく OR で作るため)
     色 0 (RGB565 の 0x0000) のテクセルは透明 (色も Z も書かない)。Gouraud なら頂点の色で変調する (PS1 と同じく 128 = 1 倍):
     R = min(31, (texR * r) >> 7)、G = min(63, (texG * g) >> 7)、B = min(31, (texB * b) >> 7)。Gouraud でなければテクセルの色そのまま
 """
@@ -143,7 +144,7 @@ def texel(read, tex, clut, uv):
     tu = (uv[0] >> 18) & ((1 << wl) - 1)
     tv = (uv[1] >> 18) & ((1 << hl) - 1)
     sh = TEX_SHIFT[fmt]
-    w = read((base + (tv << (wl - sh)) + (tu >> sh)) & 0x1FFFFF)
+    w = read((base | (tv << (wl - sh)) | (tu >> sh)) & 0x1FFFFF)
     if fmt == 0:
         return (w >> (16 * (tu & 1))) & 0xFFFF
     v = (w >> (8 * (tu & 3))) & 0xFF if fmt == 1 else (w >> (28 - 4 * (tu & 7))) & 0xF

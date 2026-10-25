@@ -1,6 +1,6 @@
 // 三角形のセットアップ (docs/GPU3D_PLAN.md の 3.4 節、G1)。計算の規則は tools/harness/raster.py が正 (同じ整数の計算)
 //
-//   入力: 頂点 3 つ (x, y は符号付き 12.4、色 {r, g, b} 8bit ずつ、z 16bit、テクスチャの {v, u} 16bit ずつ)、クリップ矩形 (ピクセル、両端を含む)
+//   入力 (start から done まで保持する): 頂点 3 つ (x, y は符号付き 12.4、色 {r, g, b} 8bit ずつ、z 16bit、テクスチャの {v, u} 16bit ずつ)、クリップ矩形 (ピクセル、両端を含む)
 //   出力 (done のクロックから次の start まで保持):
 //     empty      描くものがない (面積 0、外接矩形とクリップ矩形が重ならない)
 //     bx0..by1   走査する外接矩形 (ピクセル、両端を含む)
@@ -30,9 +30,33 @@ module tri_setup (
     output logic [5:0][31:0] s, gx, gy
 );
     // ---- 頂点 (向きを揃えたあと) ----
+    // 入力は start から done まで変わらない (tri_engine が保持する) ので写さない。向きを揃える入れ替えは sw で選ぶ
+    logic               sw;                         // v1 と v2 を入れ替える
     logic signed [15:0] vx [0:2];
     logic signed [15:0] vy [0:2];
     logic        [15:0] va [0:5][0:2];             // 属性 k の頂点 i の値
+    logic [15:0] ix [0:2], iy [0:2], iz [0:2];
+    logic [23:0] ic [0:2];
+    logic [31:0] it [0:2];
+    assign ix[0] = x0; assign ix[1] = x1; assign ix[2] = x2;
+    assign iy[0] = y0; assign iy[1] = y1; assign iy[2] = y2;
+    assign ic[0] = c0; assign ic[1] = c1; assign ic[2] = c2;
+    assign iz[0] = z0; assign iz[1] = z1; assign iz[2] = z2;
+    assign it[0] = t0; assign it[1] = t1; assign it[2] = t2;
+    always_comb begin
+        for (int i = 0; i < 3; i++) begin
+            logic [1:0] q;
+            q = (sw && i != 0) ? 2'(3 - i) : 2'(i);
+            vx[i]    = ix[q];
+            vy[i]    = iy[q];
+            va[0][i] = {8'd0, ic[q][23:16]};
+            va[1][i] = {8'd0, ic[q][15:8]};
+            va[2][i] = {8'd0, ic[q][7:0]};
+            va[3][i] = iz[q];
+            va[4][i] = it[q][15:0];
+            va[5][i] = it[q][31:16];
+        end
+    end
 
     // ---- 乗算器 ----
     logic               m_in_v, m_out_v;
@@ -228,14 +252,7 @@ module tri_setup (
 
             unique case (state)
                 S_IDLE: if (start) begin
-                    vx[0] <= x0; vx[1] <= x1; vx[2] <= x2;
-                    vy[0] <= y0; vy[1] <= y1; vy[2] <= y2;
-                    va[0][0] <= {8'd0, c0[23:16]}; va[0][1] <= {8'd0, c1[23:16]}; va[0][2] <= {8'd0, c2[23:16]};
-                    va[1][0] <= {8'd0, c0[15:8]};  va[1][1] <= {8'd0, c1[15:8]};  va[1][2] <= {8'd0, c2[15:8]};
-                    va[2][0] <= {8'd0, c0[7:0]};   va[2][1] <= {8'd0, c1[7:0]};   va[2][2] <= {8'd0, c2[7:0]};
-                    va[3][0] <= z0;                va[3][1] <= z1;                va[3][2] <= z2;
-                    va[4][0] <= t0[15:0];          va[4][1] <= t1[15:0];          va[4][2] <= t2[15:0];
-                    va[5][0] <= t0[31:16];         va[5][1] <= t1[31:16];         va[5][2] <= t2[31:16];
+                    sw    <= 1'b0;
                     k     <= '0;
                     state <= S_AREA;
                 end
@@ -251,9 +268,7 @@ module tri_setup (
                         state <= S_IDLE;
                     end else begin
                         if (area < 0) begin
-                            vx[1] <= vx[2]; vx[2] <= vx[1];
-                            vy[1] <= vy[2]; vy[2] <= vy[1];
-                            for (int j = 0; j < 6; j++) begin va[j][1] <= va[j][2]; va[j][2] <= va[j][1]; end
+                            sw   <= 1'b1;
                             area <= -area;
                         end
                         state <= S_BBOX;

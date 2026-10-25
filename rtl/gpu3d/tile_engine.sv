@@ -92,15 +92,15 @@ module tile_engine (
     logic [15:0]        rflat;
     logic [8:0]         rbx0, rbx1;
     logic [7:0]         rby0, rby1;
-    logic signed [31:0] re  [0:2];
     logic signed [20:0] rex [0:2];
     logic signed [20:0] rey [0:2];
-    logic [31:0]        rs  [0:5];
     logic [31:0]        rgx [0:5];
     logic [31:0]        rgy [0:5];
     logic [1:0]         tfmt;                         // テクスチャ: 0 16bpp、1 8bpp、2 4bpp
     logic [7:0]         tclut;
-    logic [3:0]         twl, thl;
+    logic [7:0]         umask, vmask;                 // 幅 - 1、高さ - 1
+    logic [1:0]         tsh;                          // 1 ワードのテクセル数の log2 (16bpp 1、8bpp 2、4bpp 3)
+    logic [3:0]         tvs;                          // 1 行のワード数の log2 (幅の log2 - tsh)
     logic [20:0]        tbase;
     logic [4:0]         ridx;
 
@@ -169,19 +169,16 @@ module tile_engine (
         pcol = gour ? {pr8[7:3], pg8[7:2], pb8[7:3]} : rflat;
     end
 
-    // テクセル: tu = (acc_u >>> 18) & (幅 - 1)、ワードアドレス = base + (tv << (幅の log2 - s)) + (tu >> s)
-    logic [7:0]  tu, tv, umask, vmask;
-    logic [1:0]  tsh;
+    // テクセル: tu = (acc_u >>> 18) & (幅 - 1)、ワードアドレス = base | (tv << (幅の log2 - s)) | (tu >> s)
+    // (base はテクスチャのワード数の倍数。足し算にすると桁上げがキャッシュの判定まで続いて 63MHz に届かなかった)
+    logic [7:0]  tu, tv;
     logic [20:0] taddr;
     logic [3:0]  tline;
     logic [13:0] ttag;
     logic        t_hit, t_need;
-    assign umask = 8'((9'd1 << twl) - 9'd1);
-    assign vmask = 8'((9'd1 << thl) - 9'd1);
     assign tu    = ac[4][25:18] & umask;
     assign tv    = ac[5][25:18] & vmask;
-    assign tsh   = (tfmt == 2'd0) ? 2'd1 : (tfmt == 2'd1) ? 2'd2 : 2'd3;
-    assign taddr = tbase + 21'(16'(tv) << (twl - 4'(tsh))) + 21'(tu >> tsh);
+    assign taddr = tbase | 21'(16'(tv) << tvs) | 21'(tu >> tsh);
     assign tline = taddr[6:3];
     assign ttag  = taddr[20:7];
 
@@ -328,11 +325,11 @@ module tile_engine (
 
             // 乗算の結果を足す (辺の値と属性。どちらも 32bit で回る)
             if (m_out_v) begin
-                // 置き場所ごとの 2 つの積は続けて出るので、加算器 1 つで: 1 つ目は e / s に、2 つ目はその和に足す
+                // 置き場所ごとの 2 つの積は続けて出るので、加算器 1 つで: 1 つ目はレコードの e / s (er / ar に読んである) に、2 つ目はその和に足す
                 logic [3:0]  dd;
                 logic [31:0] val;
                 dd  = m_out_tag[3:0];
-                val = (m_out_tag[4] ? ((dd < 4'd3) ? 32'(re[2'(dd)]) : rs[3'(dd - 4'd3)]) : macc) + m_p;
+                val = (m_out_tag[4] ? ((dd < 4'd3) ? 32'(er[2'(dd)]) : ar[3'(dd - 4'd3)]) : macc) + m_p;
                 macc <= val;
                 if (dd < 4'd3) er[2'(dd)] <= signed'(val);
                 else           ar[3'(dd - 4'd3)] <= val;
@@ -431,14 +428,20 @@ module tile_engine (
                                 rbx0 <= mem_rdata[8:0]; rbx1 <= mem_rdata[24:16];
                             end else if (ridx == 5'd2) begin
                                 rby0 <= mem_rdata[7:0]; rby1 <= mem_rdata[23:16];
-                            end else if (ridx < 5'd6)  re[2'(ridx - 5'd3)]  <= signed'(mem_rdata);
+                            end else if (ridx < 5'd6)  er[2'(ridx - 5'd3)]  <= signed'(mem_rdata);   // 左上の値 (乗算の和を足していく)
                             else if (ridx < 5'd9)  rex[2'(ridx - 5'd6)] <= mem_rdata[20:0];
                             else if (ridx < 5'd12) rey[2'(ridx - 5'd9)] <= mem_rdata[20:0];
-                            else if (ridx < 5'd18) rs[3'(ridx - 5'd12)]  <= mem_rdata;
+                            else if (ridx < 5'd18) ar[3'(ridx - 5'd12)]  <= mem_rdata;
                             else if (ridx < 5'd24) rgx[3'(ridx - 5'd18)] <= mem_rdata;
                             else if (ridx < 5'd30) rgy[3'(ridx - 5'd24)] <= mem_rdata;
                             else if (ridx == 5'd30) begin
-                                tfmt <= mem_rdata[17:16]; tclut <= mem_rdata[15:8]; twl <= mem_rdata[7:4]; thl <= mem_rdata[3:0];
+                                logic [1:0] sh;
+                                sh     = (mem_rdata[17:16] == 2'd0) ? 2'd1 : (mem_rdata[17:16] == 2'd1) ? 2'd2 : 2'd3;
+                                tfmt  <= mem_rdata[17:16]; tclut <= mem_rdata[15:8];
+                                umask <= 8'((9'd1 << mem_rdata[7:4]) - 9'd1);
+                                vmask <= 8'((9'd1 << mem_rdata[3:0]) - 9'd1);
+                                tsh   <= sh;
+                                tvs   <= mem_rdata[7:4] - 4'(sh);
                             end else begin
                                 tbase <= mem_rdata[20:0];
                             end
