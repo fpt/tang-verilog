@@ -1,0 +1,70 @@
+{
+ "name": "m5_spans",
+ "description": "\u884c\u306e\u6b8b\u308a\u304c\u3061\u3087\u3046\u3069 1 \u30ef\u30fc\u30c9\u306b\u306a\u308b\u5e45 (65 / 129 \u30ef\u30fc\u30c9) \u306e FILL_RECT \u3068 BLIT (G1 \u3067\u898b\u3064\u3051\u305f 64 \u30ef\u30fc\u30c9\u306e\u30d0\u30fc\u30b9\u30c8\u306e\u7d42\u308f\u308a\u306e\u5224\u65ad\u306e\u4e0d\u5177\u5408)",
+ "steps": [
+  {
+   "op": "clear",
+   "color": "#000000"
+  },
+  {
+   "op": "fill_rect",
+   "x": 0,
+   "y": 10,
+   "w": 130,
+   "h": 20,
+   "color": "#ffffff"
+  },
+  {
+   "op": "fill_rect",
+   "x": 0,
+   "y": 40,
+   "w": 258,
+   "h": 20,
+   "color": "#ff0000"
+  },
+  {
+   "op": "fill_rect",
+   "x": 61,
+   "y": 70,
+   "w": 128,
+   "h": 20,
+   "color": "#00ff00"
+  },
+  {
+   "op": "fill_rect",
+   "x": 1,
+   "y": 100,
+   "w": 129,
+   "h": 20,
+   "color": "#0000ff"
+  },
+  {
+   "op": "upload_image",
+   "slot": 512
+  },
+  {
+   "op": "blit",
+   "src": 146432,
+   "stride": 256,
+   "w": 130,
+   "h": 60,
+   "x": 0,
+   "y": 130
+  },
+  {
+   "op": "blit",
+   "src": 146432,
+   "stride": 256,
+   "w": 258,
+   "h": 40,
+   "x": 0,
+   "y": 195
+  },
+  {
+   "op": "swap"
+  },
+  {
+   "op": "check"
+  }
+ ]
+}

@@ -140,6 +140,10 @@ lint:
 	$(FPGA) verilator --lint-only -Wall --top-module gpu $(RTL_SRC)
 	$(FPGA) verilator --lint-only -Wall --top-module fb_line $(RTL_SRC)
 	$(FPGA) verilator --lint-only -Wall --top-module mul_probe $(RTL_SRC)
+	$(FPGA) verilator --lint-only -Wall --top-module smul36x18 $(RTL_SRC)
+	$(FPGA) verilator --lint-only -Wall --top-module tri_setup $(RTL_SRC)
+	$(FPGA) verilator --lint-only -Wall --top-module tri_engine $(RTL_SRC)
+	$(FPGA) verilator --lint-only -Wall --top-module gpu -GGPU3D=1 $(RTL_SRC)
 
 sim: $(addprefix sim-,$(TBS))
 
@@ -183,11 +187,12 @@ synth: $(OUT_DIR)/$(TOP).json
 pnr: $(OUT_DIR)/$(TOP)_pnr.json
 bitstream: $(OUT_DIR)/$(TOP).fs
 
-# SystemVerilog は yosys-slang プラグイン (read_slang) で読む
+# SystemVerilog は yosys-slang プラグイン (read_slang) で読む。
+# -nolutram: LUT の RAM (RAM16SDP4) は実機で値が化ける (docs/GPU3D_PLAN.md の G1)。小さい配列はフリップフロップか BSRAM に置く
 $(OUT_DIR)/$(TOP).json: $(SYN_SRC) $(GOWIN_BB)
 	@mkdir -p $(OUT_DIR)
 	$(FPGA) yosys -m slang -q -l $(OUT_DIR)/$(TOP)_yosys.log \
-		-p "read_slang --top $(TOP) $(TOP_PARAMS) $(SYN_SRC) $(GOWIN_BB); synth_gowin -family gw2a -top $(TOP) -json $@"
+		-p "read_slang --top $(TOP) $(TOP_PARAMS) $(SYN_SRC) $(GOWIN_BB); synth_gowin -family gw2a -nolutram -top $(TOP) -json $@"
 	$(FPGA) python3 scripts/fix_netlist.py $@ $(TOP)
 
 $(OUT_DIR)/$(TOP)_pnr.json: $(OUT_DIR)/$(TOP).json $(CST)

@@ -45,6 +45,7 @@
 //                   22: BITMAP_FMT (1bit、0 = RGB565、1 = 8bpp。描くコマンドにはすぐ、表示には次のラインから効く)、
 //                   23: AUDIO_CTRL ([0] 音を出す、[1] に 1 を書くと PCM_RD と UNDERRUN と先読みを空にする)、24: PCM_BASE (13bit、PCM のリングの
 //                   SDRAM の先頭、256 ワード単位。既定 0x1FE0)、25: PCM_SIZE (4bit、リングは 1 << n ワード。既定 11)、26: PCM_WR (16bit、ホストが書いた標本の数)。
+//                   27: Z_BASE (13bit、Z バッファの SDRAM の先頭、256 ワード単位。既定 0x0E00。3D GPU の TRI / CLEAR_Z が使う)。
 //                   音のレジスタはすぐ効く (ラインに合わせない)。音の動き方は audio_out.sv。
 //                   32..50: Mode 7 と霧のレジスタ (E7)。line_compositor が持つ (意味は line_compositor.sv と mode7_layer.sv)
 //                   どれも既定 0 (LAYER_CTRL と BITMAP_RANK は 1、SPR_LINE_PX は 320)
@@ -64,6 +65,9 @@
 //                   (OAM は 256 ワードで折り返す。形式は sprite_layer.sv)
 //   0x10 LIGHT_WRITE [23:0] ワード数 n、次のワードにライトマップのセルの番号 (cy * 40 + cx、2048 で折り返す)、そのあとに n ワード。
 //                   1 ワードに 1 セル: [5:0] R、[13:8] G、[21:16] B の倍率 (16 = 1 倍、0..63)。使い方は line_compositor.sv
+//   0x20 TRI        (GPU3D = 1 のときだけ) 三角形。[23:16] フラグ (bit0 Gouraud、bit3 Z)、[15:0] 単色。続けて頂点ごとに {y, x} (12.4)、
+//                   [{r, g, b}]、[{z}]。描き方は rtl/gpu3d/tri_engine.sv、計算の規則は tools/harness/raster.py
+//   0x24 CLEAR_Z    (GPU3D = 1 のときだけ) Z バッファ (Z_BASE から 320 x 240 x 16bit) を [15:0] で塗る
 //   それ以外        エラーを立て、1 ワードのコマンドとして読み飛ばす
 //
 // WAIT_LINE のあとの REG_WRITE は、FIFO にすでに入っていれば数クロックで実行されるので、次のラインの合成 (約 63us 後) に間に合う。
@@ -82,7 +86,8 @@
 module gpu #(
     parameter int SRC_W = 320,
     parameter int SRC_H = 240,
-    parameter int FIFO_WORDS = 512
+    parameter int FIFO_WORDS = 512,
+    parameter int GPU3D = 0              // 1: 3D GPU のコマンド (TRI、CLEAR_Z) を受ける (docs/GPU3D_PLAN.md、rtl/gpu3d/tri_engine.sv)
 ) (
     input  logic        clk,
     input  logic        rst,
@@ -152,7 +157,16 @@ module gpu #(
     output logic        mark_req,        // WAIT_VBLANK (印付き) が終わったとき 1 クロック
     input  logic        line_start,      // line_compositor がラインの合成を始めたとき 1 クロック
     input  logic [7:0]  line_num,
-    output logic        ready            // FIFO が半分以上空いている (READY の線)
+    output logic        ready,           // FIFO が半分以上空いている (READY の線)
+    // 3D GPU (GPU3D = 1): TRI のワード列を tri_engine に渡す。t3_go のあと t3_busy が落ちるまで次のコマンドを待つ
+    output logic        t3_push,
+    output logic [31:0] t3_word,
+    output logic        t3_go,
+    input  logic        t3_busy,
+    output logic [12:0] draw_base_o,     // 描く面 (tri_engine へ)
+    output logic [12:0] z_base,          // Z バッファの先頭 (REG_WRITE 27、256 ワード単位。既定 0x0E00 = SDRAM の 0x380000 バイト)
+    output logic [8:0]  clip_x0, clip_x1,
+    output logic [7:0]  clip_y0, clip_y1
 );
     localparam int PTR_W = $clog2(FIFO_WORDS);
     localparam int MAX_BURST = 64;
@@ -163,7 +177,7 @@ module gpu #(
                            OP_POINT = 8'h05, OP_DRAW_LINE = 8'h06, OP_CLIP = 8'h07, OP_BLIT = 8'h08,
                            OP_REG_WRITE = 8'h09, OP_WAIT_LINE = 8'h0A, OP_WAIT_VBLANK = 8'h0B,
                            OP_VRAM_WRITE = 8'h0C, OP_PAL_WRITE = 8'h0D, OP_STRETCH = 8'h0E, OP_OAM_WRITE = 8'h0F,
-                           OP_LIGHT_WRITE = 8'h10;
+                           OP_LIGHT_WRITE = 8'h10, OP_TRI = 8'h20, OP_CLEAR_Z = 8'h24;
     localparam int BLIT_MAX_W = 512;      // ライン バッファ (256 ワード) に入る幅
     localparam int STRETCH_MAX = 1024;    // STRETCH_BLIT の描く大きさの上限
 
@@ -190,7 +204,7 @@ module gpu #(
         S_UPLOAD_WRITE, S_LINE_STEP, S_LINE_PLOT, S_LINE_ADV,
         S_BLIT_SETUP, S_BLIT_SKIP, S_BLIT_READ, S_BLIT_WRITE, S_WAIT_LINE,
         S_ST_SETUP, S_ST_ROW, S_ST_GEN, S_ST_WRITE,
-        S_VRAM_WRITE, S_PAL_WRITE, S_PAL_HI
+        S_VRAM_WRITE, S_PAL_WRITE, S_PAL_HI, S_TRI_ARG, S_TRI_WAIT
     } state_t;
     state_t state, after_fetch;
 
@@ -229,7 +243,10 @@ module gpu #(
     assign rect_empty = rw == 0 || rh == 0 || xs > xe || ys > ye;
 
     logic        fmt8;                     // 8bpp で描く
-    assign fmt8 = bitmap_fmt;
+    logic        rect_z;                   // CLEAR_Z: 矩形を Z バッファに (16bit、RGB565 と同じ並び)
+    assign fmt8 = bitmap_fmt && !rect_z;
+    assign draw_base_o = draw_base;
+    assign {clip_x0, clip_x1, clip_y0, clip_y1} = {cx0, cx1, cy0, cy1};
     logic [1:0]  x0_b, x1_b;               // 塗る範囲の最初 / 最後 (含む) のピクセルの、ワードの中の最初 / 最後のバイト
     logic [7:0]  y_cur, y_last;
     logic [7:0]  w_first, w_last, w_cur;   // ワード単位
@@ -253,6 +270,9 @@ module gpu #(
     end
 
     logic [8:0] burst_len;
+    // 今のバーストの最後のワード。行の終わりは ack のときにこれで判断する (sdram_ctrl の ack は最後の wnext の次のクロックなので、
+    // w_cur は次のバーストの先頭に進んでいる。残りがちょうど 1 ワードのとき w_cur == w_last で判断すると、そのワードを書かずに終わっていた)
+    logic [7:0] seg_last;
     assign burst_len = (9'(w_last) - 9'(w_cur) + 9'd1 > 9'(MAX_BURST)) ? 9'(MAX_BURST) : 9'(w_last) - 9'(w_cur) + 9'd1;
 
     // --- 線 (DRAW_LINE と POINT)。ブレゼンハム: err = dx + dy (dy は負)、e2 = 2 err ---
@@ -486,6 +506,10 @@ module gpu #(
             pcm_base    <= 13'h1FE0;
             pcm_size    <= 4'd11;
             pcm_wr      <= '0;
+            z_base      <= 13'h0E00;
+            rect_z      <= 1'b0;
+            t3_push     <= 1'b0;
+            t3_go       <= 1'b0;
             tile_scroll_x <= '0;
             tile_scroll_y <= '0;
             tile_map_base <= '0;
@@ -517,6 +541,8 @@ module gpu #(
             light_we <= 1'b0;
             audio_clear <= 1'b0;
             xreg_we  <= 1'b0;
+            t3_push  <= 1'b0;
+            t3_go    <= 1'b0;
             if (flush) rd_ptr <= wr_ptr;
             if (re && addr == A_STATUS) error <= 1'b0;
 
@@ -555,7 +581,14 @@ module gpu #(
                     color   <= word[15:0];
                     up_left <= word[23:0];
                     arg_idx <= 3'd0;
-                    if (nargs(word[31:24]) != 3'd0) begin
+                    if (GPU3D != 0 && word[31:24] == OP_TRI) begin
+                        // TRI: 先頭ワードと、頂点 3 つ x (1 + Gouraud + Z) ワードを tri_engine に渡す
+                        t3_push     <= 1'b1;
+                        t3_word     <= word;
+                        up_left     <= 24'd3 * (24'd1 + 24'(word[16]) + 24'(word[19]));
+                        state       <= S_FETCH;
+                        after_fetch <= S_TRI_ARG;
+                    end else if (nargs(word[31:24]) != 3'd0) begin
                         arg_last    <= nargs(word[31:24]) - 3'd1;
                         state       <= S_FETCH;
                         after_fetch <= S_ARG;
@@ -585,12 +618,19 @@ module gpu #(
                     state <= S_FETCH;          // 下で上書きしなければ次のコマンドへ
                     unique case (op)
                         OP_NOP: ;
-                        OP_CLEAR: begin
-                            rx <= 16'd0; ry <= 16'd0; rw <= 16'(SRC_W); rh <= 16'(SRC_H);
-                            bx0 <= 9'd0; bx1 <= 9'(SRC_W - 1); by0 <= 8'd0; by1 <= 8'(SRC_H - 1);
-                            state <= S_RECT_BURST;
+                        OP_CLEAR, OP_CLEAR_Z: begin
+                            // CLEAR_Z (3D GPU だけ): Z バッファ全体を [15:0] で塗る
+                            if (op == OP_CLEAR_Z && GPU3D == 0) begin
+                                error <= 1'b1;
+                            end else begin
+                                rect_z <= op == OP_CLEAR_Z;
+                                rx <= 16'd0; ry <= 16'd0; rw <= 16'(SRC_W); rh <= 16'(SRC_H);
+                                bx0 <= 9'd0; bx1 <= 9'(SRC_W - 1); by0 <= 8'd0; by1 <= 8'(SRC_H - 1);
+                                state <= S_RECT_BURST;
+                            end
                         end
                         OP_FILL_RECT: begin
+                            rect_z <= 1'b0;
                             {ry, rx} <= arg0;
                             {rh, rw} <= arg1;
                             bx0 <= cx0; bx1 <= cx1; by0 <= cy0; by1 <= cy1;
@@ -692,6 +732,7 @@ module gpu #(
                                 8'd24: pcm_base       <= color[12:0];
                                 8'd25: pcm_size       <= color[3:0];
                                 8'd26: pcm_wr         <= color;
+                                8'd27: z_base         <= color[12:0];
                                 default: begin
                                     // 32..50: E7 (Mode 7 と霧) のレジスタ
                                     if (flags_raw >= 8'd32 && flags_raw <= 8'd50) begin
@@ -727,6 +768,20 @@ module gpu #(
                 end
 
                 // VRAM_WRITE / OAM_WRITE / LIGHT_WRITE / PAL_WRITE: FIFO から読んだワードを 1 クロックで書く (PAL_WRITE は 1 ワードに 2 色)
+                S_TRI_ARG: begin
+                    t3_push <= 1'b1;
+                    t3_word <= word;
+                    up_left <= up_left - 24'd1;
+                    if (up_left == 24'd1) begin
+                        t3_go       <= 1'b1;
+                        after_fetch <= S_DECODE;
+                        state       <= S_TRI_WAIT;
+                    end else begin
+                        state <= S_FETCH;
+                    end
+                end
+                // t3_go のクロックの t3_busy はまだ 0 のことがあるので、go の次のクロックから見る
+                S_TRI_WAIT: if (!t3_go && !t3_busy) state <= S_FETCH;
                 S_VRAM_WRITE: begin
                     vram_we    <= w_tgt == 2'd0;
                     oam_we     <= w_tgt == 2'd1;
@@ -883,11 +938,12 @@ module gpu #(
                         mem_we   <= 1'b1;
                         mem_addr <= {draw_base + 13'(y_cur), w_cur};
                         mem_len  <= burst_len;
+                        seg_last <= w_cur + 8'(burst_len) - 8'd1;
                     end else begin
                         if (mem_wnext && w_cur != w_last) w_cur <= w_cur + 8'd1;
                         if (mem_ack) begin
                             mem_req <= 1'b0;
-                            if (w_cur == w_last) begin
+                            if (seg_last == w_last) begin
                                 st_j    <= st_j + 16'd1;
                                 st_yacc <= st_yacc + st_ystep;
                                 state   <= S_ST_ROW;
@@ -902,11 +958,12 @@ module gpu #(
                         mem_we   <= 1'b1;
                         mem_addr <= {draw_base + 13'(y_cur), w_cur};
                         mem_len  <= burst_len;
+                        seg_last <= w_cur + 8'(burst_len) - 8'd1;
                     end else begin
                         if (mem_wnext && w_cur != w_last) w_cur <= w_cur + 8'd1;
                         if (mem_ack) begin
                             mem_req <= 1'b0;
-                            if (w_cur == w_last) begin
+                            if (seg_last == w_last) begin
                                 if (y_cur == y_last) begin
                                     state <= S_FETCH;
                                 end else begin
@@ -943,14 +1000,16 @@ module gpu #(
                         end else begin
                             mem_req  <= 1'b1;
                             mem_we   <= 1'b1;
-                            mem_addr <= {draw_base + 13'(y_cur), w_cur};
+                            mem_addr <= {(rect_z ? z_base : draw_base) + 13'(y_cur), w_cur};
                             mem_len  <= burst_len;
+                            seg_last <= w_cur + 8'(burst_len) - 8'd1;
+                        seg_last <= w_cur + 8'(burst_len) - 8'd1;
                         end
                     end else begin
                         if (mem_wnext && w_cur != w_last) w_cur <= w_cur + 8'd1;
                         if (mem_ack) begin
                             mem_req <= 1'b0;
-                            if (w_cur == w_last) begin
+                            if (seg_last == w_last) begin
                                 if (y_cur == y_last) begin
                                     state <= S_FETCH;
                                 end else begin

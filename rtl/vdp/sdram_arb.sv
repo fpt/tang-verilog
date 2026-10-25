@@ -1,6 +1,7 @@
 // SDRAM の調停 (4 つの利用者 -> sdram_ctrl)。docs/GPU_PLAN.md の M4, M5、docs/KESSEL_ON_VDP.md の K5a
-//   優先順位: a (表示の読み出し) > d (音の PCM の読み出し、1 ワード) > b (GPU の描画) > c (メモリテスト)。
-//   d は 1 標本 (20.8us) に 1 ワードだけなので、a の締め切りにも b の速さにもほとんど効かない。
+//   優先順位: a (表示の読み出し) > d > b (GPU の描画) > c (メモリテスト)。
+//   d は VDP では音の PCM の読み出し (1 標本 (20.8us) に 1 ワードだけなので、a の締め切りにも b の速さにもほとんど効かない)、
+//   3D GPU (docs/GPU3D_PLAN.md) では三角形の描画 (tri_engine、64 ワードまでのバースト。描いているあいだ GPU は待っている)。
 //   どれも sdram_ctrl と同じ約束: req と we / addr / len を ack まで保持し、書き込みは wnext で次のワードに進める。
 //   許可した利用者は ack まで変えない。rvalid / wnext / ack は許可した利用者にだけ返す。rdata は sdram_ctrl から全員に配る。
 //   表示の締め切りは出力 2 ライン分 (63.5us) あり、描画のバーストは 64 ワード (約 1us) までなので、途中で止める仕組みは持たない。
@@ -37,12 +38,16 @@ module sdram_arb (
     output logic        c_ack,
     output logic        c_rvalid,
     output logic        c_wnext,
-    // d (読み出しだけ)
+    // d
     input  logic        d_req,
+    input  logic        d_we,
     input  logic [20:0] d_addr,
+    input  logic [31:0] d_wdata,
+    input  logic [3:0]  d_wmask,
     input  logic [8:0]  d_len,
     output logic        d_ack,
     output logic        d_rvalid,
+    output logic        d_wnext,
     // sdram_ctrl へ
     output logic        m_req,
     output logic        m_we,
@@ -75,7 +80,7 @@ module sdram_arb (
             OWN_A: {m_req, m_we, m_addr, m_wdata, m_wmask, m_len} = {a_req, a_we, a_addr, a_wdata, a_wmask, a_len};
             OWN_B: {m_req, m_we, m_addr, m_wdata, m_wmask, m_len} = {b_req, b_we, b_addr, b_wdata, b_wmask, b_len};
             OWN_C: {m_req, m_we, m_addr, m_wdata, m_wmask, m_len} = {c_req, c_we, c_addr, c_wdata, c_wmask, c_len};
-            OWN_D: {m_req, m_we, m_addr, m_wdata, m_wmask, m_len} = {d_req, 1'b0, d_addr, 32'h0, 4'h0, d_len};
+            OWN_D: {m_req, m_we, m_addr, m_wdata, m_wmask, m_len} = {d_req, d_we, d_addr, d_wdata, d_wmask, d_len};
             default: {m_req, m_we, m_addr, m_wdata, m_wmask, m_len} = '0;
         endcase
     end
@@ -91,4 +96,5 @@ module sdram_arb (
     assign c_wnext  = owner == OWN_C && m_wnext;
     assign d_ack    = owner == OWN_D && m_ack;
     assign d_rvalid = owner == OWN_D && m_rvalid;
+    assign d_wnext  = owner == OWN_D && m_wnext;
 endmodule

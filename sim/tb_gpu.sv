@@ -72,7 +72,7 @@ module tb_gpu;
         .tileb_scroll_x, .tileb_scroll_y, .tileb_map_base, .tileb_pat_base, .tileb_ctrl, .win_h, .win_v, .win_map_base, .hs_mode, .hs_base,
         .vram_we, .vram_waddr, .vram_wdata, .pal_we, .pal_waddr, .pal_wdata,
         .audio_en, .audio_clear, .pcm_base, .pcm_size, .pcm_wr,
-        .mark_req, .line_start, .line_num, .ready
+        .mark_req, .line_start, .line_num, .ready, .t3_busy(1'b0)
     );
 
     // VRAM とパレットへの書き込みを記録する
@@ -463,6 +463,16 @@ module tb_gpu;
         exp_clear(16'h2222);
         wait_idle();
         check_all("CLEAR ignores clip");
+
+        // 行の残りがちょうど 1 ワードになる幅 (64 ワードのバーストのあと 1 ワード): 65 ワード、129 ワード。BLIT も
+        clip(0, 0, SRC_W - 1, SRC_H - 1);
+        fill(0, 3, 130, 2, 16'h0A0A);
+        fill(0, 6, 258, 2, 16'h0B0B);
+        fill(3, 9, 128, 1, 16'h0C0C);
+        upload_src(0, 21'h38000, 65, 130, 2);
+        blit(0, 21'h38000, 65, 130, 2, 0, 11, 3'b000);
+        wait_idle();
+        check_all("spans of 64k + 1 words");
 
         // 空のクリップ (x0 > x1) では何も描かない。画面の外の x0 も空
         clip(200, 0, 100, 15);

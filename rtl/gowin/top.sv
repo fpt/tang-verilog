@@ -287,7 +287,14 @@ module top #(
     logic [3:0]  pcm_size;
     logic [15:0] pcm_wr;
 
-    gpu u_gpu (
+    // 3D GPU (GPU3D): gpu -> tri_engine
+    logic        t3_push, t3_go, t3_busy;
+    logic [31:0] t3_word;
+    logic [12:0] draw_base, z_base;
+    logic [8:0]  clip_x0, clip_x1;
+    logic [7:0]  clip_y0, clip_y1;
+
+    gpu #(.GPU3D(GPU3D)) u_gpu (
         .clk(clk_sys), .rst(rst_sys),
         .addr(reg_addr), .wdata(reg_wdata), .we(reg_we && sel_gpu), .re(reg_re && sel_gpu), .rdata(gpu_rdata),
         .mem_req(g_req), .mem_we(g_we), .mem_addr(g_addr), .mem_wdata(g_wdata), .mem_wmask(g_wmask),
@@ -298,22 +305,34 @@ module top #(
         .spr_pat_base, .spr_bank, .spr_line_cols, .oam_we, .light_we, .xreg_we, .xreg_idx, .xreg_data,
         .tileb_scroll_x, .tileb_scroll_y, .tileb_map_base, .tileb_pat_base, .tileb_ctrl, .win_h, .win_v, .win_map_base, .hs_mode, .hs_base,
         .vram_we, .vram_waddr, .vram_wdata, .pal_we, .pal_waddr, .pal_wdata,
-        .audio_en, .audio_clear, .pcm_base, .pcm_size, .pcm_wr
+        .audio_en, .audio_clear, .pcm_base, .pcm_size, .pcm_wr,
+        .t3_push, .t3_word, .t3_go, .t3_busy, .draw_base_o(draw_base), .z_base, .clip_x0, .clip_x1, .clip_y0, .clip_y1
     );
 
-    // 音: PCM のリング (SDRAM) -> I2S
-    logic        p_req, p_ack, p_rvalid;
+    // アービタの d: VDP は音 (PCM のリング -> I2S、読み出しだけ)、3D GPU は三角形の描画 (tri_engine)
+    logic        p_req, p_we, p_ack, p_rvalid, p_wnext;
     logic [20:0] p_addr;
+    logic [31:0] p_wdata;
+    logic [3:0]  p_wmask;
+    logic [8:0]  p_len;
     if (GPU3D != 0) begin : g_no_audio
         // 音はない。0x50..0x5F の窓は乗算器の確かめ (mul_probe、G0) に使う
-        assign p_req = 1'b0;
-        assign p_addr = '0;
         assign {hp_bck, hp_ws, hp_din, pa_en} = 4'b0000;
         mul_probe u_mul (
             .clk(clk_sys), .rst(rst_sys),
             .addr(reg_addr[3:0]), .wdata(reg_wdata), .we(reg_we && sel_audio), .rdata(audio_rdata)
         );
+        tri_engine u_tri (
+            .clk(clk_sys), .rst(rst_sys),
+            .push(t3_push), .word(t3_word), .go(t3_go), .busy(t3_busy),
+            .draw_base, .z_base, .cx0(clip_x0), .cx1(clip_x1), .cy0(clip_y0), .cy1(clip_y1),
+            .mem_req(p_req), .mem_we(p_we), .mem_addr(p_addr), .mem_len(p_len), .mem_wdata(p_wdata), .mem_wmask(p_wmask),
+            .mem_ack(p_ack), .mem_wnext(p_wnext), .mem_rvalid(p_rvalid), .mem_rdata(mem_rdata32),
+            .walked(), .drawn(), .cycles()
+        );
     end else begin : g_audio
+        assign {p_we, p_wdata, p_wmask, p_len} = {1'b0, 32'h0, 4'h0, 9'd1};
+        assign t3_busy = 1'b0;
         audio_out u_audio (
             .clk(clk_sys), .rst(rst_sys),
             .enable(audio_en), .clear(audio_clear), .base(pcm_base), .size_log2(pcm_size), .wr(pcm_wr),
@@ -339,7 +358,8 @@ module top #(
         .b_ack(g_ack), .b_rvalid(g_rvalid), .b_wnext(g_wnext),
         .c_req(t_req), .c_we(t_we), .c_addr(t_addr), .c_wdata(t_wdata), .c_wmask(t_wmask), .c_len(t_len),
         .c_ack(t_ack), .c_rvalid(t_rvalid), .c_wnext(),
-        .d_req(p_req), .d_addr(p_addr), .d_len(9'd1), .d_ack(p_ack), .d_rvalid(p_rvalid),
+        .d_req(p_req), .d_we(p_we), .d_addr(p_addr), .d_wdata(p_wdata), .d_wmask(p_wmask), .d_len(p_len),
+        .d_ack(p_ack), .d_rvalid(p_rvalid), .d_wnext(p_wnext),
         .m_req(mem_req), .m_we(mem_we), .m_addr(mem_addr), .m_wdata(mem_wdata), .m_wmask(mem_wmask), .m_len(mem_len),
         .m_ack(mem_ack), .m_rvalid(mem_rvalid), .m_wnext(mem_wnext)
     );

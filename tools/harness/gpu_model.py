@@ -42,6 +42,9 @@ rtl/vdp/gpu.sv と同じ規則でコマンドを解釈し、表示される面�
       {"op": "oam", "sprites": [{"x": -4, "y": 10, "w": 2, "h": 1, "tile": 3, "hflip": false, "vflip": false,
                                  "pal": 0, "pri": 0, "order": 0, "bank": 0}, ...]}  # OAM 全体 (書かなかったエントリは無効)。
                                                  # order: 0 列優先、1 16 タイル幅の表、2 行優先。bank: スプライトごとのバンク (spr_bank bit3 のとき)
+      {"op": "tri", "v": [[x, y], [x, y], [x, y]], "color": "#rrggbb"}   # 三角形 (3D GPU、raster.py)。座標はピクセル (小数可、1/16 に丸める)。
+                                                 # "rgb": ["#..", "#..", "#.."] で Gouraud、"z": [z0, z1, z2] で Z テスト / 書き込み
+      {"op": "clear_z", "value": 65535}         # Z バッファ (Z_BASE、320 x 240 x 16bit) を塗る
       {"op": "demo_setup"}, {"op": "demo_frame", "frame": 120, "mark": true}   # M9 のデモ (demo.py) のコマンド
       {"op": "md_frame", "variant": 0, "mark": true}   # メガドラの形式の決まったフレーム (md.py) を直したもの。印付きの 1 フレーム
   ]}
@@ -59,6 +62,7 @@ OP_POINT, OP_DRAW_LINE, OP_CLIP, OP_BLIT = 0x05, 0x06, 0x07, 0x08
 OP_REG_WRITE, OP_WAIT_LINE, OP_WAIT_VBLANK = 0x09, 0x0A, 0x0B
 OP_VRAM_WRITE, OP_PAL_WRITE, OP_STRETCH, OP_OAM_WRITE = 0x0C, 0x0D, 0x0E, 0x0F
 OP_LIGHT_WRITE = 0x10
+OP_TRI, OP_CLEAR_Z = 0x20, 0x24           # 3D GPU (docs/GPU3D_PLAN.md、make TARGET=gpu3d のビットストリームだけ)
 LIGHT_W = SRC_W // 8      # ライトマップの 1 行のセル数 (40)
 # 合成のレジスタ: 名前 -> (REG_WRITE の番号, ビットの幅のマスク)
 LAYER_REGS = {"bg_color": 0, "layer_ctrl": 1, "bitmap_key": 2, "tile_scroll_x": 3, "tile_scroll_y": 4,
@@ -66,7 +70,7 @@ LAYER_REGS = {"bg_color": 0, "layer_ctrl": 1, "bitmap_key": 2, "tile_scroll_x": 
               "spr_pat_base": 9, "spr_bank": 10, "spr_line_px": 11,
               "tileb_scroll_x": 12, "tileb_scroll_y": 13, "tileb_map_base": 14, "tileb_pat_base": 15, "tileb_ctrl": 16,
               "win_h": 17, "win_v": 18, "win_map_base": 19, "hscroll_mode": 20, "hscroll_base": 21,
-              "bitmap_fmt": 22, "audio_ctrl": 23, "pcm_base": 24, "pcm_size": 25, "pcm_wr": 26,
+              "bitmap_fmt": 22, "audio_ctrl": 23, "pcm_base": 24, "pcm_size": 25, "pcm_wr": 26, "z_base": 27,
               "m7_sel": 32, "m7_ctrl": 33, "m7_a": 34, "m7_b": 35, "m7_c": 36, "m7_d": 37,
               "m7_x0": 38, "m7_y0": 39, "m7_hofs": 40, "m7_vofs": 41, "m7_map_base": 42, "m7_pat_base": 43,
               "m7_tbl_base": 44, "m7_sx": 45, "m7_sy": 46,
@@ -77,7 +81,7 @@ LAYER_MASK = {"bg_color": 0xFFFF, "layer_ctrl": 0x3F, "bitmap_key": 0xFFFF, "til
               "tileb_scroll_x": 0x3FF, "tileb_scroll_y": 0x3FF, "tileb_map_base": 0x3FFF, "tileb_pat_base": 0x3FFF,
               "tileb_ctrl": 0xFF, "win_h": 0x9F, "win_v": 0x9F, "win_map_base": 0x3FFF, "hscroll_mode": 0x3,
               "hscroll_base": 0x3FFF, "bitmap_fmt": 0x1, "audio_ctrl": 0x3, "pcm_base": 0x1FFF, "pcm_size": 0xF,
-              "pcm_wr": 0xFFFF,
+              "pcm_wr": 0xFFFF, "z_base": 0x1FFF,
               "m7_sel": 0xC3, "m7_ctrl": 0xF, "m7_a": 0xFFFF, "m7_b": 0xFFFF, "m7_c": 0xFFFF, "m7_d": 0xFFFF,
               "m7_x0": 0x1FFF, "m7_y0": 0x1FFF, "m7_hofs": 0x1FFF, "m7_vofs": 0x1FFF, "m7_map_base": 0x3FFF,
               "m7_pat_base": 0x3FFF, "m7_tbl_base": 0x3FFF, "m7_sx": 0x3FF, "m7_sy": 0x1FF,
@@ -87,7 +91,7 @@ LAYER_RESET = {"bg_color": 0x0000, "layer_ctrl": 0x01, "bitmap_key": 0x0000, "ti
                "spr_pat_base": 0, "spr_bank": 0, "spr_line_px": 320,
                "tileb_scroll_x": 0, "tileb_scroll_y": 0, "tileb_map_base": 0, "tileb_pat_base": 0, "tileb_ctrl": 0,
                "win_h": 0, "win_v": 0, "win_map_base": 0, "hscroll_mode": 0, "hscroll_base": 0, "bitmap_fmt": 0,
-               "audio_ctrl": 0, "pcm_base": 0x1FE0, "pcm_size": 11, "pcm_wr": 0,
+               "audio_ctrl": 0, "pcm_base": 0x1FE0, "pcm_size": 11, "pcm_wr": 0, "z_base": 0x0E00,
                "m7_sel": 0, "m7_ctrl": 0, "m7_a": 0x100, "m7_b": 0, "m7_c": 0, "m7_d": 0x100,
                "m7_x0": 0, "m7_y0": 0, "m7_hofs": 0, "m7_vofs": 0, "m7_map_base": 0, "m7_pat_base": 0,
                "m7_tbl_base": 0, "m7_sx": 0, "m7_sy": 0,
@@ -199,6 +203,10 @@ def encode(step):
         return oam_write_words(step["addr"], [int(w, 16) if isinstance(w, str) else w for w in step["words"]])
     if op == "oam":
         return oam_write_words(0, oam_words(step["sprites"]))
+    if op == "tri":
+        return tri_words(step)
+    if op == "clear_z":
+        return [OP_CLEAR_Z << 24 | (step.get("value", 0xFFFF) & 0xFFFF)]
     if op == "md_frame":
         import md
         return md.translate(md.synthetic(step.get("variant", 0)), step.get("mark", True))[0]
@@ -211,6 +219,23 @@ def encode(step):
     if op in ("check", "check_marked"):
         return []
     raise ValueError(f"unknown op {op!r}")
+
+
+def tri_words(step):
+    """TRI のワード列: [0x20 | flags | 単色 565]、頂点ごとに {y, x} (12.4)、Gouraud なら {r, g, b}、Z なら {z}"""
+    import raster
+    gouraud, zs = "rgb" in step, step.get("z")
+    flags = (raster.FLAG_GOURAUD if gouraud else 0) | (raster.FLAG_Z if zs is not None else 0)
+    words = [OP_TRI << 24 | flags << 16 | (color565(step["color"]) if "color" in step else 0)]
+    for k, (x, y) in enumerate(step["v"]):
+        xi, yi = int(round(x * 16)), int(round(y * 16))
+        words.append((yi & 0xFFFF) << 16 | (xi & 0xFFFF))
+        if gouraud:
+            c = step["rgb"][k].lstrip("#")
+            words.append(int(c, 16))
+        if zs is not None:
+            words.append(zs[k] & 0xFFFF)
+    return words
 
 
 def layer_reset_words():
@@ -714,6 +739,17 @@ class Model:
                 for k in range(n):
                     self.vram[(addr + k) % VRAM_WORDS] = words[i + 2 + k]
                 i += 2 + n
+            elif op == OP_TRI:
+                import raster
+                n = raster.words_per_tri((w >> 16) & 0xFF)
+                self.tri(words[i:i + n])
+                i += n
+            elif op == OP_CLEAR_Z:
+                zb = self.regs["z_base"]
+                for y in range(SRC_H):
+                    for x in range(SRC_W // 2):
+                        self.mem[(zb + y) * 256 + x] = (w & 0xFFFF) * 0x10001
+                i += 1
             elif op == OP_LIGHT_WRITE:
                 n, addr = w & 0xFFFFFF, words[i + 1]
                 for k in range(n):
@@ -738,6 +774,30 @@ class Model:
                 i += 2 + n
             else:          # NOP と知らないコマンドは 1 ワード
                 i += 1
+
+    def tri(self, words):
+        """raster.py の規則で三角形を描く面 (RGB565) に描く。Z なら Z_BASE の Z バッファでテストして書く"""
+        import raster
+        flags, color, vs = raster.parse(words)
+        rec = raster.setup(vs, self.clip)
+        if rec is None:
+            return
+        zb = self.regs["z_base"]
+        for x, y, inside, rgb, z in raster.pixels(rec):
+            if not inside:
+                continue
+            if flags & raster.FLAG_Z:
+                a = (zb + y) * 256 + x // 2
+                if a not in self.mem:
+                    raise ValueError(f"TRI reads unwritten Z at ({x},{y}) (clear_z first)")
+                old = self.mem[a] >> 16 if x % 2 else self.mem[a] & 0xFFFF
+                if not z < old:
+                    continue
+                self.mem[a] = (self.mem[a] & 0xFFFF) | z << 16 if x % 2 else (self.mem[a] & 0xFFFF0000) | z
+            a = (self.draw_base + y) * 256 + x // 2
+            c = raster.to565(rgb) if flags & raster.FLAG_GOURAUD else color
+            w = self.mem.get(a, 0)
+            self.mem[a] = (w & 0xFFFF) | c << 16 if x % 2 else (w & 0xFFFF0000) | c
 
     def vram_word(self, a):
         w = self.vram.get(a % VRAM_WORDS)
