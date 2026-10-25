@@ -186,11 +186,14 @@ class Gpu:
         return self.vdp.read1(REGS["GPU_STATUS"])      # 読むとエラーとあふれが消える
 
     def wait_idle(self, timeout=5.0):
+        """busy が落ちるまで待つ。読むたびにエラーとあふれが消えるので、待つあいだに見えたものも返す"""
         deadline = time.monotonic() + timeout
+        seen = 0
         while True:
             st = self.status()
+            seen |= st & (GPU_ST_ERROR | GPU_ST_OVERFLOW)
             if not st & GPU_ST_BUSY:
-                return st
+                return st | seen
             if time.monotonic() > deadline:
                 raise HarnessError("GPU stays busy")
             time.sleep(0.002)
