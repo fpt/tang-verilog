@@ -7,8 +7,11 @@
 //   普通の check では、GPU が空になったあと 2 フレーム待ち、その次のフレームの CRC を記録する (実機の harness.py scenario と同じ)。
 //   印の check では、そこまでを送ったあと、印を付けたフレーム (WAIT_VBLANK、印付き) が終わるのを待ち、そのフレームを記録する。
 //   実行は make scenario (Verilator) だけ。640x480 のフレームを何枚も回すので Icarus では遅すぎる。
+//   GPU3D = 1 (make scenario TARGET=gpu3d) なら、line_compositor の代わりに fb_line (3D GPU のビットストリームと同じ表示)
 `timescale 1ns/1ps
-module gpu_scenario_tb;
+module gpu_scenario_tb #(
+    parameter int GPU3D = 0
+);
     logic clk_sys = 0, clk_pix = 0, rst = 1;
     always #7.936 clk_sys = ~clk_sys;    // 63MHz
     always #19.841 clk_pix = ~clk_pix;   // 25.2MHz
@@ -83,17 +86,30 @@ module gpu_scenario_tb;
     logic        mark_req, line_start, gpu_ready;
     logic [7:0]  line_num;
 
-    line_compositor u_comp (
-        .clk_sys, .rst_sys(rst), .fb_base, .base_latched,
-        .bg_color, .layer_ctrl, .bitmap_key, .bitmap_rank, .bitmap_fmt, .mark_req, .mark_toggle, .line_start, .line_num,
-        .tile_scroll_x, .tile_scroll_y, .tile_map_base, .tile_pat_base, .tile_ctrl,
-        .spr_pat_base, .spr_bank, .spr_line_cols, .oam_we, .light_we, .xreg_we, .xreg_idx, .xreg_data,
-        .tileb_scroll_x, .tileb_scroll_y, .tileb_map_base, .tileb_pat_base, .tileb_ctrl, .win_h, .win_v, .win_map_base, .hs_mode, .hs_base,
-        .vram_we, .vram_waddr, .vram_wdata, .pal_we, .pal_waddr, .pal_wdata,
-        .mem_req(fb_req), .mem_addr(fb_addr), .mem_len(fb_len), .mem_ack(fb_ack),
-        .mem_rvalid(fb_rvalid), .mem_rdata(m_rdata), .underflow_count,
-        .clk_pix, .rst_pix(rst), .x(vx), .y(vy), .rgb(fb_rgb)
-    );
+    logic comp_busy;
+    if (GPU3D != 0) begin : g_fb
+        fb_line u_fb (
+            .clk_sys, .rst_sys(rst), .fb_base, .base_latched,
+            .bg_color, .layer_ctrl(layer_ctrl[1:0]), .bitmap_key, .mark_req, .mark_toggle, .line_start, .line_num,
+            .mem_req(fb_req), .mem_addr(fb_addr), .mem_len(fb_len), .mem_ack(fb_ack),
+            .mem_rvalid(fb_rvalid), .mem_rdata(m_rdata), .underflow_count,
+            .clk_pix, .rst_pix(rst), .x(vx), .y(vy), .rgb(fb_rgb)
+        );
+        assign comp_busy = u_fb.phase != u_fb.P_IDLE;
+    end else begin : g_comp
+        line_compositor u_comp (
+            .clk_sys, .rst_sys(rst), .fb_base, .base_latched,
+            .bg_color, .layer_ctrl, .bitmap_key, .bitmap_rank, .bitmap_fmt, .mark_req, .mark_toggle, .line_start, .line_num,
+            .tile_scroll_x, .tile_scroll_y, .tile_map_base, .tile_pat_base, .tile_ctrl,
+            .spr_pat_base, .spr_bank, .spr_line_cols, .oam_we, .light_we, .xreg_we, .xreg_idx, .xreg_data,
+            .tileb_scroll_x, .tileb_scroll_y, .tileb_map_base, .tileb_pat_base, .tileb_ctrl, .win_h, .win_v, .win_map_base, .hs_mode, .hs_base,
+            .vram_we, .vram_waddr, .vram_wdata, .pal_we, .pal_waddr, .pal_wdata,
+            .mem_req(fb_req), .mem_addr(fb_addr), .mem_len(fb_len), .mem_ack(fb_ack),
+            .mem_rvalid(fb_rvalid), .mem_rdata(m_rdata), .underflow_count,
+            .clk_pix, .rst_pix(rst), .x(vx), .y(vy), .rgb(fb_rgb)
+        );
+        assign comp_busy = u_comp.busy;
+    end
 
     // 音のレジスタ (gpu -> audio_out)
     logic        audio_en, audio_clear, p_req, p_ack, p_rvalid;
@@ -158,7 +174,7 @@ module gpu_scenario_tb;
     int line_cycles = 0, max_line_cycles = 0;
     always @(posedge clk_sys) begin
         if (line_start) line_cycles = 1;
-        else if (u_comp.busy) line_cycles++;
+        else if (comp_busy) line_cycles++;
         else if (line_cycles != 0) begin
             if (line_cycles > max_line_cycles) max_line_cycles = line_cycles;
             line_cycles = 0;
