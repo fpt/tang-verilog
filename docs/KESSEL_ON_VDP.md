@@ -155,7 +155,7 @@ LCD が 800x480 なら、VDP に 400x240 を足して Kessel にも `Wide400` �
 | K5b | Kessel: ハードスプライトの `actor` API と、予算の超過を観測するレコード (VDP の変更なし) | `shooter` 系 |
 
 - K5b の完了条件: `shooter` 系のゲームが `actor` で動き、OAM の順と `bitmap_rank = 6` の関係どおりに重なる
-- これからの順番: Kessel 側の K1〜K4 (trait 化、VDP バックエンド、10 章の規則、`gpu_model.py` との一致) → E5a / E5 (HSTX、RP2350-PiZero) → K5b (`actor`) → E4.5 → E6
+- これからの順番: Kessel 側の K1〜K4 (trait 化、VDP バックエンド、10 章の規則、`gpu_model.py` との一致) → E5a / E5 (HSTX、Pico 2。RP2350-PiZero は入手できなくなった) → K5b (`actor`) → E4.5 → E6
 
 
 ## K1 の結果 (VDP 側)
