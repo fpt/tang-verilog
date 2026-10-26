@@ -407,21 +407,27 @@ def selftest(bridge, iterations):
              passing_phases=sorted(ok_phases))
 
         # READY の線 (IRQ ピンを READY にする): FIFO が空なら High、GPU を WAIT_LINE で 2 フレームほど止めて
-        # FIFO を半分以上 (300 / 512 ワード) 埋めると Low、空になると High に戻る
+        # FIFO を半分以上 (深さの 6 割。VDP は 512、3D は 2,048 ワード) 埋めると Low、空になると High に戻る
         control = vdp.read1(REGS["CONTROL"])
         gpu = Gpu(vdp)
         vdp.write(REGS["CONTROL"], [control | CONTROL_IRQ_READY])
         try:
             idle_level = bridge.command("status")["pins"]["IRQ"]
-            block = [0x0A00_0000 | n for n in (200, 100, 200, 100)]     # 下がるたびに次のフレームまで待つ
-            gpu.send(block + [0] * 300)
+            depth = gpu.free()                                          # 空のときの空き = FIFO の深さ
+            block = [0x0A00_0000 | n for n in (200, 100) * 4]           # 下がるたびに次のフレームまで待つ (約 4 フレーム)
+            queued = depth * 6 // 10
+            bridge.command("freq 8000000")                              # 送り終わる前に待ちが明けないように (1MHz だと 2,048 ワードで 40ms)
+            try:
+                gpu.send(block + [0] * queued)
+            finally:
+                bridge.command("freq 1000000")
             busy_level = bridge.command("status")["pins"]["IRQ"]
             gpu.wait_idle()
             after_level = bridge.command("status")["pins"]["IRQ"]
         finally:
             vdp.write(REGS["CONTROL"], [control])
         item("READY wire (IRQ pin with CONTROL bit4)", idle_level == 1 and busy_level == 0 and after_level == 1,
-             idle=idle_level, with_300_words_queued=busy_level, after_drain=after_level)
+             idle=idle_level, queued=queued, fifo_words=depth, while_queued=busy_level, after_drain=after_level)
 
         pins = bridge.command("status")["pins"]
         items.append({"name": "LED0-5 (info)", "ok": True, "leds": [pins[f"LED{i}"] for i in range(6)]})
