@@ -1,5 +1,7 @@
 # tang-verilog
 
+![3D GPU のビットストリームで描いた場面 (実機の HDMI キャプチャ): ロゴ、トンネル、映り込む玉の部屋、夜の街](docs/images/g5_scenes.png)
+
 Tang Nano 20K (Gowin GW2AR-18) と RP2350 で、レトロゲーム機の VDP のようなものを作るためのプロジェクトです。
 
 - FPGA 側 (Tang Nano 20K): VDP 本体。今は HDMI (DVI) に 640x480@60Hz の映像を出す
