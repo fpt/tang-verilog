@@ -7,6 +7,7 @@
 //     色 0 のテクセルは透明 (下の色が残る)
 //   - シーンの外の TRI (1 つだけのシーンとして描く): 矩形を 2 つに割った三角形がちょうどその矩形を塗る、Z の規則 (奥と同じ z は描かない)、
 //     Gouraud の頂点のそばの色、クリップ矩形の外は書かない
+//   - 半透明 (G4、シーンの外の TRI): 4 つの式 (平均、加算、減算、1/4 加算) と加算の飽和、Z はテストするが書かない (奥なら描かない)
 `timescale 1ns/1ps
 module tb_raster3d;
     logic clk = 0, rst = 1;
@@ -145,6 +146,16 @@ module tb_raster3d;
         w = mem[(int'(base) + y) * 256 + x / 2];
         return (x % 2) ? w[31:16] : w[15:0];
     endfunction
+    // 矩形 (TRI 2 つ) をシーンの外で
+    task automatic send_rect(input logic [7:0] fl, input logic [15:0] col, input int x0, input int y0, input int w, input int h,
+                             input logic [15:0] zv);
+        int xs[3], ys[3];
+        logic [23:0] cs[3];
+        logic [15:0] zs[3];
+        cs = '{24'h0, 24'h0, 24'h0}; zs = '{zv, zv, zv};
+        xs = '{x0, x0 + w, x0 + w}; ys = '{y0, y0, y0 + h}; send_tri(fl, col, xs, ys, cs, zs);
+        xs = '{x0, x0 + w, x0};     ys = '{y0, y0 + h, y0 + h}; send_tri(fl, col, xs, ys, cs, zs);
+    endtask
     task automatic expect_rect(input string what, input int x0, input int y0, input int w, input int h, input logic [15:0] c,
                                input logic [15:0] outside);
         int bad;
@@ -194,6 +205,24 @@ module tb_raster3d;
                 $display("  Gouraud corners: %h %h %h", pr, pg, pb); errors++;
             end
         end
+        // 半透明: 下の色 (16, 32, 16)、描く色 (8, 16, 8)。Z は 2000 で、z 1000 は通り 3000 は通らない
+        fill(draw_base, 32'h8410_8410); fill(z_base, 32'h07D0_07D0);
+        send_rect(8'h0C, 16'h4208, 10, 60, 20, 10, 16'd1000);         // 平均 (12, 24, 12)
+        expect_rect("semi avg", 10, 60, 20, 10, 16'h630C, 16'h8410);
+        send_rect(8'h1C, 16'h4208, 40, 60, 20, 10, 16'd1000);         // 加算 (24, 48, 24)
+        expect_rect("semi add", 40, 60, 20, 10, 16'hC618, 16'h8410);
+        send_rect(8'h2C, 16'h4208, 70, 60, 20, 10, 16'd1000);         // 減算 (8, 16, 8)
+        expect_rect("semi sub", 70, 60, 20, 10, 16'h4208, 16'h8410);
+        send_rect(8'h3C, 16'h4208, 100, 60, 20, 10, 16'd1000);        // 1/4 加算 (18, 36, 18)
+        expect_rect("semi quarter", 100, 60, 20, 10, 16'h9492, 16'h8410);
+        send_rect(8'h1C, 16'hFFFF, 130, 60, 20, 10, 16'd1000);        // 加算の飽和
+        expect_rect("semi add saturate", 130, 60, 20, 10, 16'hFFFF, 16'h8410);
+        send_rect(8'h0C, 16'h4208, 160, 60, 20, 10, 16'd3000);        // 奥なので描かない
+        expect_rect("semi behind", 160, 60, 20, 10, 16'h8410, 16'h8410);
+        if (px(z_base, 15, 65) !== 16'd2000) begin $display("  semi wrote Z (%0d)", px(z_base, 15, 65)); errors++; end
+        send_rect(8'h0C, 16'h4208, 10, 60, 20, 10, 16'd1000);         // 2 回目の平均は 1 回目の結果と混ぜる (10, 20, 10)
+        expect_rect("semi avg twice", 10, 60, 20, 10, 16'h528A, 16'h8410);
+
         fill(draw_base, 32'h0);
         cx0 = 9'd100; cx1 = 9'd120; cy0 = 8'd5; cy1 = 8'd9;
         xs = '{-100, 500, -100}; ys = '{-100, -100, 400}; send_tri(8'h00, 16'h7777, xs, ys, cs, zs);

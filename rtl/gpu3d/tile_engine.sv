@@ -8,11 +8,15 @@
 //        s + gx * dx + gy * dy で作る (乗算 18 回。dx, dy は外接矩形の左上からのピクセル数。即時モードの足し算と同じ値になる) →
 //        重なりを 1 クロックに 1 ピクセル (下の 4 段)。辺の判定、Z (z < タイルの Z) はオンチップ、色と z をタイルバッファに書く
 //     3. タイルの色を描く面に書く (write_z なら Z も Z バッファに)。書いたワードのタイルバッファは、clear なら次のタイルの値に戻す
-//   ピクセルの 4 段 (G3):
+//   ピクセルの段 (G3・G4):
 //     A  辺の判定、属性、テクセルの座標とワードアドレス、テクスチャのキャッシュのタグを見る。外れなら A を止めて 1 行 (8 ワード) を読む
 //     B  キャッシュのワードからテクセルを取り出す (16bpp はそのまま、8 / 4bpp は CLUT を引く)
 //     C  テクセルの色が決まる。タイルの Z を読む
-//     D  透明 (テクセルの色 0)、変調 (Gouraud なら頂点の色を掛ける、128 = 1 倍)、Z を比べてタイルバッファに書く
+//     D  透明 (テクセルの色 0)、Z を比べる、変調 (Gouraud なら頂点の色を掛ける、128 = 1 倍) の部分積
+//     E  変調の部分積を足して飽和。タイルの色を読む (半透明で混ぜる相手)
+//     F  Z を書く (半透明は書かない)。半透明なら色を混ぜる (flags [5:4]: 平均、加算、減算、1/4 加算)
+//     G  色をタイルバッファに書く (書くデータは FF から)
+//   半透明 (G4) は投入順に描く。シーンの外の TRI は描く面のタイルを読んでから描くので、即時でも描く面と混ざる
 //   テクスチャのキャッシュ: 直接写像、16 行 x 8 ワード (BSRAM 1 個)。タグは 14bit (ワードアドレスの [20:7])。シーン (タイルのパス) の始めに空にする
 //   規則は tools/harness/raster.py (即時モードと同じピクセル)。タイルのリストに入れなかった三角形 (上限を超えた分) はそのタイルでは描かない
 //   数え (測る用、32bit で回る): 段階ごとのクロック (準備、リストとレコードの読み出し、乗算、走査、書き出し)、走査・描いたピクセル、
@@ -84,7 +88,7 @@ module tile_engine (
     logic [15:0] cb_o [0:511];
     logic [15:0] zb_e [0:511];
     logic [15:0] zb_o [0:511];
-    logic [8:0]  rd_idx, wr_idx;
+    logic [8:0]  rd_idx, cr_idx, wr_idx;               // Z の読み出し、色の読み出し、準備と書き出しの書き込み
     logic [15:0] cq_e, cq_o, zq_e, zq_o;
 
     // ---- リスト ----
@@ -97,6 +101,8 @@ module tile_engine (
 
     // ---- レコード ----
     logic               gour, texd, zen;              // レコードのフラグ (bit0 Gouraud、bit1 テクスチャ、bit3 Z)
+    logic               semi;                         // bit2 半透明 (G4)
+    logic [1:0]         bmode;                        // [5:4] 半透明の式
     logic [15:0]        rflat;
     logic [8:0]         rbx0, rbx1;
     logic [7:0]         rby0, rby1;
@@ -247,10 +253,35 @@ module tile_engine (
     logic [15:0] e_z, e_raw, e_out;
     logic [10:0] e_plo [0:2];
     logic [10:0] e_phi [0:2];
-    // ---- F 段: タイルバッファに書く ----
+    // ---- F 段: Z を書く、半透明なら混ぜる ----
     logic        f_v, f_zw, f_odd;
     logic [8:0]  f_idx;
-    logic [15:0] f_out, f_z;
+    logic [15:0] f_out, f_z, f_bg;
+    // ---- G 段: 色を書く ----
+    logic        g_v, g_odd;
+    logic [8:0]  g_idx;
+    logic [15:0] g_out;
+    // 半透明 (raster.py の blend): 成分ごとに 0 平均 (B + F) >> 1、1 加算、2 減算、3 B + F / 4 (加算と減算は飽和)
+    function automatic logic [15:0] blend565(input logic [1:0] m, input logic [15:0] b, input logic [15:0] f);
+        logic [5:0]  bc, fc, fq, mx;
+        logic [6:0]  sum;
+        logic [15:0] o;
+        o = '0;
+        for (int i = 0; i < 3; i++) begin
+            bc  = (i == 1) ? b[10:5] : (i == 0) ? {1'b0, b[15:11]} : {1'b0, b[4:0]};
+            fc  = (i == 1) ? f[10:5] : (i == 0) ? {1'b0, f[15:11]} : {1'b0, f[4:0]};
+            mx  = (i == 1) ? 6'd63 : 6'd31;
+            fq  = (m == 2'd3) ? {2'b0, fc[5:2]} : fc;
+            sum = 7'(bc) + 7'(fq);
+            if (m == 2'd0)      sum = sum >> 1;
+            else if (m == 2'd2) sum = (bc < fc) ? 7'd0 : 7'(bc - fc);
+            else if (sum > 7'(mx)) sum = 7'(mx);
+            if (i == 0)      o[15:11] = sum[4:0];
+            else if (i == 1) o[10:5]  = sum[5:0];
+            else             o[4:0]   = sum[4:0];
+        end
+        return o;
+    endfunction
     // 小さい符号なしの乗算 (a x b、3bit x 8bit) をシフトと加算で。`*` だと yosys が DSP (MULT9X9) に置き、MULT18X18 と混ざると
     // nextpnr が配置できなかった (G3)
     function automatic logic [10:0] umul3x8(input logic [2:0] a, input logic [7:0] b);
@@ -286,16 +317,18 @@ module tile_engine (
     assign lx = 5'(x - tx0p);
     assign ly = 5'(y - ty0p);
     assign rd_idx = c_v ? c_idx : {r, ra};
+    assign cr_idx = e_v ? e_idx : {r, ra};
+    assign f_bg   = f_odd ? cq_o : cq_e;
     assign o_word  = (state == T_OUTZ) ? {zq_o, zq_e} : {cq_o, cq_e};
     assign o_pop   = mem_req && mem_wnext && (state == T_OUTC || state == T_OUTZ);
     // 走査の最後のピクセルが書き終わってから (D 段の書き込みと同じ番地を先に読まないように)。FIFO + 読んでいる分が 2 を超えないように
-    assign o_issue = (state == T_OUTC || state == T_OUTZ) && !mem_ack && !b_v && !c_v && !d_v && !e_v && !f_v && o_issued != 5'd16 &&
+    assign o_issue = (state == T_OUTC || state == T_OUTZ) && !mem_ack && !b_v && !c_v && !d_v && !e_v && !f_v && !g_v && o_issued != 5'd16 &&
                      3'(o_cnt) + 3'(o_qv) - 3'(o_pop) <= 3'd1;
     assign wr_idx = {r, w_cur};
 
     always_ff @(posedge clk) begin
-        cq_e <= cb_e[rd_idx];
-        cq_o <= cb_o[rd_idx];
+        cq_e <= cb_e[cr_idx];
+        cq_o <= cb_o[cr_idx];
         zq_e <= zb_e[rd_idx];
         zq_o <= zb_o[rd_idx];
         lq   <= lbuf[k[5:0]];
@@ -311,9 +344,9 @@ module tile_engine (
             cb_e[wr_idx] <= mem_rdata[15:0]; cb_o[wr_idx] <= mem_rdata[31:16];
         end else if (state == T_OUTC && mem_wnext && clear_color) begin
             cb_e[wr_idx] <= ccol; cb_o[wr_idx] <= ccol;
-        end else if (f_v) begin
-            if (f_odd) cb_o[f_idx] <= f_out;
-            else       cb_e[f_idx] <= f_out;
+        end else if (g_v) begin
+            if (g_odd) cb_o[g_idx] <= g_out;
+            else       cb_e[g_idx] <= g_out;
         end
         // Z
         if (state == T_SWEEP) begin
@@ -356,7 +389,7 @@ module tile_engine (
             state   <= T_IDLE;
             mem_req <= 1'b0;
             mem_we  <= 1'b0;
-            b_v <= 1'b0; c_v <= 1'b0; d_v <= 1'b0; e_v <= 1'b0; e_zw <= 1'b0; f_v <= 1'b0; f_zw <= 1'b0;
+            b_v <= 1'b0; c_v <= 1'b0; d_v <= 1'b0; e_v <= 1'b0; e_zw <= 1'b0; f_v <= 1'b0; f_zw <= 1'b0; g_v <= 1'b0;
             tvalid  <= '0;
             {c_prep, c_fetch, c_mul, c_walk, c_out, walked, drawn, tex_looks, tex_miss, c_tex} <= '0;
         end else begin
@@ -371,14 +404,15 @@ module tile_engine (
                 default: ;
             endcase
 
-            // B → C → D → E → F (いつも進む。A が止まっているあいだは空が流れる)
+            // B → C → D → E → F → G (いつも進む。A が止まっているあいだは空が流れる)
             c_v <= b_v; c_in <= b_in; c_odd <= b_odd; c_txd <= b_txd; c_idx <= b_idx;
             c_z <= b_z; c_col <= b_col; c_rgb <= b_rgb; c_t16 <= b_t16; c_cla <= cl_raddr;
             d_v <= c_v; d_in <= c_in; d_odd <= c_odd; d_txd <= c_txd; d_idx <= c_idx;
-            e_v <= d_pass; e_zw <= d_pass && zen; e_odd <= d_odd; e_idx <= d_idx; e_z <= d_z;
+            e_v <= d_pass; e_zw <= d_pass && zen && !semi; e_odd <= d_odd; e_idx <= d_idx; e_z <= d_z;
             e_mod <= d_mod; e_raw <= d_raw;
             for (int i = 0; i < 3; i++) begin e_plo[i] <= d_plo[i]; e_phi[i] <= d_phi[i]; end   // (Icarus Verilog は配列ごとの代入を通さない)
             f_v <= e_v; f_zw <= e_zw; f_odd <= e_odd; f_idx <= e_idx; f_z <= e_z; f_out <= e_out;
+            g_v <= f_v; g_odd <= f_odd; g_idx <= f_idx; g_out <= semi ? blend565(bmode, f_bg, f_out) : f_out;
             d_z <= c_z; d_col <= c_col; d_rgb <= c_rgb;
             d_t16 <= c_t16;
             b_v <= 1'b0;
@@ -484,6 +518,7 @@ module tile_engine (
                             ridx <= ridx + 5'd1;
                             if (ridx == 5'd0) begin
                                 gour <= mem_rdata[24]; texd <= mem_rdata[25]; zen <= mem_rdata[27]; rflat <= mem_rdata[15:0];
+                                semi <= mem_rdata[26]; bmode <= mem_rdata[29:28];
                             end else if (ridx == 5'd1) begin
                                 rbx0 <= mem_rdata[8:0]; rbx1 <= mem_rdata[24:16];
                             end else if (ridx == 5'd2) begin
@@ -594,7 +629,7 @@ module tile_engine (
                         state <= T_ENTRY;
                     end
                 end
-                // タイルの色 (と Z) を書く。1 行 16 ワード (走査の最後のピクセルが書き終わってから。F 段は 5 クロック後)
+                // タイルの色 (と Z) を書く。1 行 16 ワード (走査の最後のピクセルが書き終わってから。G 段は 6 クロック後)
                 T_OUTC, T_OUTZ: begin
                     if (!mem_req) begin
                         if (o_cnt == 2'd2) begin
