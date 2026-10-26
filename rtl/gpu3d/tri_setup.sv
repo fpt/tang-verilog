@@ -72,8 +72,13 @@ module tri_setup (
     // 結果の置き場所 (dest): 0 面積、1..3 辺、4..9 Nx、10..15 Ny、16..21 gx、22..27 gy、28..33 T (左上の値の途中)
     localparam logic [5:0] D_AREA = 6'd0, D_E = 6'd1, D_NX = 6'd4, D_NY = 6'd10, D_GX = 6'd16, D_GY = 6'd22, D_T = 6'd28;
     logic signed [31:0] area;
-    logic signed [35:0] nx [0:5];
-    logic signed [35:0] ny [0:5];
+    // Nx, Ny (属性 j の Nx は nxy[2j]、Ny は nxy[2j + 1])。BSRAM に置かれるので、読み書きの番地とデータは FF から (G5: 組み合わせで
+    // 読んでいたら yosys が乗算器の入力のレジスタを BSRAM に取り込み、番地が k の次の値の論理になって、配置によって勾配が化けた)
+    logic signed [35:0] nxy [0:11];
+    logic signed [35:0] nq;                          // nxy[k[3:0]] を 1 クロック遅れで (S_OPS2 で出す乗算の a)
+    logic               nw_v;                        // 書き込みを 1 段遅らせる
+    logic [3:0]         nw_a;
+    logic signed [35:0] nw_d;
     logic signed [53:0] acc;                         // 同じ置き場所への 1〜2 回の乗算を足していく (置き場所ごとの乗算は続けて出る)
     logic        [2:0]  bias;                        // 辺 i が上左でなければ 1 (値に -1)
 
@@ -176,8 +181,9 @@ module tri_setup (
                 m_in_v = 1'b1;
                 j = int'(k) / 2;
                 m_b = 18'({1'b0, mq});
-                if (!k[0]) begin m_a = nx[j]; m_in_tag = {1'b1, 1'b0, 6'(D_GX + j)}; end
-                else       begin m_a = ny[j]; m_in_tag = {1'b1, 1'b0, 6'(D_GY + j)}; end
+                m_a = nq;                                // nxy[k] (前のクロックに読んである)
+                if (!k[0]) m_in_tag = {1'b1, 1'b0, 6'(D_GX + j)};
+                else       m_in_tag = {1'b1, 1'b0, 6'(D_GY + j)};
             end
             S_OPS3: begin
                 // T = gx (sx - x0) + gy (sy - y0)
@@ -217,7 +223,13 @@ module tri_setup (
     logic [2:0]         pend;                        // 乗算器の中にある数 (0..3)
 
     always_ff @(posedge clk) begin
+        if (nw_v) nxy[nw_a] <= nw_d;
+        nq <= nxy[k[3:0]];
+    end
+
+    always_ff @(posedge clk) begin
         if (rst) begin
+            nw_v  <= 1'b0;
             state <= S_IDLE;
             done  <= 1'b0;
             dbusy <= 1'b0;
@@ -225,6 +237,7 @@ module tri_setup (
             ph    <= 1'b0;
         end else begin
             done <= 1'b0;
+            nw_v <= 1'b0;
             pend <= pend + 3'(m_in_v) - 3'(m_out_v);
             ph   <= (state == S_AREA || state == S_OPS1 || state == S_OPS2 || state == S_OPS3) ? !ph : 1'b0;
 
@@ -237,8 +250,7 @@ module tri_setup (
                 acc <= val;
                 if (r_dest == D_AREA)   area       <= 32'(val);
                 else if (r_dest < D_NX) e[2'(ri)]  <= 32'(val);
-                else if (r_dest < D_NY) nx[ri]     <= 36'(val);
-                else if (r_dest < D_GX) ny[ri]     <= 36'(val);
+                else if (r_dest < D_GX) begin nw_v <= 1'b1; nw_a <= {ri, r_dest >= D_NY}; nw_d <= 36'(val); end
                 else if (r_dest < D_GY) gx[ri]     <= shsat(m_p, nb);
                 else if (r_dest < D_T)  gy[ri]     <= shsat(m_p, nb);
                 else                    s[ri]      <= sat32(signed'(54'({va[ri][0], 12'd0})) + (val >>> 4));
@@ -331,6 +343,7 @@ module tri_setup (
                 S_OPS1, S_OPS2, S_OPS3: if (!ph) begin
                     k <= k + 5'd1;
                     if (k == k_last) begin
+                        k <= '0;                         // S_DRAIN のあいだ nq に nxy[0] を読んでおく (S_OPS2 の最初の乗算)
                         // (Icarus Verilog は enum の三項演算子の代入を受け付けないので if で書く)
                         if (state == S_OPS1)      after_drain <= S_OPS2;
                         else if (state == S_OPS2) after_drain <= S_OPS3;

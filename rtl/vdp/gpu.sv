@@ -88,8 +88,10 @@
 module gpu #(
     parameter int SRC_W = 320,
     parameter int SRC_H = 240,
-    parameter int FIFO_WORDS = 512,
-    parameter int GPU3D = 0              // 1: 3D GPU のコマンド (TRI、CLEAR_Z) を受ける (docs/GPU3D_PLAN.md、rtl/gpu3d/tri_engine.sv)
+    parameter int GPU3D = 0,             // 1: 3D GPU のコマンド (TRI、CLEAR_Z) を受ける (docs/GPU3D_PLAN.md、rtl/gpu3d/tri_engine.sv)
+    // コマンド FIFO。3D は 2,048 ワード (BSRAM 4 個。4,096 だと配置できなかった): END_SCENE のタイルのパスのあいだに次のフレームのコマンドを受けておける
+    // (512 だとすぐ満杯になり、ホストのリンクが止まって転送と描画が重ならなかった。G5 の場面で 1 フレーム 2,000〜3,000 ワード)
+    parameter int FIFO_WORDS = (GPU3D != 0) ? 2048 : 512
 ) (
     input  logic        clk,
     input  logic        rst,

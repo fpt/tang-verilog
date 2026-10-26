@@ -60,7 +60,7 @@ module tile_engine (
 
     typedef enum logic [4:0] {
         T_IDLE, T_SWEEP, T_TILE, T_LOADC, T_LOADZ, T_CNT, T_CNT2, T_LFETCH, T_ENTRY, T_ENTRY2, T_REC, T_MUL, T_MULW,
-        T_ROW, T_WALK, T_TFILL, T_DRAIN, T_DRAIN2, T_NEXTENT, T_OUTC, T_OUTZ, T_NEXTTILE
+        T_ROW, T_WALK, T_TFILL, T_TFILL2, T_DRAIN, T_DRAIN2, T_NEXTENT, T_OUTC, T_OUTZ, T_NEXTTILE
     } state_t;
     state_t state;
 
@@ -187,13 +187,13 @@ module tile_engine (
     // テクセル: tu = (acc_u >>> 18) & (幅 - 1)、ワードアドレス = base | (tv << (幅の log2 - s)) | (tu >> s)
     // (base はテクスチャのワード数の倍数。足し算にすると桁上げがキャッシュの判定まで続いて 63MHz に届かなかった)
     logic [7:0]  tu, tv;
-    logic [20:0] taddr;
+    logic [20:3] taddr;                               // ワードアドレス (行の中のワードは tc_raddr で作る)
     logic [3:0]  tline;
     logic [13:0] ttag;
     logic        t_hit, t_need;
     assign tu    = ac[4][25:18] & umask;
     assign tv    = ac[5][25:18] & vmask;
-    assign taddr = tbase | 21'(16'(tv) << tvs) | 21'(tu >> tsh);
+    assign taddr = 18'((tbase | 21'(16'(tv) << tvs) | 21'(tu >> tsh)) >> 3);
     assign tline = taddr[6:3];
     assign ttag  = taddr[20:7];
 
@@ -206,9 +206,29 @@ module tile_engine (
     logic [2:0]  tf_w;                                // 埋めているワード
     logic [3:0]  tf_line;
     logic [13:0] tf_tag;
+    logic        tf_wv;                               // 埋める書き込み (1 クロック遅れ)
+    logic [6:0]  tf_wa;
+    logic [31:0] tf_wd;
     assign t_hit    = tvalid[tline] && ttags[tline] == ttag;
     assign t_need   = state == T_WALK && texd && p_in;
-    assign tc_raddr = {tline, taddr[2:0]};
+    // キャッシュの読み出しの番地は FF から直接 (G5 で、FIFO を大きくして配置が変わったら、論理から番地を作っていたここで
+    // テクセルが隣のものに化けた)。次のクロックに A 段にいるピクセルの u, v (ac の更新と同じ値) から 1 クロック前に作っておく
+    logic [31:0] acu_n, acv_n;
+    logic [7:0]  tu_n, tv_n;
+    logic [6:0]  taddr_n;                             // 番地の下位 7bit (= {行, 行の中のワード})
+    always_comb begin
+        if (state == T_ROW) begin
+            acu_n = ar[4]; acv_n = ar[5];
+        end else if (state == T_WALK && !(t_need && !t_hit)) begin
+            acu_n = ac[4] + rgx[4]; acv_n = ac[5] + rgx[5];
+        end else begin
+            acu_n = ac[4]; acv_n = ac[5];
+        end
+    end
+    assign tu_n    = acu_n[25:18] & umask;
+    assign tv_n    = acv_n[25:18] & vmask;
+    assign taddr_n = 7'(tbase | 21'(16'(tv_n) << tvs) | 21'(tu_n >> tsh));
+    always_ff @(posedge clk) tc_raddr <= taddr_n;
 
     // CLUT
     logic [15:0] clut [0:255];
@@ -335,7 +355,12 @@ module tile_engine (
         tq   <= tcache[tc_raddr];
         clq  <= clut[c_cla];
         if (clut_we) clut[clut_waddr] <= clut_wdata;
-        if (state == T_TFILL && mem_req && mem_rvalid) tcache[{tf_line, tf_w}] <= mem_rdata;
+        // キャッシュを埋める書き込みは、番地とデータを近くの FF に置いてから (G5: SDRAM から直接書いていたら、配置によって
+        // 1 行がほかの行のデータになった)
+        tf_wv <= state == T_TFILL && mem_req && mem_rvalid;
+        tf_wa <= {tf_line, tf_w};
+        tf_wd <= mem_rdata;
+        if (tf_wv) tcache[tf_wa] <= tf_wd;
         if (state == T_LFETCH && mem_req && mem_rvalid) lbuf[lw] <= mem_rdata[11:0];
         // 色
         if (state == T_SWEEP) begin
@@ -399,7 +424,7 @@ module tile_engine (
                 T_CNT, T_CNT2, T_LFETCH, T_ENTRY, T_ENTRY2, T_REC, T_NEXTENT: c_fetch <= c_fetch + 32'd1;
                 T_MUL, T_MULW:                                             c_mul   <= c_mul + 32'd1;
                 T_ROW, T_WALK, T_DRAIN, T_DRAIN2:                          c_walk  <= c_walk + 32'd1;
-                T_TFILL:                                                   c_tex   <= c_tex + 32'd1;
+                T_TFILL, T_TFILL2:                                         c_tex   <= c_tex + 32'd1;
                 T_OUTC, T_OUTZ, T_NEXTTILE:                                c_out   <= c_out + 32'd1;
                 default: ;
             endcase
@@ -593,7 +618,8 @@ module tile_engine (
                         b_sub  <= tu[2:0];
                         walked <= walked + 32'd1;
                         for (int i = 0; i < 3; i++) ec[i] <= ec[i] + 32'(rex[i]);
-                        for (int j = 0; j < 6; j++) ac[j] <= ac[j] + rgx[j];
+                        for (int j = 0; j < 4; j++) ac[j] <= ac[j] + rgx[j];
+                        ac[4] <= acu_n; ac[5] <= acv_n;          // (キャッシュの番地と同じ加算器)
                         x <= x + 9'd1;
                         if (x == ox1) state <= T_DRAIN;
                     end
@@ -604,9 +630,11 @@ module tile_engine (
                         mem_req          <= 1'b0;
                         ttags[tf_line]   <= tf_tag;
                         tvalid[tf_line]  <= 1'b1;
-                        state            <= T_WALK;
+                        state            <= T_TFILL2;
                     end
                 end
+                // 最後のワードは次のクロックに書くので、1 クロック待ってからこのピクセルをやり直す
+                T_TFILL2: state <= T_WALK;
                 T_DRAIN: begin
                     for (int i = 0; i < 3; i++) er[i] <= er[i] + 32'(rey[i]);
                     for (int j = 0; j < 6; j++) ar[j] <= ar[j] + rgy[j];
