@@ -127,7 +127,7 @@ class Bridge:
         self._version = None
 
     def version(self):
-        """ブリッジの版 (ping)。v2 から spib (生データの書き込み) が使える"""
+        """ブリッジの版 (ping)。v2 から spib (生データの書き込み)、v3 から stream (空きを見ながら流す) が使える"""
         if self._version is None:
             r = self.command("ping")
             self._version = r.get("version", 1) if r.get("ok") else 1
@@ -173,6 +173,14 @@ class Gpu:
 
     def send(self, words, timeout=10.0):
         data = b"".join((w & 0xFFFFFFFF).to_bytes(4, "little") for w in words)
+        if not data:
+            return
+        if self.vdp.bridge.version() >= 3:
+            # ブリッジが GPU_FREE を SPI で読みながら CMD に流す (USB の往復は 1 回)
+            r = self.vdp.bridge.command(f"stream {len(data)} {REGS['CMD']} {REGS['GPU_FREE']}", timeout=timeout, payload=data)
+            if not r.get("ok"):
+                raise HarnessError(r.get("error", "stream failed"))
+            return
         deadline = time.monotonic() + timeout
         while data:
             n = min(self.free() * 4, SPI_MAX_DATA, len(data))
