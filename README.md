@@ -23,7 +23,7 @@ Tang Nano 20K (Gowin GW2AR-18) と RP2350 で、レトロゲーム機の VDP の
 - 進み具合: コマンド GPU は [docs/GPU_PLAN.md](docs/GPU_PLAN.md) (M0〜M9 済み、M8 はやめた)、エミュレータ向けのタイル/スプライト エンジンは
   [docs/EMU_GPU_PLAN.md](docs/EMU_GPU_PLAN.md) (E1〜E4・E7 (Mode 7 と霧) 済み、次は E5 のホスト翻訳層)、
   [rs-kessel](https://github.com/fpt/rs-kessel) を載せる準備は [docs/KESSEL_ON_VDP.md](docs/KESSEL_ON_VDP.md) (K1〜K4 の VDP 側 = 8bpp の面・BLIT4・スプライトのセル順とバンク・STRETCH_BLIT・ライトマップ済み)
-- 3D GPU (タイルベース、VDP を外した別のビットストリーム `make TARGET=gpu3d`) は [docs/GPU3D_PLAN.md](docs/GPU3D_PLAN.md) (G0 の骨格、G1 の三角形 (単色・Gouraud・Z)、G2 のタイルベースの遅延描画 (TBDR)、G3 のテクスチャ、G4 の半透明済み)
+- 3D GPU (タイルベース、VDP を外した別のビットストリーム `make TARGET=gpu3d`) は [docs/GPU3D_PLAN.md](docs/GPU3D_PLAN.md) (G0 の骨格、G1 の三角形 (単色・Gouraud・Z)、G2 のタイルベースの遅延描画 (TBDR)、G3 のテクスチャ、G4 の半透明、G5 の場面 (ロゴ・トンネル・映り込む玉の部屋・夜の街、`harness.py demo <場面>`) 済み)
 - 本番ホスト (RP2350) とのリンクは HSTX に決めた (EMU_GPU_PLAN.md の「本番のリンク」)。まだ作っていない
 
 ## ツール
