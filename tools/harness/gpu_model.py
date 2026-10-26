@@ -627,6 +627,7 @@ class Model:
         self.oam = {}                                 # OAM: ワードアドレス -> 32bit
         self.light = {}                               # ライトマップ: セルの番号 -> (R, G, B) の倍率
         self.scene = None                             # TBDR のシーン (BEGIN_SCENE から END_SCENE まで): {"flags", "color", "tris"}
+        self.error = False                            # GPU_STATUS のエラーが立つ (シーンとタイルのリストの溢れ。ハーネスが check ごとに比べて消す)
         self.tex = (0, 3, 3, 0, 0)                     # 今のテクスチャ (形式, 幅の log2, 高さの log2, CLUT のずらし, base)
         self.clut = [0] * 256
         # 印を付けたフレーム: {"line_regs": {ライン: レジスタ}, "fb_base": ..} と、記録中かどうか・今のライン
@@ -936,6 +937,8 @@ class Model:
                 return zbuf[x, y]
             return 0xFFFF if flags & 2 else self.zget(x, y)
         counts = [0] * 80
+        if len(sc["tris"]) > SCENE_MAX_TRIS:
+            self.error = True
         for k, (words, clip, tex) in enumerate(sc["tris"][:SCENE_MAX_TRIS]):
             _, _, vs = raster.parse(words)
             rec = raster.setup(vs, clip)
@@ -949,6 +952,8 @@ class Model:
                     if counts[t] < TILE_MAX_TRIS:
                         counts[t] += 1
                         listed.add(t)
+                    else:
+                        self.error = True
             self.tri(words, clip, zget, lambda x, y, z: zbuf.__setitem__((x, y), z),
                      lambda x, y: (y >> 5) * 10 + (x >> 5) in listed, tex)
         if flags & 4:
@@ -1210,9 +1215,10 @@ def load(path):
         return json.load(f)
 
 
-def expected(scenario, kinds=None):
+def expected(scenario, kinds=None, errors=None):
     """シナリオを最初から走らせ、check ごとに (そこまでのワード数, 画像 565, CRC) を返す。
-    kinds にリストを渡すと、check の種類 ("check" / "check_marked") を入れる"""
+    kinds にリストを渡すと、check の種類 ("check" / "check_marked") を入れる。errors にリストを渡すと、
+    前の check からエラー (GPU_STATUS bit1) が立つはずか を入れる"""
     m = Model()
     words, checks = [], []
     for step in scenario["steps"]:
@@ -1221,6 +1227,9 @@ def expected(scenario, kinds=None):
             checks.append((len(words), img, fbmodel.expected_crc(img)))
             if kinds is not None:
                 kinds.append(step["op"])
+            if errors is not None:
+                errors.append(m.error)
+            m.error = False
         else:
             w = encode(step)
             m.run(w)

@@ -514,7 +514,8 @@ def scenario(bridge, path, do_capture, out_dir):
     import imgcmp
     sc = gpu_model.load(path)
     kinds = []
-    words, checks = gpu_model.expected(sc, kinds)
+    errors = []                                  # check ごとに、エラーが立つはずか (タイルのリストの溢れなど)
+    words, checks = gpu_model.expected(sc, kinds, errors)
     check_steps = [st for st in sc["steps"] if st["op"] in ("check", "check_marked")]
     vdp = Vdp(bridge)
     gpu = Gpu(vdp)
@@ -534,7 +535,7 @@ def scenario(bridge, path, do_capture, out_dir):
         vdp.write(REGS["CONTROL"], [control | CONTROL_FB])
         under0 = vdp.read1(REGS["UNDERFLOW"])
         sent = 0
-        for i, ((n, img, crc), kind) in enumerate(zip(checks, kinds)):
+        for i, ((n, img, crc), kind, want_err) in enumerate(zip(checks, kinds, errors)):
             start = time.monotonic()
             marks0 = vdp.read1(REGS["MARK_COUNT"])
             gpu.send(words[sent:n])
@@ -552,7 +553,7 @@ def scenario(bridge, path, do_capture, out_dir):
             else:
                 got, frame = settled_crc(vdp)
             r = {"check": i, "kind": kind, "words": n, "expected_crc": f"0x{crc:08x}", "crc": f"0x{got:08x}", "frame": frame,
-                 "gpu_status": st, "ok": got == crc and not st & (GPU_ST_ERROR | GPU_ST_OVERFLOW),
+                 "gpu_status": st, "ok": got == crc and bool(st & GPU_ST_ERROR) == want_err and not st & GPU_ST_OVERFLOW,
                  "seconds": round(time.monotonic() - start, 2)}
             if do_capture and kind == "check":       # 印のフレームは過ぎてしまっているのでキャプチャしない (CRC だけ)
                 w, h = 2 * fbmodel.SRC_W, 2 * fbmodel.SRC_H
