@@ -44,6 +44,7 @@ rtl/vdp/gpu.sv と同じ規則でコマンドを解釈し、表示される面�
                                                  # order: 0 列優先、1 16 タイル幅の表、2 行優先。bank: スプライトごとのバンク (spr_bank bit3 のとき)
       {"op": "tri", "v": [[x, y], [x, y], [x, y]], "color": "#rrggbb"}   # 三角形 (3D GPU、raster.py)。座標はピクセル (小数可、1/16 に丸める)。
                                                  # "rgb": ["#..", "#..", "#.."] で Gouraud、"z": [z0, z1, z2] で Z テスト / 書き込み
+                                                 # "blend": "avg" / "add" / "sub" / "quarter" で半透明 (G4。Z はテストするが書かない)
       {"op": "clear_z", "value": 65535}         # Z バッファ (Z_BASE、320 x 240 x 16bit) を塗る
       {"op": "begin_scene", "color": "#rrggbb", "clear_z": true, "write_z": false}   # TBDR のシーン (G2)。color があれば描く面を
                                                  # その色から、clear_z なら Z を 0xFFFF から (なければ今の面と Z_BASE を読む)。write_z で Z を書き戻す
@@ -251,11 +252,14 @@ def encode(step):
 
 
 def tri_words(step):
-    """TRI のワード列: [0x20 | flags | 単色 565]、頂点ごとに {y, x} (12.4)、Gouraud なら {r, g, b}、Z なら {z}、テクスチャなら {v, u} (10.6)"""
+    """TRI のワード列: [0x20 | flags | 単色 565]、頂点ごとに {y, x} (12.4)、Gouraud なら {r, g, b}、Z なら {z}、テクスチャなら {v, u} (10.6)。
+    "blend" があれば半透明 (flags bit2 と [5:4] の式)"""
     import raster
     gouraud, zs, uv = "rgb" in step, step.get("z"), step.get("uv")
     flags = ((raster.FLAG_GOURAUD if gouraud else 0) | (raster.FLAG_Z if zs is not None else 0)
              | (raster.FLAG_TEX if uv is not None else 0))
+    if "blend" in step:                     # 半透明: "avg" / "add" / "sub" / "quarter" (raster.blend)
+        flags |= raster.FLAG_SEMI | ["avg", "add", "sub", "quarter"].index(step["blend"]) << 4
     words = [OP_TRI << 24 | flags << 16 | (color565(step["color"]) if "color" in step else 0)]
     for k, (x, y) in enumerate(step["v"]):
         xi, yi = int(round(x * 16)), int(round(y * 16))
@@ -623,6 +627,7 @@ class Model:
         self.oam = {}                                 # OAM: ワードアドレス -> 32bit
         self.light = {}                               # ライトマップ: セルの番号 -> (R, G, B) の倍率
         self.scene = None                             # TBDR のシーン (BEGIN_SCENE から END_SCENE まで): {"flags", "color", "tris"}
+        self.error = False                            # GPU_STATUS のエラーが立つ (シーンとタイルのリストの溢れ。ハーネスが check ごとに比べて消す)
         self.tex = (0, 3, 3, 0, 0)                     # 今のテクスチャ (形式, 幅の log2, 高さの log2, CLUT のずらし, base)
         self.clut = [0] * 256
         # 印を付けたフレーム: {"line_regs": {ライン: レジスタ}, "fb_base": ..} と、記録中かどうか・今のライン
@@ -891,7 +896,10 @@ class Model:
             if flags & raster.FLAG_Z:
                 if not z < zget(x, y):
                     continue
-                zset(x, y, z)
+                if not flags & raster.FLAG_SEMI:
+                    zset(x, y, z)
+            if flags & raster.FLAG_SEMI:
+                c = raster.blend((flags >> 4) & 3, self.get565(self.draw_base, x, y), c)
             self.put565(self.draw_base, x, y, c)
 
     def tex_read(self, a):
@@ -899,6 +907,12 @@ class Model:
         if w is None:
             raise ValueError(f"texture reads unwritten SDRAM word {a:#x}")
         return w
+
+    def get565(self, base, x, y):
+        a = (base + y) * 256 + x // 2
+        if a not in self.mem:
+            raise ValueError(f"semi-transparent TRI reads unwritten pixel ({x},{y})")
+        return self.mem[a] >> 16 if x % 2 else self.mem[a] & 0xFFFF
 
     def put565(self, base, x, y, c):
         a = (base + y) * 256 + x // 2
@@ -923,6 +937,8 @@ class Model:
                 return zbuf[x, y]
             return 0xFFFF if flags & 2 else self.zget(x, y)
         counts = [0] * 80
+        if len(sc["tris"]) > SCENE_MAX_TRIS:
+            self.error = True
         for k, (words, clip, tex) in enumerate(sc["tris"][:SCENE_MAX_TRIS]):
             _, _, vs = raster.parse(words)
             rec = raster.setup(vs, clip)
@@ -936,6 +952,8 @@ class Model:
                     if counts[t] < TILE_MAX_TRIS:
                         counts[t] += 1
                         listed.add(t)
+                    else:
+                        self.error = True
             self.tri(words, clip, zget, lambda x, y, z: zbuf.__setitem__((x, y), z),
                      lambda x, y: (y >> 5) * 10 + (x >> 5) in listed, tex)
         if flags & 4:
@@ -1197,9 +1215,10 @@ def load(path):
         return json.load(f)
 
 
-def expected(scenario, kinds=None):
+def expected(scenario, kinds=None, errors=None):
     """シナリオを最初から走らせ、check ごとに (そこまでのワード数, 画像 565, CRC) を返す。
-    kinds にリストを渡すと、check の種類 ("check" / "check_marked") を入れる"""
+    kinds にリストを渡すと、check の種類 ("check" / "check_marked") を入れる。errors にリストを渡すと、
+    前の check からエラー (GPU_STATUS bit1) が立つはずか を入れる"""
     m = Model()
     words, checks = [], []
     for step in scenario["steps"]:
@@ -1208,6 +1227,9 @@ def expected(scenario, kinds=None):
             checks.append((len(words), img, fbmodel.expected_crc(img)))
             if kinds is not None:
                 kinds.append(step["op"])
+            if errors is not None:
+                errors.append(m.error)
+            m.error = False
         else:
             w = encode(step)
             m.run(w)

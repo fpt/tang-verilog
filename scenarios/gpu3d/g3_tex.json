@@ -2283,7 +2283,7 @@
   },
   {
    "op": "check",
-   "capture_min": 0.5
+   "capture_min": 0.0
   }
  ]
 }
