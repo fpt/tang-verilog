@@ -69,6 +69,7 @@
 //                   [{r, g, b}]、[{z}]。描き方は rtl/gpu3d/tri_engine.sv、計算の規則は tools/harness/raster.py
 //   0x24 CLEAR_Z    (GPU3D = 1 のときだけ) Z バッファ (Z_BASE から 320 x 240 x 16bit) を [15:0] で塗る
 //   0x25 BEGIN_SCENE / 0x26 END_SCENE  (GPU3D = 1 のときだけ) TBDR のシーン。意味は rtl/gpu3d/raster3d.sv
+//   0x21 SET_TEX / 0x28 CLUT_WRITE     (GPU3D = 1 のときだけ) テクスチャ。意味は rtl/gpu3d/raster3d.sv
 //   それ以外        エラーを立て、1 ワードのコマンドとして読み飛ばす
 //
 // WAIT_LINE のあとの REG_WRITE は、FIFO にすでに入っていれば数クロックで実行されるので、次のラインの合成 (約 63us 後) に間に合う。
@@ -180,7 +181,8 @@ module gpu #(
                            OP_REG_WRITE = 8'h09, OP_WAIT_LINE = 8'h0A, OP_WAIT_VBLANK = 8'h0B,
                            OP_VRAM_WRITE = 8'h0C, OP_PAL_WRITE = 8'h0D, OP_STRETCH = 8'h0E, OP_OAM_WRITE = 8'h0F,
                            OP_LIGHT_WRITE = 8'h10, OP_TRI = 8'h20, OP_CLEAR_Z = 8'h24,
-                           OP_BEGIN_SCENE = 8'h25, OP_END_SCENE = 8'h26;
+                           OP_BEGIN_SCENE = 8'h25, OP_END_SCENE = 8'h26,
+                           OP_SET_TEX = 8'h21, OP_CLUT_WRITE = 8'h28;
     localparam int BLIT_MAX_W = 512;      // ライン バッファ (256 ワード) に入る幅
     localparam int STRETCH_MAX = 1024;    // STRETCH_BLIT の描く大きさの上限
 
@@ -247,7 +249,10 @@ module gpu #(
 
     logic        fmt8;                     // 8bpp で描く
     logic        rect_z;                   // CLEAR_Z: 矩形を Z バッファに (16bit、RGB565 と同じ並び)
-    assign fmt8 = bitmap_fmt && !rect_z;
+    // 3D GPU (GPU3D = 1) の 2D は RGB565 の CLEAR / FILL_RECT / POINT / DRAW_LINE / UPLOAD だけ (8bpp、BLIT、BLIT4、STRETCH_BLIT はない。
+    // LUT が足りない。画像はテクスチャの四角形 (TRI 2 つ) で描く)
+    localparam bit FULL2D = GPU3D == 0;
+    assign fmt8 = FULL2D && bitmap_fmt && !rect_z;
     assign draw_base_o = draw_base;
     assign {clip_x0, clip_x1, clip_y0, clip_y1} = {cx0, cx1, cy0, cy1};
     logic [1:0]  x0_b, x1_b;               // 塗る範囲の最初 / 最後 (含む) のピクセルの、ワードの中の最初 / 最後のバイト
@@ -310,7 +315,7 @@ module gpu #(
     end
 
     logic        src4;                      // 4bpp のソース
-    assign src4 = flags[3];
+    assign src4 = FULL2D && flags[3];
 
     // --- STRETCH_BLIT ---
     logic               stretch;            // 今の BLIT は STRETCH_BLIT
@@ -341,7 +346,7 @@ module gpu #(
     logic [2:0]  boff_q;
 
     always_ff @(posedge clk) begin
-        if (state == S_BLIT_READ && mem_req && mem_rvalid) begin
+        if (FULL2D && state == S_BLIT_READ && mem_req && mem_rvalid) begin
             if (b_widx[0]) lb_odd[b_widx[7:1]]  <= mem_rdata;
             else           lb_even[b_widx[7:1]] <= mem_rdata;
         end
@@ -369,8 +374,8 @@ module gpu #(
     end
 
     always_ff @(posedge clk) begin
-        lb_even_q <= lb_even[7'((9'(w0) + 9'(w0[0])) >> 1)];
-        lb_odd_q  <= lb_odd[w0[7:1]];
+        lb_even_q <= FULL2D ? lb_even[7'((9'(w0) + 9'(w0[0])) >> 1)] : '0;   // 3D GPU では読まない (BLIT がない)
+        lb_odd_q  <= FULL2D ? lb_odd[w0[7:1]] : '0;
         w0_odd_q  <= w0[0];
         boff_q    <= boff;
     end
@@ -455,10 +460,10 @@ module gpu #(
     logic [35:0] drow [0:159];
     logic [35:0] drow_q;
     logic        drow_we;
-    always_comb drow_we = state == S_ST_GEN && a_on && ((g_v && !a_same) || (!g_v && st_i == b_w));
+    always_comb drow_we = FULL2D && state == S_ST_GEN && a_on && ((g_v && !a_same) || (!g_v && st_i == b_w));
     always_ff @(posedge clk) begin
         if (drow_we) drow[a_idx] <= {a_tr, a_data};
-        drow_q <= drow[w_rd];
+        drow_q <= FULL2D ? drow[w_rd] : '0;     // 3D GPU では読まない (書かないメモリを読むと、合成が大きなマルチプレクサにする)
     end
 
     logic [31:0] fill_data;
@@ -586,10 +591,17 @@ module gpu #(
                     up_left <= word[23:0];
                     arg_idx <= 3'd0;
                     if (GPU3D != 0 && word[31:24] == OP_TRI) begin
-                        // TRI: 先頭ワードと、頂点 3 つ x (1 + Gouraud + Z) ワードを tri_engine に渡す
+                        // TRI: 先頭ワードと、頂点 3 つ x (1 + Gouraud + テクスチャ + Z) ワードを tri_engine に渡す
                         t3_push     <= 1'b1;
                         t3_word     <= word;
-                        up_left     <= 24'd3 * (24'd1 + 24'(word[16]) + 24'(word[19]));
+                        up_left     <= 24'd3 * (24'd1 + 24'(word[16]) + 24'(word[17]) + 24'(word[19]));
+                        state       <= S_FETCH;
+                        after_fetch <= S_TRI_ARG;
+                    end else if (GPU3D != 0 && (word[31:24] == OP_SET_TEX || (word[31:24] == OP_CLUT_WRITE && word[8:0] != 9'd0))) begin
+                        // SET_TEX (1 ワード) / CLUT_WRITE ((n + 1) / 2 ワード): TRI と同じく渡す
+                        t3_push     <= 1'b1;
+                        t3_word     <= word;
+                        up_left     <= (word[31:24] == OP_SET_TEX) ? 24'd1 : 24'(word[8:1]) + 24'(word[0]);
                         state       <= S_FETCH;
                         after_fetch <= S_TRI_ARG;
                     end else if (GPU3D != 0 && (word[31:24] == OP_BEGIN_SCENE || word[31:24] == OP_END_SCENE)) begin
@@ -690,7 +702,7 @@ module gpu #(
                             b_dy     <= 18'(signed'(arg2[31:16]));
                             b_stride <= arg3[15:0];
                             stretch  <= 1'b0;
-                            if (arg1[15:0] > 16'(BLIT_MAX_W) || (flags[3] && !fmt8)) error <= 1'b1;
+                            if (!FULL2D || arg1[15:0] > 16'(BLIT_MAX_W) || (flags[3] && !fmt8)) error <= 1'b1;
                             else                                                     state <= S_BLIT_SETUP;
                         end
                         OP_STRETCH: begin
@@ -703,7 +715,7 @@ module gpu #(
                             st_xstep <= arg4;
                             st_ystep <= arg5;
                             stretch  <= 1'b1;
-                            if (arg1[15:0] > 16'(STRETCH_MAX) || arg1[31:16] > 16'(STRETCH_MAX) || (flags[3] && !fmt8) ||
+                            if (!FULL2D || arg1[15:0] > 16'(STRETCH_MAX) || arg1[31:16] > 16'(STRETCH_MAX) || (flags[3] && !fmt8) ||
                                 arg3[31:16] > (flags[3] ? 16'(4 * BLIT_MAX_W) : fmt8 ? 16'(2 * BLIT_MAX_W) : 16'(BLIT_MAX_W)))
                                 error <= 1'b1;
                             else
@@ -831,7 +843,7 @@ module gpu #(
 
                 // ---- BLIT ----
                 // 描く範囲を決め、最初に描く行がソースの何行目か (上下反転なら下から) を数える
-                S_BLIT_SETUP: begin
+                S_BLIT_SETUP: if (!FULL2D) state <= S_FETCH; else begin
                     if (b_w == 0 || b_h == 0 || bxs > bxe || bys > bye) begin
                         state <= S_FETCH;
                     end else begin
@@ -846,7 +858,7 @@ module gpu #(
                     end
                 end
                 // ソースの最初の行まで進める (掛け算を使わず、stride を足していく)
-                S_BLIT_SKIP: begin
+                S_BLIT_SKIP: if (!FULL2D) state <= S_FETCH; else begin
                     if (b_skip != 0) begin
                         b_src  <= b_src + 21'(b_stride);
                         b_skip <= b_skip - 16'd1;
@@ -858,7 +870,7 @@ module gpu #(
                     end
                 end
                 // ソースの 1 行をライン バッファへ (SDRAM の行をまたぐときはバーストを分ける)
-                S_BLIT_READ: begin
+                S_BLIT_READ: if (!FULL2D) state <= S_FETCH; else begin
                     if (!mem_req) begin
                         if (b_rd_left == 0) begin
                             w_cur <= w_first;
@@ -881,7 +893,8 @@ module gpu #(
                 end
 
                 // ---- STRETCH_BLIT ----
-                S_ST_SETUP: begin
+                // STRETCH_BLIT (3D GPU では使わない: 定数で消える)
+                S_ST_SETUP: if (!FULL2D) state <= S_FETCH; else begin
                     if (b_w == 0 || b_h == 0 || bxs > bxe || bys > bye) begin
                         state <= S_FETCH;
                     end else begin
@@ -898,7 +911,7 @@ module gpu #(
                     end
                 end
                 // 描く行 st_j: クリップの外なら飛ばす。ソースの行がライン バッファになければ、そこまで進めて読む
-                S_ST_ROW: begin
+                S_ST_ROW: if (!FULL2D) state <= S_FETCH; else begin
                     if (st_j == b_h) begin
                         state <= S_FETCH;
                     end else if (st_yd < bys || st_yd > bye) begin
@@ -925,7 +938,7 @@ module gpu #(
                     end
                 end
                 // 1 クロックに 1 ピクセル: ソースのワードを読み (0 段目)、次のクロックに描くワードへ置く (1 段目)
-                S_ST_GEN: begin
+                S_ST_GEN: if (!FULL2D) state <= S_FETCH; else begin
                     g_v <= st_i != b_w && st_x >= bxs && st_x <= bxe;
                     g_x <= st_x;
                     if (st_i != b_w) begin
@@ -945,7 +958,7 @@ module gpu #(
                         state <= S_ST_WRITE;
                     end
                 end
-                S_ST_WRITE: begin
+                S_ST_WRITE: if (!FULL2D) state <= S_FETCH; else begin
                     if (!mem_req) begin
                         mem_req  <= 1'b1;
                         mem_we   <= 1'b1;
@@ -965,7 +978,7 @@ module gpu #(
                     end
                 end
                 // 描く行を 64 ワードずつのバーストで書く。終わったら次の行 (上下反転ならソースは前の行)
-                S_BLIT_WRITE: begin
+                S_BLIT_WRITE: if (!FULL2D) state <= S_FETCH; else begin
                     if (!mem_req) begin
                         mem_req  <= 1'b1;
                         mem_we   <= 1'b1;

@@ -1,15 +1,22 @@
-// TBDR のタイルのパス (docs/GPU3D_PLAN.md の G2)。END_SCENE で、tri_engine がビニングしたシーンをタイル (32 x 32、横 10 x 縦 8) ごとに描く
+// TBDR のタイルのパス (docs/GPU3D_PLAN.md の G2・G3)。END_SCENE で、tri_engine がビニングしたシーンをタイル (32 x 32、横 10 x 縦 8) ごとに描く
 //
 //   タイルの範囲 (rtx0..rtx1 x rty0..rty1) を 1 タイルずつ:
 //     1. タイルバッファ (色 1,024 x 16bit、Z 1,024 x 16bit、オンチップ) を用意する: clear_color なら色 ccol、そうでなければ描く面から読む。
 //        clear_z なら Z = 0xFFFF、そうでなければ Z バッファ (Z_BASE) から読む (どちらも 1 行 16 ワードのバーストを 32 行。一番下のタイルは 16 行)
 //     2. タイルのリスト (tri_engine の数 cnt と、SDRAM の 0x40000 + タイル * 1024 からの番号) を 64 個ずつ読み、投入順に:
-//        レコード (0x20000 + 番号 * 32 から 24 ワード) を読む → 外接矩形とタイルの重なりの左上での辺の値と属性を
-//        s + gx * dx + gy * dy で作る (乗算 14 回。dx, dy は外接矩形の左上からのピクセル数。即時モードの足し算と同じ値になる) →
-//        重なりを 1 クロックに 1 ピクセル。辺の判定、Z (z < タイルの Z) はオンチップ、色と z をタイルバッファに書く
+//        レコード (0x20000 + 番号 * 32 から 32 ワード) を読む → 外接矩形とタイルの重なりの左上での辺の値と属性 (r, g, b, z, u, v) を
+//        s + gx * dx + gy * dy で作る (乗算 18 回。dx, dy は外接矩形の左上からのピクセル数。即時モードの足し算と同じ値になる) →
+//        重なりを 1 クロックに 1 ピクセル (下の 4 段)。辺の判定、Z (z < タイルの Z) はオンチップ、色と z をタイルバッファに書く
 //     3. タイルの色を描く面に書く (write_z なら Z も Z バッファに)。書いたワードのタイルバッファは、clear なら次のタイルの値に戻す
+//   ピクセルの 4 段 (G3):
+//     A  辺の判定、属性、テクセルの座標とワードアドレス、テクスチャのキャッシュのタグを見る。外れなら A を止めて 1 行 (8 ワード) を読む
+//     B  キャッシュのワードからテクセルを取り出す (16bpp はそのまま、8 / 4bpp は CLUT を引く)
+//     C  テクセルの色が決まる。タイルの Z を読む
+//     D  透明 (テクセルの色 0)、変調 (Gouraud なら頂点の色を掛ける、128 = 1 倍)、Z を比べてタイルバッファに書く
+//   テクスチャのキャッシュ: 直接写像、16 行 x 8 ワード (BSRAM 1 個)。タグは 14bit (ワードアドレスの [20:7])。シーン (タイルのパス) の始めに空にする
 //   規則は tools/harness/raster.py (即時モードと同じピクセル)。タイルのリストに入れなかった三角形 (上限を超えた分) はそのタイルでは描かない
-//   数え (測る用、32bit で回る): 段階ごとのクロック (準備、リストとレコードの読み出し、乗算、走査、書き出し)、走査・描いたピクセル
+//   数え (測る用、32bit で回る): 段階ごとのクロック (準備、リストとレコードの読み出し、乗算、走査、書き出し)、走査・描いたピクセル、
+//   テクセルを引いた数 (中のピクセル)、キャッシュの外れ、外れで止まったクロック
 module tile_engine (
     input  logic        clk,
     input  logic        rst,
@@ -23,6 +30,10 @@ module tile_engine (
     input  logic [12:0] draw_base,
     input  logic [12:0] z_base,
     output logic        busy,
+    // CLUT の書き込み (CLUT_WRITE)
+    input  logic        clut_we,
+    input  logic [7:0]  clut_waddr,
+    input  logic [15:0] clut_wdata,
     // タイルの三角形の数 (tri_engine の cnt、1 クロック遅れ)
     output logic [6:0]  cnt_raddr,
     input  logic [10:0] cnt_q,
@@ -38,13 +49,14 @@ module tile_engine (
     input  logic        mem_rvalid,
     input  logic [31:0] mem_rdata,
     output logic [31:0] c_prep, c_fetch, c_mul, c_walk, c_out,
-    output logic [31:0] walked, drawn
+    output logic [31:0] walked, drawn,
+    output logic [31:0] tex_looks, tex_miss, c_tex
 );
     localparam logic [20:0] PARAM_BASE = 21'h020000, LIST_BASE = 21'h040000;
 
     typedef enum logic [4:0] {
         T_IDLE, T_SWEEP, T_TILE, T_LOADC, T_LOADZ, T_CNT, T_CNT2, T_LFETCH, T_ENTRY, T_ENTRY2, T_REC, T_MUL, T_MULW,
-        T_ROW, T_WALK, T_DRAIN, T_DRAIN2, T_NEXTENT, T_OUTC, T_OUTZ, T_NEXTTILE
+        T_ROW, T_WALK, T_TFILL, T_DRAIN, T_DRAIN2, T_NEXTENT, T_OUTC, T_OUTZ, T_NEXTTILE
     } state_t;
     state_t state;
 
@@ -54,7 +66,15 @@ module tile_engine (
     logic [5:0]  rows;                                // 32 (一番下は 16)
     logic [4:0]  r;                                   // 今の行 (準備と書き出し)
     logic [3:0]  w_cur;                               // 行の中のワード
-    logic [3:0]  w_rd;
+    // 書き出しの先読み: タイルバッファの読み出しの番号は FF から直接 (DP の BSRAM の B ポートのアドレスは nextpnr が
+    // タイミングを見ないので、論理を挟まない)。読んだワードは 2 ワードの FIFO に入れ、mem_wnext で出す
+    logic [3:0]  ra;                                  // 次に読むワード
+    logic [4:0]  o_issued;                            // この行で読んだワード数
+    logic        o_qv;                                // 前のクロックに読んだ (今 cq / zq に出ている)
+    logic [1:0]  o_cnt;
+    logic [31:0] o_f0, o_f1;
+    logic        o_pop, o_issue;
+    logic [31:0] o_word;
     logic [8:0]  sw_i;                                // T_SWEEP の番号
     assign tile = 7'(ty) * 7'd10 + 7'(tx);
     assign cnt_raddr = tile;
@@ -76,16 +96,20 @@ module tile_engine (
     logic [11:0] idx;
 
     // ---- レコード ----
-    logic               gour, zen;                    // レコードのフラグ (bit0 Gouraud、bit3 Z)
+    logic               gour, texd, zen;              // レコードのフラグ (bit0 Gouraud、bit1 テクスチャ、bit3 Z)
     logic [15:0]        rflat;
     logic [8:0]         rbx0, rbx1;
     logic [7:0]         rby0, rby1;
-    logic signed [31:0] re  [0:2];
     logic signed [20:0] rex [0:2];
     logic signed [20:0] rey [0:2];
-    logic [31:0]        rs  [0:3];
-    logic [31:0]        rgx [0:3];
-    logic [31:0]        rgy [0:3];
+    logic [31:0]        rgx [0:5];
+    logic [31:0]        rgy [0:5];
+    logic [1:0]         tfmt;                         // テクスチャ: 0 16bpp、1 8bpp、2 4bpp
+    logic [7:0]         tclut;
+    logic [7:0]         umask, vmask;                 // 幅 - 1、高さ - 1
+    logic [1:0]         tsh;                          // 1 ワードのテクセル数の log2 (16bpp 1、8bpp 2、4bpp 3)
+    logic [3:0]         tvs;                          // 1 行のワード数の log2 (幅の log2 - tsh)
+    logic [20:0]        tbase;
     logic [4:0]         ridx;
 
     // 外接矩形とタイルの重なり
@@ -104,12 +128,14 @@ module tile_engine (
     logic               m_in_v, m_out_v;
     logic signed [35:0] m_a;
     logic signed [17:0] m_b;
-    logic [7:0]         m_in_tag, m_out_tag;          // 置き場所: 0..2 辺、3..6 属性
+    logic [4:0]         m_in_tag, m_out_tag;          // {組の 1 つ目, 置き場所 (0..2 辺、3..8 属性)}
     logic signed [31:0] m_p;                          // 積の下位 32bit (値は 32bit で回る)
-    logic [3:0]         mk;                           // 出した乗算の数 (0..13)
-    logic [3:0]         mdone;
-    smul36x18 #(.TAG_W(8), .P_W(32)) u_mul (
-        .clk, .in_valid(m_in_v), .a(m_a), .b(m_b), .in_tag(m_in_tag),
+    logic [4:0]         mk;                           // 出した乗算の数 (0..17)
+    logic [4:0]         mdone;
+    logic               mph;                          // 乗算を出すのは 2 クロックに 1 回 (smul36x18)
+    logic [31:0]        macc;                         // 乗算の結果を足していく (組ごと)
+    smul36x18 #(.TAG_W(5), .P_W(32)) u_mul (
+        .clk, .rst, .in_valid(m_in_v), .a(m_a), .b(m_b), .in_tag(m_in_tag),
         .out_valid(m_out_v), .p(m_p), .out_tag(m_out_tag)
     );
     logic [8:0] dxp;
@@ -118,23 +144,24 @@ module tile_engine (
     assign dyp = oy0 - rby0;
     always_comb begin
         int d;
-        m_in_v = state == T_MUL;
+        m_in_v = state == T_MUL && !mph;
         d = int'(mk) / 2;
-        m_in_tag = 8'(d);
+        m_in_tag = {!mk[0], 4'(d)};
         m_b = mk[0] ? 18'({10'd0, dyp}) : 18'({9'd0, dxp});
         if (d < 3) m_a = mk[0] ? 36'(rey[d]) : 36'(rex[d]);
         else       m_a = mk[0] ? 36'(signed'(rgy[d - 3])) : 36'(signed'(rgx[d - 3]));
     end
 
-    // ---- 走査 ----
+    // ---- 走査 (A 段) ----
     logic [8:0]         x;
     logic [7:0]         y;
     logic signed [31:0] er [0:2];
     logic signed [31:0] ec [0:2];
-    logic [31:0]        ar [0:3];
-    logic [31:0]        ac [0:3];
+    logic [31:0]        ar [0:5];
+    logic [31:0]        ac [0:5];
     logic               p_in;
     logic [15:0]        pz, pcol;
+    logic [7:0]         pr8, pg8, pb8;
     function automatic logic [15:0] clampv(input logic [31:0] acc, input logic [15:0] mx);
         logic signed [19:0] v;
         v = 20'(signed'(acc) >>> 12);
@@ -142,31 +169,128 @@ module tile_engine (
         if (v > signed'({4'b0, mx})) return mx;
         return 16'(v);
     endfunction
-    function automatic logic [4:0] c5(input logic [31:0] acc);
-        return 5'(clampv(acc, 16'd255) >> 3);
-    endfunction
-    function automatic logic [5:0] c6(input logic [31:0] acc);
-        return 6'(clampv(acc, 16'd255) >> 2);
-    endfunction
     always_comb begin
         p_in = ec[0] >= 0 && ec[1] >= 0 && ec[2] >= 0;
         pz   = clampv(ac[3], 16'hFFFF);
-        pcol = gour ? {c5(ac[0]), c6(ac[1]), c5(ac[2])} : rflat;
+        pr8  = 8'(clampv(ac[0], 16'd255));
+        pg8  = 8'(clampv(ac[1], 16'd255));
+        pb8  = 8'(clampv(ac[2], 16'd255));
+        pcol = gour ? {pr8[7:3], pg8[7:2], pb8[7:3]} : rflat;
     end
-    // 2 段目: Z を比べてタイルバッファに書く
-    logic        b_v, b_in;
-    logic [8:0]  b_idx;
-    logic        b_odd;
-    logic [15:0] b_z, b_col;
-    logic        b_pass;
-    assign b_pass = b_v && b_in && (!zen || b_z < (b_odd ? zq_o : zq_e));
 
-    // タイルバッファの読み出しの番号: 走査は今のピクセル、準備と書き出しは {行, ワード}
+    // テクセル: tu = (acc_u >>> 18) & (幅 - 1)、ワードアドレス = base | (tv << (幅の log2 - s)) | (tu >> s)
+    // (base はテクスチャのワード数の倍数。足し算にすると桁上げがキャッシュの判定まで続いて 63MHz に届かなかった)
+    logic [7:0]  tu, tv;
+    logic [20:0] taddr;
+    logic [3:0]  tline;
+    logic [13:0] ttag;
+    logic        t_hit, t_need;
+    assign tu    = ac[4][25:18] & umask;
+    assign tv    = ac[5][25:18] & vmask;
+    assign taddr = tbase | 21'(16'(tv) << tvs) | 21'(tu >> tsh);
+    assign tline = taddr[6:3];
+    assign ttag  = taddr[20:7];
+
+    // テクスチャのキャッシュ (直接写像 16 行 x 8 ワード。タグは FF なので、LUT が足りるように 16 行にした)
+    logic [31:0] tcache [0:127];
+    logic [13:0] ttags [0:15];
+    logic [15:0] tvalid;
+    logic [31:0] tq;
+    logic [6:0]  tc_raddr;
+    logic [2:0]  tf_w;                                // 埋めているワード
+    logic [3:0]  tf_line;
+    logic [13:0] tf_tag;
+    assign t_hit    = tvalid[tline] && ttags[tline] == ttag;
+    assign t_need   = state == T_WALK && texd && p_in;
+    assign tc_raddr = {tline, taddr[2:0]};
+
+    // CLUT
+    logic [15:0] clut [0:255];
+    logic [15:0] clq;
+    logic [7:0]  cl_raddr;
+
+    // ---- B 段: テクセルのワードが届く ----
+    logic        b_v, b_in, b_odd, b_txd;
+    logic [8:0]  b_idx;
+    logic [15:0] b_z, b_col;
+    logic [23:0] b_rgb;
+    logic [2:0]  b_sub;                               // ワードの中のテクセルの位置 (tu の下位)
+    logic [15:0] b_t16;                               // 16bpp のテクセル
+    always_comb begin
+        logic [7:0] v8;
+        logic [3:0] v4;
+        b_t16 = b_sub[0] ? tq[31:16] : tq[15:0];
+        v8 = tq[{b_sub[1:0], 3'b0} +: 8];
+        v4 = tq[5'd28 - {b_sub, 2'b0} +: 4];
+        cl_raddr = ((tfmt == 2'd1) ? v8 : {4'd0, v4}) + tclut;
+    end
+    // ---- C 段: テクセルの色が決まる、タイルの Z を読む ----
+    logic        c_v, c_in, c_odd, c_txd;
+    logic [8:0]  c_idx;
+    logic [15:0] c_z, c_col, c_t16;
+    logic [7:0]  c_cla;                               // CLUT の番号 (FF から直接 CLUT を読む)
+    logic [23:0] c_rgb;
+    // ---- D 段: 透明、変調、Z ----
+    logic        d_v, d_in, d_odd, d_txd;
+    logic [8:0]  d_idx;
+    logic [15:0] d_z, d_col, d_t16, d_tex565;
+    logic [23:0] d_rgb;
+    logic        d_pass;
+    logic        d_mod;                               // 変調する
+    logic [15:0] d_raw;                               // 変調しないときの色
+    logic [10:0] d_plo [0:2];                         // 変調の部分積: テクセルの色 (6bit) の下位 3bit x 頂点の色 (8bit)
+    logic [10:0] d_phi [0:2];                         //               上位 3bit x 頂点の色
+    // ---- E 段: 部分積を足して飽和 (変調を 2 段に分けた。6bit x 8bit を 1 クロックで足すと実機で緑のビットが化けた。
+    //            nextpnr の報告では間に合っていた) ----
+    logic        e_v, e_zw, e_odd, e_mod;
+    logic [8:0]  e_idx;
+    logic [15:0] e_z, e_raw, e_out;
+    logic [10:0] e_plo [0:2];
+    logic [10:0] e_phi [0:2];
+    // ---- F 段: タイルバッファに書く ----
+    logic        f_v, f_zw, f_odd;
+    logic [8:0]  f_idx;
+    logic [15:0] f_out, f_z;
+    // 小さい符号なしの乗算 (a x b、3bit x 8bit) をシフトと加算で。`*` だと yosys が DSP (MULT9X9) に置き、MULT18X18 と混ざると
+    // nextpnr が配置できなかった (G3)
+    function automatic logic [10:0] umul3x8(input logic [2:0] a, input logic [7:0] b);
+        logic [10:0] p;
+        p = '0;
+        for (int i = 0; i < 3; i++) if (a[i]) p = p + (11'(b) << i);
+        return p;
+    endfunction
+    assign d_tex565 = (tfmt == 2'd0) ? d_t16 : clq;
+    always_comb begin
+        logic [5:0] tc [0:2];
+        tc[0] = {1'b0, d_tex565[15:11]};
+        tc[1] = d_tex565[10:5];
+        tc[2] = {1'b0, d_tex565[4:0]};
+        for (int i = 0; i < 3; i++) begin
+            d_plo[i] = umul3x8(tc[i][2:0], d_rgb[23 - 8 * i -: 8]);
+            d_phi[i] = umul3x8(tc[i][5:3], d_rgb[23 - 8 * i -: 8]);
+        end
+        d_mod  = d_txd && gour;
+        d_raw  = d_txd ? d_tex565 : d_col;
+        d_pass = d_v && d_in && !(d_txd && d_tex565 == 16'd0) && (!zen || d_z < (d_odd ? zq_o : zq_e));
+    end
+    // (PS1 と同じく 128 = 1 倍): min(最大, (テクセル x 頂点の色) >> 7)、テクセル x 頂点の色 = 下位の部分積 + (上位の部分積 << 3)
+    always_comb begin
+        logic [6:0] m [0:2];
+        for (int i = 0; i < 3; i++) m[i] = 7'((14'(e_plo[i]) + (14'(e_phi[i]) << 3)) >> 7);
+        e_out = e_mod ? {m[0][6:5] != 2'd0 ? 5'd31 : m[0][4:0], m[1][6] ? 6'd63 : m[1][5:0], m[2][6:5] != 2'd0 ? 5'd31 : m[2][4:0]}
+                      : e_raw;
+    end
+
+    // タイルバッファの読み出しの番号: 走査は C 段のピクセル、準備と書き出しは {行, ワード}
     logic [4:0] lx, ly;
     assign lx = 5'(x - tx0p);
     assign ly = 5'(y - ty0p);
-    assign w_rd = ((state == T_OUTC || state == T_OUTZ) && mem_wnext) ? w_cur + 4'd1 : w_cur;
-    assign rd_idx = (state == T_WALK) ? {ly, lx[4:1]} : {r, w_rd};
+    assign rd_idx = c_v ? c_idx : {r, ra};
+    assign o_word  = (state == T_OUTZ) ? {zq_o, zq_e} : {cq_o, cq_e};
+    assign o_pop   = mem_req && mem_wnext && (state == T_OUTC || state == T_OUTZ);
+    // 走査の最後のピクセルが書き終わってから (D 段の書き込みと同じ番地を先に読まないように)。FIFO + 読んでいる分が 2 を超えないように
+    assign o_issue = (state == T_OUTC || state == T_OUTZ) && !mem_ack && !b_v && !c_v && !d_v && !e_v && !f_v && o_issued != 5'd16 &&
+                     3'(o_cnt) + 3'(o_qv) - 3'(o_pop) <= 3'd1;
     assign wr_idx = {r, w_cur};
 
     always_ff @(posedge clk) begin
@@ -175,6 +299,10 @@ module tile_engine (
         zq_e <= zb_e[rd_idx];
         zq_o <= zb_o[rd_idx];
         lq   <= lbuf[k[5:0]];
+        tq   <= tcache[tc_raddr];
+        clq  <= clut[c_cla];
+        if (clut_we) clut[clut_waddr] <= clut_wdata;
+        if (state == T_TFILL && mem_req && mem_rvalid) tcache[{tf_line, tf_w}] <= mem_rdata;
         if (state == T_LFETCH && mem_req && mem_rvalid) lbuf[lw] <= mem_rdata[11:0];
         // 色
         if (state == T_SWEEP) begin
@@ -183,9 +311,9 @@ module tile_engine (
             cb_e[wr_idx] <= mem_rdata[15:0]; cb_o[wr_idx] <= mem_rdata[31:16];
         end else if (state == T_OUTC && mem_wnext && clear_color) begin
             cb_e[wr_idx] <= ccol; cb_o[wr_idx] <= ccol;
-        end else if (b_pass) begin
-            if (b_odd) cb_o[b_idx] <= b_col;
-            else       cb_e[b_idx] <= b_col;
+        end else if (f_v) begin
+            if (f_odd) cb_o[f_idx] <= f_out;
+            else       cb_e[f_idx] <= f_out;
         end
         // Z
         if (state == T_SWEEP) begin
@@ -194,47 +322,86 @@ module tile_engine (
             zb_e[wr_idx] <= mem_rdata[15:0]; zb_o[wr_idx] <= mem_rdata[31:16];
         end else if (((state == T_OUTZ) || (state == T_OUTC && !write_z)) && mem_wnext && clear_z) begin
             zb_e[wr_idx] <= 16'hFFFF; zb_o[wr_idx] <= 16'hFFFF;
-        end else if (b_pass && zen) begin
-            if (b_odd) zb_o[b_idx] <= b_z;
-            else       zb_e[b_idx] <= b_z;
+        end else if (f_zw) begin
+            if (f_odd) zb_o[f_idx] <= f_z;
+            else       zb_e[f_idx] <= f_z;
         end
     end
 
     assign mem_wmask = 4'hF;
-    assign mem_wdata = (state == T_OUTZ) ? {zq_o, zq_e} : {cq_o, cq_e};
+    assign mem_wdata = o_f0;
     assign busy = state != T_IDLE || start;
+
+    // 書き出しの FIFO (行ごとに空から。mem_ack のクロックとほかの状態では空にする)
+    always_ff @(posedge clk) begin
+        if (rst || !(state == T_OUTC || state == T_OUTZ) || mem_ack) begin
+            ra <= '0; o_issued <= '0; o_qv <= 1'b0; o_cnt <= '0;
+        end else begin
+            o_qv <= o_issue;
+            if (o_issue) begin ra <= ra + 4'd1; o_issued <= o_issued + 5'd1; end
+            if (o_qv && o_pop) begin
+                if (o_cnt == 2'd1) o_f0 <= o_word;
+                else begin o_f0 <= o_f1; o_f1 <= o_word; end
+            end else if (o_pop) begin
+                o_f0 <= o_f1; o_cnt <= o_cnt - 2'd1;
+            end else if (o_qv) begin
+                if (o_cnt == 2'd0) o_f0 <= o_word; else o_f1 <= o_word;
+                o_cnt <= o_cnt + 2'd1;
+            end
+        end
+    end
 
     always_ff @(posedge clk) begin
         if (rst) begin
             state   <= T_IDLE;
             mem_req <= 1'b0;
             mem_we  <= 1'b0;
-            b_v     <= 1'b0;
-            {c_prep, c_fetch, c_mul, c_walk, c_out, walked, drawn} <= '0;
+            b_v <= 1'b0; c_v <= 1'b0; d_v <= 1'b0; e_v <= 1'b0; e_zw <= 1'b0; f_v <= 1'b0; f_zw <= 1'b0;
+            tvalid  <= '0;
+            {c_prep, c_fetch, c_mul, c_walk, c_out, walked, drawn, tex_looks, tex_miss, c_tex} <= '0;
         end else begin
-            b_v <= 1'b0;
-            if (b_pass) drawn <= drawn + 32'd1;
+            if (d_pass) drawn <= drawn + 32'd1;
             unique case (state)
                 T_SWEEP, T_TILE, T_LOADC, T_LOADZ:                         c_prep  <= c_prep + 32'd1;
                 T_CNT, T_CNT2, T_LFETCH, T_ENTRY, T_ENTRY2, T_REC, T_NEXTENT: c_fetch <= c_fetch + 32'd1;
                 T_MUL, T_MULW:                                             c_mul   <= c_mul + 32'd1;
                 T_ROW, T_WALK, T_DRAIN, T_DRAIN2:                          c_walk  <= c_walk + 32'd1;
+                T_TFILL:                                                   c_tex   <= c_tex + 32'd1;
                 T_OUTC, T_OUTZ, T_NEXTTILE:                                c_out   <= c_out + 32'd1;
                 default: ;
             endcase
 
+            // B → C → D → E → F (いつも進む。A が止まっているあいだは空が流れる)
+            c_v <= b_v; c_in <= b_in; c_odd <= b_odd; c_txd <= b_txd; c_idx <= b_idx;
+            c_z <= b_z; c_col <= b_col; c_rgb <= b_rgb; c_t16 <= b_t16; c_cla <= cl_raddr;
+            d_v <= c_v; d_in <= c_in; d_odd <= c_odd; d_txd <= c_txd; d_idx <= c_idx;
+            e_v <= d_pass; e_zw <= d_pass && zen; e_odd <= d_odd; e_idx <= d_idx; e_z <= d_z;
+            e_mod <= d_mod; e_raw <= d_raw;
+            for (int i = 0; i < 3; i++) begin e_plo[i] <= d_plo[i]; e_phi[i] <= d_phi[i]; end   // (Icarus Verilog は配列ごとの代入を通さない)
+            f_v <= e_v; f_zw <= e_zw; f_odd <= e_odd; f_idx <= e_idx; f_z <= e_z; f_out <= e_out;
+            d_z <= c_z; d_col <= c_col; d_rgb <= c_rgb;
+            d_t16 <= c_t16;
+            b_v <= 1'b0;
+
             // 乗算の結果を足す (辺の値と属性。どちらも 32bit で回る)
             if (m_out_v) begin
-                if (m_out_tag < 8'd3) er[m_out_tag[1:0]] <= er[m_out_tag[1:0]] + m_p;
-                else                  ar[2'(m_out_tag - 8'd3)] <= ar[2'(m_out_tag - 8'd3)] + m_p;
-                mdone <= mdone + 4'd1;
+                // 置き場所ごとの 2 つの積は続けて出るので、加算器 1 つで: 1 つ目はレコードの e / s (er / ar に読んである) に、2 つ目はその和に足す
+                logic [3:0]  dd;
+                logic [31:0] val;
+                dd  = m_out_tag[3:0];
+                val = (m_out_tag[4] ? ((dd < 4'd3) ? 32'(er[2'(dd)]) : ar[3'(dd - 4'd3)]) : macc) + m_p;
+                macc <= val;
+                if (dd < 4'd3) er[2'(dd)] <= signed'(val);
+                else           ar[3'(dd - 4'd3)] <= val;
+                mdone <= mdone + 5'd1;
             end
 
             unique case (state)
                 T_IDLE: if (start) begin
                     tx <= rtx0; ty <= rty0;
-                    sw_i  <= '0;
-                    state <= T_SWEEP;
+                    sw_i   <= '0;
+                    tvalid <= '0;                       // テクスチャはシーンのあいだに書き換えられているかもしれない
+                    state  <= T_SWEEP;
                 end
                 // タイルバッファを消す (シーンの最初だけ。あとは書き出しのときに次のタイルの値に戻す)
                 T_SWEEP: begin
@@ -311,66 +478,103 @@ module tile_engine (
                         mem_req  <= 1'b1;
                         mem_we   <= 1'b0;
                         mem_addr <= PARAM_BASE + {4'd0, idx, 5'd0};
-                        mem_len  <= 9'd24;
+                        mem_len  <= 9'd32;
                     end else begin
                         if (mem_rvalid) begin
                             ridx <= ridx + 5'd1;
-                            unique case (ridx)
-                                5'd0: begin gour <= mem_rdata[24]; zen <= mem_rdata[27]; rflat <= mem_rdata[15:0]; end
-                                5'd1: begin rbx0 <= mem_rdata[8:0]; rbx1 <= mem_rdata[24:16]; end
-                                5'd2: begin rby0 <= mem_rdata[7:0]; rby1 <= mem_rdata[23:16]; end
-                                5'd3, 5'd4, 5'd5:    re[2'(ridx - 5'd3)]  <= signed'(mem_rdata);
-                                5'd6, 5'd7, 5'd8:    rex[2'(ridx - 5'd6)] <= mem_rdata[20:0];
-                                5'd9, 5'd10, 5'd11:  rey[2'(ridx - 5'd9)] <= mem_rdata[20:0];
-                                5'd12, 5'd13, 5'd14, 5'd15: rs[2'(ridx - 5'd12)]  <= mem_rdata;
-                                5'd16, 5'd17, 5'd18, 5'd19: rgx[2'(ridx - 5'd16)] <= mem_rdata;
-                                default:                    rgy[2'(ridx - 5'd20)] <= mem_rdata;
-                            endcase
+                            if (ridx == 5'd0) begin
+                                gour <= mem_rdata[24]; texd <= mem_rdata[25]; zen <= mem_rdata[27]; rflat <= mem_rdata[15:0];
+                            end else if (ridx == 5'd1) begin
+                                rbx0 <= mem_rdata[8:0]; rbx1 <= mem_rdata[24:16];
+                            end else if (ridx == 5'd2) begin
+                                rby0 <= mem_rdata[7:0]; rby1 <= mem_rdata[23:16];
+                            end else if (ridx < 5'd6)  er[2'(ridx - 5'd3)]  <= signed'(mem_rdata);   // 左上の値 (乗算の和を足していく)
+                            else if (ridx < 5'd9)  rex[2'(ridx - 5'd6)] <= mem_rdata[20:0];
+                            else if (ridx < 5'd12) rey[2'(ridx - 5'd9)] <= mem_rdata[20:0];
+                            else if (ridx < 5'd18) ar[3'(ridx - 5'd12)]  <= mem_rdata;
+                            else if (ridx < 5'd24) rgx[3'(ridx - 5'd18)] <= mem_rdata;
+                            else if (ridx < 5'd30) rgy[3'(ridx - 5'd24)] <= mem_rdata;
+                            else if (ridx == 5'd30) begin
+                                logic [1:0] sh;
+                                sh     = (mem_rdata[17:16] == 2'd0) ? 2'd1 : (mem_rdata[17:16] == 2'd1) ? 2'd2 : 2'd3;
+                                tfmt  <= mem_rdata[17:16]; tclut <= mem_rdata[15:8];
+                                umask <= 8'((9'd1 << mem_rdata[7:4]) - 9'd1);
+                                vmask <= 8'((9'd1 << mem_rdata[3:0]) - 9'd1);
+                                tsh   <= sh;
+                                tvs   <= mem_rdata[7:4] - 4'(sh);
+                            end else begin
+                                tbase <= mem_rdata[20:0];
+                            end
                         end
                         if (mem_ack) begin
                             mem_req <= 1'b0;
                             mk      <= '0;
+                            mph     <= 1'b0;
                             mdone   <= '0;
                             state   <= T_MUL;
                         end
                     end
                 end
-                // 重なりの左上: er = e + ex dx + ey dy、ar = s + gx dx + gy dy (乗算 14 回を足していく)
+                // 重なりの左上: er = e + ex dx + ey dy、ar = s + gx dx + gy dy (乗算 18 回を足していく)
                 T_MUL: begin
-                    if (mk == 4'd0) begin
-                        for (int i = 0; i < 3; i++) er[i] <= re[i];
-                        for (int j = 0; j < 4; j++) ar[j] <= rs[j];
+                    mph <= !mph;
+                    if (!mph) begin
+                        mk <= mk + 5'd1;
+                        if (mk == 5'd17) state <= T_MULW;
                     end
-                    mk <= mk + 4'd1;
-                    if (mk == 4'd13) state <= T_MULW;
                 end
-                T_MULW: if (mdone == 4'd14 || (mdone == 4'd13 && m_out_v)) begin
+                T_MULW: if (mdone == 5'd18 || (mdone == 5'd17 && m_out_v)) begin
                     y     <= oy0;
                     state <= T_ROW;
                 end
-                T_ROW: if (!m_out_v) begin
+                T_ROW: begin
                     for (int i = 0; i < 3; i++) ec[i] <= er[i];
-                    for (int j = 0; j < 4; j++) ac[j] <= ar[j];
+                    for (int j = 0; j < 6; j++) ac[j] <= ar[j];
                     x     <= ox0;
                     state <= T_WALK;
                 end
-                // 1 クロックに 1 ピクセル (1 段目: 値を出してタイルの Z を読む)
+                // 1 クロックに 1 ピクセル (A 段)。テクスチャのキャッシュが外れたら、その行を読んでからこのピクセルをやり直す
                 T_WALK: begin
-                    b_v    <= 1'b1;
-                    b_idx  <= {ly, lx[4:1]};
-                    b_odd  <= lx[0];
-                    b_in   <= p_in;
-                    b_z    <= pz;
-                    b_col  <= pcol;
-                    walked <= walked + 32'd1;
-                    for (int i = 0; i < 3; i++) ec[i] <= ec[i] + 32'(rex[i]);
-                    for (int j = 0; j < 4; j++) ac[j] <= ac[j] + rgx[j];
-                    x <= x + 9'd1;
-                    if (x == ox1) state <= T_DRAIN;
+                    if (t_need && !t_hit) begin
+                        tex_miss <= tex_miss + 32'd1;
+                        tf_line  <= tline;
+                        tf_tag   <= ttag;
+                        tf_w     <= '0;
+                        mem_req  <= 1'b1;
+                        mem_we   <= 1'b0;
+                        mem_addr <= {taddr[20:3], 3'd0};
+                        mem_len  <= 9'd8;
+                        state    <= T_TFILL;
+                    end else begin
+                        if (t_need) tex_looks <= tex_looks + 32'd1;
+                        b_v    <= 1'b1;
+                        b_idx  <= {ly, lx[4:1]};
+                        b_odd  <= lx[0];
+                        b_in   <= p_in;
+                        b_txd  <= texd;
+                        b_z    <= pz;
+                        b_col  <= pcol;
+                        b_rgb  <= {pr8, pg8, pb8};
+                        b_sub  <= tu[2:0];
+                        walked <= walked + 32'd1;
+                        for (int i = 0; i < 3; i++) ec[i] <= ec[i] + 32'(rex[i]);
+                        for (int j = 0; j < 6; j++) ac[j] <= ac[j] + rgx[j];
+                        x <= x + 9'd1;
+                        if (x == ox1) state <= T_DRAIN;
+                    end
+                end
+                T_TFILL: begin
+                    if (mem_rvalid) tf_w <= tf_w + 3'd1;
+                    if (mem_ack) begin
+                        mem_req          <= 1'b0;
+                        ttags[tf_line]   <= tf_tag;
+                        tvalid[tf_line]  <= 1'b1;
+                        state            <= T_WALK;
+                    end
                 end
                 T_DRAIN: begin
                     for (int i = 0; i < 3; i++) er[i] <= er[i] + 32'(rey[i]);
-                    for (int j = 0; j < 4; j++) ar[j] <= ar[j] + rgy[j];
+                    for (int j = 0; j < 6; j++) ar[j] <= ar[j] + rgy[j];
                     state <= T_DRAIN2;
                 end
                 T_DRAIN2: begin
@@ -390,13 +594,15 @@ module tile_engine (
                         state <= T_ENTRY;
                     end
                 end
-                // タイルの色 (と Z) を書く。1 行 16 ワード
+                // タイルの色 (と Z) を書く。1 行 16 ワード (走査の最後のピクセルが書き終わってから。F 段は 5 クロック後)
                 T_OUTC, T_OUTZ: begin
                     if (!mem_req) begin
-                        mem_req  <= 1'b1;
-                        mem_we   <= 1'b1;
-                        mem_addr <= {((state == T_OUTZ) ? z_base : draw_base) + 13'({ty[2:0], r}), tx, 4'd0};
-                        mem_len  <= 9'd16;
+                        if (o_cnt == 2'd2) begin
+                            mem_req  <= 1'b1;
+                            mem_we   <= 1'b1;
+                            mem_addr <= {((state == T_OUTZ) ? z_base : draw_base) + 13'({ty[2:0], r}), tx, 4'd0};
+                            mem_len  <= 9'd16;
+                        end
                     end else begin
                         if (mem_wnext) w_cur <= w_cur + 4'd1;
                         if (mem_ack) begin

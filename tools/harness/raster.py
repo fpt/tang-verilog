@@ -17,6 +17,14 @@
   走査: 行ごとに左から。E はピクセルごとに -dy*16、行ごとに dx*16。属性は 32bit で回る加算 (gx、gy)
   ピクセルの値: clamp(acc >> 12, 0, 最大値) (色は 255、z は 65535)。色は RGB565 に切り捨て
   Z (flags bit3): z < Z バッファ なら通る (同じ値は先に描いたものが勝つ)。通ったら z と色を書く
+  テクスチャ (flags bit1、G3): 頂点ごとの {v, u} (10.6 = テクセル x 64、0..1023.98) も属性 (u, v) として同じ式で補間する。テクセルの座標は
+    tu = (acc_u >>> 18) & (幅 - 1)、tv = (acc_v >>> 18) & (高さ - 1) (はみ出した分は折り返す)
+    テクスチャ (SET_TEX): 形式 0 = 16bpp (RGB565、1 ワードに 2 つ、下位が偶数の u)、1 = 8bpp (1 ワードに 4 つ、u % 4 番目のバイト)、
+    2 = 4bpp (1 ワードに 8 つ、u % 8 番目は [31 - 4k -: 4] = タイルの行と同じ並び)。8bpp / 4bpp は CLUT[(値 + clut) & 255] の色
+    テクセル (tu, tv) のワードアドレスは base | (tv << (幅の log2 - s)) | (tu >> s) (s は 16bpp 1、8bpp 2、4bpp 3)。
+    base はテクスチャのワード数 (2 ^ (幅の log2 + 高さの log2 - s)) の倍数にする (足し算でなく OR で作るため)
+    色 0 (RGB565 の 0x0000) のテクセルは透明 (色も Z も書かない)。Gouraud なら頂点の色で変調する (PS1 と同じく 128 = 1 倍):
+    R = min(31, (texR * r) >> 7)、G = min(63, (texG * g) >> 7)、B = min(31, (texB * b) >> 7)。Gouraud でなければテクセルの色そのまま
 """
 
 F = 12
@@ -38,11 +46,11 @@ def sat32(v):
 
 
 def words_per_tri(flags):
-    return 1 + 3 * (1 + (flags & FLAG_GOURAUD and 1) + (flags & FLAG_Z and 1))
+    return 1 + 3 * (1 + (flags & FLAG_GOURAUD and 1) + (flags & FLAG_Z and 1) + (flags & FLAG_TEX and 1))
 
 
 def parse(words):
-    """TRI のワード列 → (flags, 単色, 頂点 [(x, y, (r, g, b), z)] x 3)"""
+    """TRI のワード列 → (flags, 単色, 頂点 [(x, y, (r, g, b), z, (u, v))] x 3)。頂点ごとに {y, x}、[色]、[z]、[{v, u}]"""
     w0 = words[0]
     flags, color = (w0 >> 16) & 0xFF, w0 & 0xFFFF
     vs, i = [], 1
@@ -58,20 +66,24 @@ def parse(words):
         if flags & FLAG_Z:
             z = words[i] & 0xFFFF
             i += 1
-        vs.append((x, y, rgb, z))
+        uv = (0, 0)
+        if flags & FLAG_TEX:
+            uv = (words[i] & 0xFFFF, (words[i] >> 16) & 0xFFFF)
+            i += 1
+        vs.append((x, y, rgb, z, uv))
     return flags, color, vs
 
 
 def setup(vs, clip):
     """セットアップ。描くものがなければ None。clip = (x0, y0, x1, y1) ピクセル、両端を含む"""
-    (x0, y0, _, _), (x1, y1, _, _), (x2, y2, _, _) = vs
+    (x0, y0, *_), (x1, y1, *_), (x2, y2, *_) = vs
     area2 = (x1 - x0) * (y2 - y0) - (y1 - y0) * (x2 - x0)
     if area2 == 0:
         return None
     if area2 < 0:
         vs = [vs[0], vs[2], vs[1]]
         area2 = -area2
-    (x0, y0, c0, z0), (x1, y1, c1, z1), (x2, y2, c2, z2) = vs
+    (x0, y0, c0, z0, t0), (x1, y1, c1, z1, t1), (x2, y2, c2, z2, t2) = vs
     cx0, cy0, cx1, cy1 = clip
     bx0 = max(cx0, (min(x0, x1, x2) + 7) >> 4)
     bx1 = min(cx1, (max(x0, x1, x2) - 8) >> 4)
@@ -89,7 +101,8 @@ def setup(vs, clip):
     n = area2.bit_length()
     m = ((1 << (n + 16)) - 1) // area2
     attrs = []
-    for a in ([c[0] for c in (c0, c1, c2)], [c[1] for c in (c0, c1, c2)], [c[2] for c in (c0, c1, c2)], [z0, z1, z2]):
+    for a in ([c[0] for c in (c0, c1, c2)], [c[1] for c in (c0, c1, c2)], [c[2] for c in (c0, c1, c2)], [z0, z1, z2],
+              [t[0] for t in (t0, t1, t2)], [t[1] for t in (t0, t1, t2)]):
         d1, d2 = a[1] - a[0], a[2] - a[0]
         nx = d1 * (y2 - y0) + d2 * (y0 - y1)
         ny = d1 * (x0 - x2) + d2 * (x1 - x0)
@@ -100,7 +113,7 @@ def setup(vs, clip):
 
 
 def pixels(rec):
-    """外接矩形を行ごとに左から: (x, y, 中か, (r, g, b), z)"""
+    """外接矩形を行ごとに左から: (x, y, 中か, (r, g, b), z, (u の累算, v の累算))"""
     bx0, by0, bx1, by1 = rec["bbox"]
     er = [e for e, _, _ in rec["edges"]]
     ar = [s for s, _, _ in rec["attrs"]]
@@ -110,7 +123,7 @@ def pixels(rec):
         for x in range(bx0, bx1 + 1):
             inside = all(v >= 0 for v in e)
             vals = [max(0, min(mx, wrap32(v) >> F)) for v, mx in zip(a, (255, 255, 255, 65535))]
-            yield x, y, inside, tuple(vals[:3]), vals[3]
+            yield x, y, inside, tuple(vals[:3]), vals[3], (wrap32(a[4]), wrap32(a[5]))
             e = [v + sx for v, (_, sx, _) in zip(e, rec["edges"])]
             a = [wrap32(v + gx) for v, (_, gx, _) in zip(a, rec["attrs"])]
         er = [v + sy for v, (_, _, sy) in zip(er, rec["edges"])]
@@ -120,3 +133,26 @@ def pixels(rec):
 def to565(rgb):
     r, g, b = rgb
     return (r >> 3) << 11 | (g >> 2) << 5 | (b >> 3)
+
+
+TEX_SHIFT = {0: 1, 1: 2, 2: 3}        # 形式 (16 / 8 / 4bpp) → 1 ワードのテクセル数の log2
+
+
+def texel(read, tex, clut, uv):
+    """テクセルの色 (RGB565)。read(ワードアドレス) は SDRAM、tex = (形式, 幅の log2, 高さの log2, CLUT のずらし, base)、uv は累算の値"""
+    fmt, wl, hl, coff, base = tex
+    tu = (uv[0] >> 18) & ((1 << wl) - 1)
+    tv = (uv[1] >> 18) & ((1 << hl) - 1)
+    sh = TEX_SHIFT[fmt]
+    w = read((base | (tv << (wl - sh)) | (tu >> sh)) & 0x1FFFFF)
+    if fmt == 0:
+        return (w >> (16 * (tu & 1))) & 0xFFFF
+    v = (w >> (8 * (tu & 3))) & 0xFF if fmt == 1 else (w >> (28 - 4 * (tu & 7))) & 0xF
+    return clut[(v + coff) & 0xFF]
+
+
+def modulate(t, rgb):
+    """テクセル (RGB565) を頂点の色 (8bit、128 = 1 倍) で変調する"""
+    r, g, b = rgb
+    return (min(31, (t >> 11) * r >> 7) << 11 | min(63, ((t >> 5) & 63) * g >> 7) << 5 | min(31, (t & 31) * b >> 7))
+

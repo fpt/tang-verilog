@@ -11,18 +11,19 @@ module tb_tri_setup;
     logic [15:0] x0, y0, x1, y1, x2, y2;
     logic [23:0] c0, c1, c2;
     logic [15:0] z0, z1, z2;
+    logic [31:0] t0, t1, t2;
     logic [8:0]  cx0 = 0, cx1 = 319;
     logic [7:0]  cy0 = 0, cy1 = 239;
     logic [8:0]  bx0, bx1;
     logic [7:0]  by0, by1;
     logic [2:0][31:0] e;
     logic [2:0][20:0] ex, ey;
-    logic [3:0][31:0] s, gx, gy;
+    logic [5:0][31:0] s, gx, gy;
     tri_setup dut (.*);
 
     // ---------------------------------------------------------------- 参照 (raster.py の setup)
-    longint rx [0:2], ry [0:2], ra [0:3][0:2];
-    longint r_e [0:2], r_ex [0:2], r_ey [0:2], r_s [0:3], r_gx [0:3], r_gy [0:3];
+    longint rx [0:2], ry [0:2], ra [0:5][0:2];
+    longint r_e [0:2], r_ex [0:2], r_ey [0:2], r_s [0:5], r_gx [0:5], r_gy [0:5];
     int     r_bx0, r_bx1, r_by0, r_by1;
     bit     r_empty;
     function automatic longint sat32(input longint v);
@@ -54,7 +55,7 @@ module tb_tri_setup;
         if (area < 0) begin
             t = rx[1]; rx[1] = rx[2]; rx[2] = t;
             t = ry[1]; ry[1] = ry[2]; ry[2] = t;
-            for (j = 0; j < 4; j++) begin t = ra[j][1]; ra[j][1] = ra[j][2]; ra[j][2] = t; end
+            for (j = 0; j < 6; j++) begin t = ra[j][1]; ra[j][1] = ra[j][2]; ra[j][2] = t; end
             area = -area;
         end
         r_bx0 = int'(ashr(mn3(rx[0], rx[1], rx[2]) + 7, 4));
@@ -78,7 +79,7 @@ module tb_tri_setup;
         n = 0;
         for (i = 0; i < 40; i++) if (area >= (64'sd1 <<< i)) n = i + 1;
         m = fdiv((64'sd1 <<< (n + 16)) - 1, area);
-        for (j = 0; j < 4; j++) begin
+        for (j = 0; j < 6; j++) begin
             d1 = ra[j][1] - ra[j][0]; d2 = ra[j][2] - ra[j][0];
             nx = d1 * (ry[2] - ry[0]) + d2 * (ry[0] - ry[1]);
             ny = d1 * (rx[0] - rx[2]) + d2 * (rx[1] - rx[0]);
@@ -93,11 +94,14 @@ module tb_tri_setup;
         int cyc;
         x0 = 16'(ax); y0 = 16'(ay); x1 = 16'(bx); y1 = 16'(by); x2 = 16'(qx); y2 = 16'(qy);
         c0 = $urandom; c1 = $urandom; c2 = $urandom; z0 = $urandom; z1 = $urandom; z2 = $urandom;
+        t0 = $urandom; t1 = $urandom; t2 = $urandom;
         rx[0] = ax; ry[0] = ay; rx[1] = bx; ry[1] = by; rx[2] = qx; ry[2] = qy;
         ra[0][0] = c0[23:16]; ra[0][1] = c1[23:16]; ra[0][2] = c2[23:16];
         ra[1][0] = c0[15:8];  ra[1][1] = c1[15:8];  ra[1][2] = c2[15:8];
         ra[2][0] = c0[7:0];   ra[2][1] = c1[7:0];   ra[2][2] = c2[7:0];
         ra[3][0] = z0;        ra[3][1] = z1;        ra[3][2] = z2;
+        ra[4][0] = t0[15:0];  ra[4][1] = t1[15:0];  ra[4][2] = t2[15:0];
+        ra[5][0] = t0[31:16]; ra[5][1] = t1[31:16]; ra[5][2] = t2[31:16];
         reference();
         @(negedge clk) start = 1;
         @(negedge clk) start = 0;
@@ -115,14 +119,14 @@ module tb_tri_setup;
             bad = int'(bx0) != r_bx0 || int'(bx1) != r_bx1 || int'(by0) != r_by0 || int'(by1) != r_by1;
             for (int i = 0; i < 3; i++)
                 bad |= longint'(signed'(e[i])) != r_e[i] || longint'(signed'(ex[i])) != r_ex[i] || longint'(signed'(ey[i])) != r_ey[i];
-            for (int j = 0; j < 4; j++)
+            for (int j = 0; j < 6; j++)
                 bad |= longint'(signed'(s[j])) != r_s[j] || longint'(signed'(gx[j])) != r_gx[j] || longint'(signed'(gy[j])) != r_gy[j];
             if (bad) begin
                 if (errors < 10) begin
                     $display("  (%0d,%0d)(%0d,%0d)(%0d,%0d) clip %0d..%0d x %0d..%0d:", ax, ay, bx, by, qx, qy, cx0, cx1, cy0, cy1);
                     $display("    bbox %0d..%0d %0d..%0d (exp %0d..%0d %0d..%0d)", bx0, bx1, by0, by1, r_bx0, r_bx1, r_by0, r_by1);
                     $display("    e %0d %0d %0d (exp %0d %0d %0d)", signed'(e[0]), signed'(e[1]), signed'(e[2]), r_e[0], r_e[1], r_e[2]);
-                    for (int j = 0; j < 4; j++)
+                    for (int j = 0; j < 6; j++)
                         $display("    attr %0d: s %0d gx %0d gy %0d (exp %0d %0d %0d)", j, signed'(s[j]), signed'(gx[j]), signed'(gy[j]), r_s[j], r_gx[j], r_gy[j]);
                 end
                 errors++;
@@ -166,7 +170,7 @@ module tb_tri_setup;
             if (n % 50 == 25) begin cx0 = 0; cx1 = 319; cy0 = 0; cy1 = 239; end
         end
         $display("  %0d triangles (%0d empty), setup %0d clk at most", tris, empties, max_cyc);
-        if (max_cyc > 100) begin $display("  setup too slow"); errors++; end
+        if (max_cyc > 160) begin $display("  setup too slow"); errors++; end
         if (errors == 0) $display("PASS: tb_tri_setup");
         else             $display("FAIL: tb_tri_setup (%0d errors)", errors);
         $finish;

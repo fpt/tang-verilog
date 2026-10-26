@@ -3,6 +3,8 @@
 //     (即時: 面を消して Z を 0xFFFF にしてから。TBDR: 消す色 + clear_z + write_z)
 //   - TBDR の読み込み (面と Z を消さずに) で、前に描いたものの上に重なる (即時で同じ順に描いたものと同じ)
 //   - タイルの上限 (1 タイル 1,024 個) を超えると error が出る
+//   - テクスチャ (G3): 8 x 8 のテクスチャを 8 x 8 ピクセルに 1 対 1 で貼り、16bpp はテクセルそのまま、4bpp は CLUT (ずらし込み) の色、
+//     色 0 のテクセルは透明 (下の色が残る)
 //   - シーンの外の TRI (1 つだけのシーンとして描く): 矩形を 2 つに割った三角形がちょうどその矩形を塗る、Z の規則 (奥と同じ z は描かない)、
 //     Gouraud の頂点のそばの色、クリップ矩形の外は書かない
 `timescale 1ns/1ps
@@ -21,7 +23,7 @@ module tb_raster3d;
     logic [8:0]  mem_len;
     logic [31:0] mem_wdata, mem_rdata = '0;
     logic [3:0]  mem_wmask;
-    logic [31:0] st_bin, st_pairs, st_prep, st_fetch, st_mul, st_walk, st_out, st_walked, st_drawn;
+    logic [31:0] st_bin, st_pairs, st_prep, st_fetch, st_mul, st_walk, st_out, st_walked, st_drawn, st_tlook, st_tmiss, st_tstall;
     logic        wn = 0;
     logic        mem_wnext;
     assign mem_wnext = wn;
@@ -228,6 +230,59 @@ module tb_raster3d;
         send_tris();
         cmd1({8'h26, 24'h0});
         compare("scene (load) vs immediate", 1);
+
+        // 2.5 テクスチャ: 16bpp と 4bpp (CLUT のずらし 16)。TRI 2 つで 8 x 8 の正方形、uv はピクセルと 1 対 1 (テクセルの中心)
+        begin
+            int bad;
+            bad = 0;
+            fill(draw_base, 32'h0101_0101);
+            for (int v = 0; v < 8; v++) for (int u = 0; u < 4; u++)                       // 16bpp: 1 行 4 ワード
+                mem[21'h060000 + v * 4 + u] = {16'((v * 8 + 2 * u + 1) * 16'h0421), 16'((u == 0 && v == 0) ? 0 : (v * 8 + 2 * u) * 16'h0421)};
+            for (int v = 0; v < 8; v++) mem[21'h060100 + v] = {4'(v), 4'(1), 4'(2), 4'(3), 4'(4), 4'(5), 4'(6), 4'(7)};   // 4bpp: 1 行 1 ワード
+            // CLUT_WRITE 16 色を 16 番から: 色 = 0x8000 + 番号
+            @(negedge clk); push = 1; word = {8'h28, 8'd16, 7'd0, 9'd16};
+            for (int i = 0; i < 8; i++) begin                // gpu.sv と同じく 2 クロック以上あけて (上位の色は次のクロックに書く)
+                @(negedge clk); push = 1; word = {16'h8000 + 16'(17 + 2 * i), 16'h8000 + 16'(16 + 2 * i)};
+                @(negedge clk); push = 0;
+            end
+            @(negedge clk); push = 0; go = 1;
+            @(negedge clk); go = 0;
+            while (busy) @(negedge clk);
+            for (int f = 0; f < 2; f++) begin
+                logic [31:0] base;
+                base = f ? 32'h060100 : 32'h060000;
+                @(negedge clk); push = 1; word = {8'h21, 6'd0, f ? 2'd2 : 2'd0, f ? 8'd16 : 8'd0, 4'd3, 4'd3};
+                @(negedge clk); word = base;
+                @(negedge clk); push = 0; go = 1;
+                @(negedge clk); go = 0;
+                while (busy) @(negedge clk);
+                for (int t = 0; t < 2; t++) begin
+                    int px[3], py[3];
+                    if (t) begin px = '{0, 8, 0}; py = '{0, 8, 8}; end
+                    else   begin px = '{0, 8, 8}; py = '{0, 0, 8}; end
+                    @(negedge clk); push = 1; word = {8'h20, 8'h02, 16'h0};
+                    for (int i = 0; i < 3; i++) begin
+                        @(negedge clk); word = {16'((py[i] + 100) * 16), 16'((px[i] + 40 + 20 * f) * 16)};
+                        @(negedge clk); word = {16'(py[i] * 64), 16'(px[i] * 64)};
+                    end
+                    @(negedge clk); push = 0; go = 1;
+                    @(negedge clk); go = 0;
+                    while (busy) @(negedge clk);
+                end
+                for (int v = 0; v < 8; v++) for (int u = 0; u < 8; u++) begin
+                    logic [15:0] e, gpx;
+                    if (f == 0) e = (u == 0 && v == 0) ? 16'h0101 : 16'((v * 8 + u) * 16'h0421);
+                    else        e = 16'h8000 + 16'(16 + ((u == 0) ? v : u));          // 4bpp の値 0 は CLUT[16] = 0x8010 (透明ではない)
+                    gpx = px(draw_base, 40 + 20 * f + u, 100 + v);
+                    if (gpx !== e) begin
+                        if (bad < 5) $display("  texture %0d (%0d,%0d): got %h expected %h", f, u, v, gpx, e);
+                        bad++;
+                    end
+                end
+            end
+            if (bad != 0) errors++;
+            $display("  texture: %0d lookups, %0d misses", st_tlook, st_tmiss);
+        end
 
         // 3. タイル 0 に 1,030 個 → 6 回の error
         err_pulses = 0;
