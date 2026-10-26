@@ -1,28 +1,185 @@
 {
-  "_comment": "ハーネス v2 (Waveshare RP2350-PiZero + PSRAM) の配線表 (docs/HARNESS2.md)。fpga_dir は FPGA から見た向き。信号はすべて正論理 (Low = 何もしていない)。pico_pin は 40 ピンヘッダの物理ピン番号、hstx_bit は RP2350 の HSTX 出力ビット (GP12 = bit0)。v1 と同じ名前の信号は同じ意味 (IRQ は CONTROL bit4 で READY になる)",
+  "_comment": "ハーネス v2 (Pico 2 / Pico Plus 2 / Pico LiPo 2、Pico ピン配置) の配線表 (docs/HARNESS2.md)。fpga_dir は FPGA から見た向き。信号はすべて正論理。pico_pin は Pico の 40 ピンの物理番号、hstx_bit は HSTX の出力ビット (GP12 = bit0)。v1 と同じ名前の信号は同じ意味 (IRQ は CONTROL bit4 で READY)",
   "pins": [
-    {"signal": "HSTX_D0",  "fpga_pin": 71, "fpga_dir": "input",  "pico_gpio": 12, "pico_pin": 32, "hstx_bit": 0, "series_r": "33R"},
-    {"signal": "HSTX_D1",  "fpga_pin": 72, "fpga_dir": "input",  "pico_gpio": 13, "pico_pin": 33, "hstx_bit": 1, "series_r": "33R"},
-    {"signal": "HSTX_D2",  "fpga_pin": 73, "fpga_dir": "input",  "pico_gpio": 19, "pico_pin": 35, "hstx_bit": 7, "series_r": "33R"},
-    {"signal": "HSTX_D3",  "fpga_pin": 74, "fpga_dir": "input",  "pico_gpio": 16, "pico_pin": 36, "hstx_bit": 4, "series_r": "33R"},
-    {"signal": "HSTX_CLK", "fpga_pin": 80, "fpga_dir": "input",  "pico_gpio": 14, "pico_pin": 8,  "hstx_bit": 2, "series_r": "33R", "note": "GCLKT_0。SD の D2 と共有 (10k プルアップ)"},
-    {"signal": "SCK",      "fpga_pin": 20, "fpga_dir": "input",  "pico_gpio": 10, "pico_pin": 19, "note": "SPI1 SCK。LED5 と共有"},
-    {"signal": "COPI",     "fpga_pin": 19, "fpga_dir": "input",  "pico_gpio": 11, "pico_pin": 23, "note": "SPI1 TX。LED4 と共有"},
-    {"signal": "CIPO",     "fpga_pin": 75, "fpga_dir": "output", "pico_gpio": 8,  "pico_pin": 24, "note": "SPI1 RX。BL616 MISO と共有 (v1 で実績)"},
-    {"signal": "CS",       "fpga_pin": 86, "fpga_dir": "input",  "pico_gpio": 9,  "pico_pin": 21, "pulldown": "10k", "note": "正論理。BL616 SPI_DIR と共有 (v1 で実績)"},
-    {"signal": "IRQ",      "fpga_pin": 85, "fpga_dir": "output", "pico_gpio": 20, "pico_pin": 38, "note": "VBLANK IRQ、CONTROL bit4 で READY。SD の D1 と共有 (10k プルアップ)。FPGA 未コンフィグでは High"},
-    {"signal": "VSYNC",    "fpga_pin": 16, "fpga_dir": "output", "pico_gpio": 22, "pico_pin": 15, "jumper": "JP2", "note": "LED1 / LCD YD (LCD_INIT1) と共有"},
-    {"signal": "HEARTBEAT","fpga_pin": 15, "fpga_dir": "output", "pico_gpio": 23, "pico_pin": 16, "jumper": "JP3", "note": "LED0 / LCD XR (LCD_INIT0) と共有"},
-    {"signal": "RESET",    "fpga_pin": 79, "fpga_dir": "input",  "pico_gpio": 21, "pico_pin": 40, "pulldown": "10k", "note": "WS2812 DIN と共有"}
+    {
+      "signal": "HSTX_D0",
+      "fpga_pin": 71,
+      "fpga_dir": "input",
+      "pico_gpio": 12,
+      "pico_pin": 16,
+      "hstx_bit": 0,
+      "series_r": "33R"
+    },
+    {
+      "signal": "HSTX_D1",
+      "fpga_pin": 72,
+      "fpga_dir": "input",
+      "pico_gpio": 13,
+      "pico_pin": 17,
+      "hstx_bit": 1,
+      "series_r": "33R"
+    },
+    {
+      "signal": "HSTX_D2",
+      "fpga_pin": 73,
+      "fpga_dir": "input",
+      "pico_gpio": 14,
+      "pico_pin": 19,
+      "hstx_bit": 2,
+      "series_r": "33R"
+    },
+    {
+      "signal": "HSTX_D3",
+      "fpga_pin": 74,
+      "fpga_dir": "input",
+      "pico_gpio": 15,
+      "pico_pin": 20,
+      "hstx_bit": 3,
+      "series_r": "33R"
+    },
+    {
+      "signal": "HSTX_CLK",
+      "fpga_pin": 80,
+      "fpga_dir": "input",
+      "pico_gpio": 16,
+      "pico_pin": 21,
+      "hstx_bit": 4,
+      "series_r": "33R",
+      "note": "GCLKT_0。SD の D2 と共有 (10k プルアップ)"
+    },
+    {
+      "signal": "SCK",
+      "fpga_pin": 20,
+      "fpga_dir": "input",
+      "pico_gpio": 10,
+      "pico_pin": 14,
+      "note": "SPI1 SCK。LED5 と共有"
+    },
+    {
+      "signal": "COPI",
+      "fpga_pin": 19,
+      "fpga_dir": "input",
+      "pico_gpio": 11,
+      "pico_pin": 15,
+      "note": "SPI1 TX。LED4 と共有"
+    },
+    {
+      "signal": "CIPO",
+      "fpga_pin": 75,
+      "fpga_dir": "output",
+      "pico_gpio": 8,
+      "pico_pin": 11,
+      "note": "SPI1 RX。BL616 MISO と共有 (v1 で実績)"
+    },
+    {
+      "signal": "CS",
+      "fpga_pin": 86,
+      "fpga_dir": "input",
+      "pico_gpio": 9,
+      "pico_pin": 12,
+      "pulldown": "4.7k",
+      "note": "正論理。BL616 SPI_DIR と共有 (v1 で実績)"
+    },
+    {
+      "signal": "IRQ",
+      "fpga_pin": 85,
+      "fpga_dir": "output",
+      "pico_gpio": 20,
+      "pico_pin": 26,
+      "note": "VBLANK IRQ、CONTROL bit4 で READY。SD の D1 と共有 (10k プルアップ)。FPGA 未コンフィグでは High"
+    },
+    {
+      "signal": "VSYNC",
+      "fpga_pin": 16,
+      "fpga_dir": "output",
+      "pico_gpio": 22,
+      "pico_pin": 29,
+      "jumper": "JP2",
+      "note": "LED1 / LCD YD (LCD_INIT1) と共有"
+    },
+    {
+      "signal": "HEARTBEAT",
+      "fpga_pin": 15,
+      "fpga_dir": "output",
+      "pico_gpio": 7,
+      "pico_pin": 10,
+      "jumper": "JP3",
+      "note": "LED0 / LCD XR (LCD_INIT0) と共有"
+    },
+    {
+      "signal": "RESET",
+      "fpga_pin": 79,
+      "fpga_dir": "input",
+      "pico_gpio": 21,
+      "pico_pin": 27,
+      "pulldown": "4.7k",
+      "note": "WS2812 DIN と共有"
+    }
   ],
-  "gnd_pico_pins": [6, 9, 14, 20, 25, 30, 34, 39],
+  "gnd_pico_pins": [
+    3,
+    8,
+    13,
+    18,
+    23,
+    28,
+    33,
+    38
+  ],
   "reserved": {
-    "pico_hstx_spare": {"17": 11, "18": 12},
-    "pico_avoid": {"6": "PIO-USB D", "7": "PIO-USB D", "47": "PSRAM CS (ヘッダに出ていない)"},
-    "fpga_lcd": [25, 26, 27, 28, 29, 30, 31, 41, 42, 48, 49, 77],
-    "fpga_lcd_init": [15, 16, 17, 18], "_lcd_init_note": "XR/YD/XL/YU。15/16 は HEARTBEAT/VSYNC と共有 (JP3/JP2)、17/18 は使わない",
-    "fpga_i2s": [51, 54, 55, 56],
-    "fpga_avoid": [52, 53, 76]
+    "pico_hstx_spare": {
+      "17": 22,
+      "18": 24,
+      "19": 25
+    },
+    "pico_free": [
+      0,
+      1,
+      2,
+      3,
+      4,
+      5,
+      6,
+      26,
+      27,
+      28
+    ],
+    "pico_avoid": {
+      "47": "PSRAM CS (Pico Plus 2 / Pico LiPo 2。ヘッダに出ていない)"
+    },
+    "fpga_lcd": [
+      25,
+      26,
+      27,
+      28,
+      29,
+      30,
+      31,
+      41,
+      42,
+      48,
+      49,
+      77
+    ],
+    "fpga_lcd_init": [
+      17,
+      18
+    ],
+    "fpga_i2s": [
+      51,
+      54,
+      55,
+      56
+    ],
+    "fpga_avoid": [
+      52,
+      53,
+      76
+    ]
   },
-  "power": {"tang_5v_to_pi_5v": "JP1 + SS14 (ヘッダ 5V が VBUS か VSYS か確認するまで開)", "3v3": "つながない", "gnd": "全部"}
+  "power": {
+    "tang_5v_to_pico_vbus": "JP1 + SS14 (既定は開、USB 2 本)",
+    "3v3": "つながない",
+    "gnd": "全部"
+  }
 }
