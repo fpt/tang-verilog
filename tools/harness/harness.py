@@ -24,8 +24,10 @@ usage: harness.py [--port PORT] <command> [args...]
   fps <file.json> [--frames N]
                             {"setup", "frame"} の frame を N 回くり返して速さを測る (fps、表示フレーム / 描画フレーム、UNDERFLOW)。
                             "frames": [[...], ...] ならフレームごとに順に使う
-  demo [--frames N] [--start K]
-                            M9 のデモ (demo.py) を流す。N フレーム (0 なら Ctrl-C まで)。速さ・表示フレーム / 描画フレーム・UNDERFLOW
+  demo [<scene>] [--frames N] [--start K] [--shot PNG]
+                            M9 のデモ (demo.py) を流す。N フレーム (0 なら Ctrl-C まで)。速さ・表示フレーム / 描画フレーム・UNDERFLOW。
+                            <scene> (logo / tunnel / room / city) なら G5 の 3D の場面 (demo3d.py、make TARGET=gpu3d のビットストリーム)。
+                            --shot で最後のフレームの HDMI キャプチャを PNG に
   scenario <file.json> [--no-capture]
                             シナリオを実機で走らせ、check ごとに FRAME_CRC を参照モデル (gpu_model.py) と比べる
   fb upload [<png>] [--slot N]  320x240 の画像 (省略時はテスト画像) を SDRAM のフレームバッファへ (slot は 1KiB 単位)
@@ -654,10 +656,18 @@ def mulprobe(bridge, iterations):
             "by_sign": stats, "first_errors": first}
 
 
-def demo(bridge, frames, start):
-    """M9 のデモ (demo.py) を流し続ける。フレームは WAIT_VBLANK で区切られるので、間に合っていれば 60 フレーム / 秒"""
-    import demo as demo_mod
+def demo(bridge, frames, start, scene=None, shot=None):
+    """M9 のデモ (demo.py) を流し続ける。フレームは WAIT_VBLANK で区切られるので、間に合っていれば 60 フレーム / 秒。
+    scene があれば G5 の 3D の場面 (demo3d.py)。速さはハーネス v1 の SPI (1 秒に約 45,000 ワード) で決まる"""
     import gpu_model
+    if scene:
+        import demo3d
+
+        class demo_mod:
+            setup_words = staticmethod(lambda: demo3d.setup_words(scene))
+            frame_words = staticmethod(lambda k: demo3d.frame_words(scene, k))
+    else:
+        import demo as demo_mod
     vdp = Vdp(bridge)
     gpu = Gpu(vdp)
     control = vdp.read1(REGS["CONTROL"])
@@ -693,13 +703,24 @@ def demo(bridge, frames, start):
         f = vdp.read1(REGS["FRAME_COUNT"])
         shown += (f - last) & 0xFF
         under = (vdp.read1(REGS["UNDERFLOW"]) - under0) & 0xFF
+        if shot:
+            import fbmodel
+            import imgcmp
+            w, h = 2 * fbmodel.SRC_W, 2 * fbmodel.SRC_H
+            imgcmp.write_png(shot, w, h, imgcmp.capture(w, h))
     finally:
         bridge.command("freq 1000000")
     drawn = k - start
-    return {"ok": under == 0 and not st & (GPU_ST_ERROR | GPU_ST_OVERFLOW) and drawn > 0 and shown <= drawn + 2,
-            "frames": drawn, "words_per_frame": round(words / max(drawn, 1)), "seconds": round(elapsed, 2),
-            "fps": round(drawn / elapsed, 1), "display_frames_per_drawn_frame": round(shown / max(drawn, 1), 2),
-            "underflow": under, "gpu_status": st}
+    # M9 のデモは 60fps で間に合うこと (表示フレーム ≒ 描画フレーム) まで見る。3D の場面はリンクで遅くなるので見ない
+    r = {"ok": under == 0 and not st & (GPU_ST_ERROR | GPU_ST_OVERFLOW) and drawn > 0 and (bool(scene) or shown <= drawn + 2),
+         "frames": drawn, "words_per_frame": round(words / max(drawn, 1)), "seconds": round(elapsed, 2),
+         "fps": round(drawn / elapsed, 1), "display_frames_per_drawn_frame": round(shown / max(drawn, 1), 2),
+         "underflow": under, "gpu_status": st}
+    if scene:
+        r["scene"] = scene
+    if shot:
+        r["shot"] = shot
+    return r
 
 
 AUDIO = {"PCM_RD": 0x50, "UNDERRUN": 0x52}     # audio_out.sv (読み出しだけ)
@@ -861,6 +882,7 @@ def main():
     ap.add_argument("--slot", type=int, default=0, help="fb / fbtest: framebuffer base in 1KiB units")
     ap.add_argument("--frames", type=int, default=120, help="fps / demo: number of frames (demo: 0 = until Ctrl-C)")
     ap.add_argument("--start", type=int, default=0, help="demo: first frame number")
+    ap.add_argument("--shot", help="demo: save an HDMI capture of the last frame to this PNG")
     ap.add_argument("--keep", action="store_true", help="fbtest: leave the framebuffer displayed")
     ap.add_argument("--seconds", type=float, default=10.0, help="audio: how long to play")
     ap.add_argument("--tone", type=float, default=750.0, help="audio: sine frequency in Hz (without --stream its period must divide 2048)")
@@ -890,7 +912,7 @@ def main():
                     ap.error("fps <scenarios/*.json> [--frames N]")
                 result = fps(bridge, a.args[0], a.frames)
             elif a.command == "demo":
-                result = demo(bridge, a.frames, a.start)
+                result = demo(bridge, a.frames, a.start, a.args[0] if a.args else None, a.shot)
             elif a.command == "mulprobe":
                 result = mulprobe(bridge, a.iterations)
             elif a.command == "audio":
