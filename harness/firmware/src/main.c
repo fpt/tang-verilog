@@ -9,6 +9,11 @@
 //   spi <hex>            CS を上げて送受信し、受信を hex で返す (最大 4096 バイト)。ready でなければ何も駆動しない
 //   spib <n>             改行 (\n 1 文字) の直後に n バイトの生データを続けて送る。送るだけで、応答は受信の最初の 1 バイト (同期確認用) だけ。
 //                        大きいデータの書き込み用 (16 進にしないので USB の量が半分、受信も送り返さない)。v2 から
+//   stream <n> <port> <free>
+//                        改行の直後に n バイト (4 の倍数) の生データ。レジスタ <port> (アドレスの進まないポート) に、
+//                        レジスタ <free> (16bit、空きのワード数) を SPI で読んで空いている分ずつ書く。v3 から。
+//                        ホストとの USB の往復なしに流し、SPI は DMA で送るあいだに次の分を USB から受け取る。
+//                        ブリッジはレジスタの意味を知らない (番地はホストが渡す)。応答は 1 回の SPI の数と、空きを待った回数
 //   freq <hz>            SPI の周波数
 //   reset [ms]           RESET を指定時間 High にする (既定 10ms)
 //   irqwait [ms]         IRQ の立ち上がりを待つ (既定 100ms)
@@ -27,10 +32,11 @@
 #include "pico/bootrom.h"
 #include "hardware/gpio.h"
 #include "hardware/spi.h"
+#include "hardware/dma.h"
 #include "pins.h"
 
 #define FW_NAME          "harness-bridge"
-#define FW_VERSION       2
+#define FW_VERSION       3
 #define BRIDGE_SPI       spi0
 #define READY_WINDOW_US  100000u
 #define MAX_SPI_BYTES    4096
@@ -339,6 +345,124 @@ static void cmd_spib(const char *arg) {
     printf("{\"ok\":true,\"n\":%ld,\"rx0\":\"%02x\"}\n", n, rx[0]);
 }
 
+// ---------------------------------------------------------------- stream (v3)
+
+#define STREAM_CHUNK 2048
+#define SYNC_BYTE    0xA5
+
+static void spi_pins_on(void) {
+    gpio_put(PIN_CS, 0);
+    gpio_set_dir(PIN_CS, GPIO_OUT);
+    gpio_set_function(PIN_SCK, GPIO_FUNC_SPI);
+    gpio_set_function(PIN_COPI, GPIO_FUNC_SPI);
+    gpio_set_function(PIN_CIPO, GPIO_FUNC_SPI);
+}
+
+static void spi_pins_off(void) {
+    release(PIN_SCK);
+    release(PIN_COPI);
+    release(PIN_CIPO);
+    release(PIN_CS);
+}
+
+// 受信 FIFO を空にして、あふれの印を消す (DMA で送るだけのとき受信は読まない)
+static void spi_drain(void) {
+    while (spi_is_busy(BRIDGE_SPI)) tight_loop_contents();
+    while (spi_is_readable(BRIDGE_SPI)) (void)spi_get_hw(BRIDGE_SPI)->dr;
+    spi_get_hw(BRIDGE_SPI)->icr = SPI_SSPICR_RORIC_BITS;
+}
+
+// 16bit のレジスタを読む (ピンは spi_pins_on のまま)。同期バイトが違えば -1
+static int spi_read16(uint8_t reg) {
+    uint8_t tx[3] = {(uint8_t)(0x80 | reg), 0, 0}, rx[3];
+    gpio_put(PIN_CS, 1);
+    spi_write_read_blocking(BRIDGE_SPI, tx, rx, 3);
+    gpio_put(PIN_CS, 0);
+    if (rx[0] != SYNC_BYTE) return -1;
+    return rx[1] | rx[2] << 8;
+}
+
+static void cmd_stream(char *arg) {
+    static uint8_t buf[2][STREAM_CHUNK];
+    char *a_port = strtok(NULL, " \t"), *a_free = strtok(NULL, " \t");
+    long n = arg ? atol(arg) : 0;
+    if (n < 4 || n % 4 || !a_port || !a_free) { reply_error("stream: <n (multiple of 4)> <port> <free>"); return; }
+    uint8_t port = (uint8_t)strtol(a_port, NULL, 0), free_reg = (uint8_t)strtol(a_free, NULL, 0);
+    size_t left = (size_t)n, have, off = 0, next = 0;
+    int cur = 0;
+    have = left < STREAM_CHUNK ? left : STREAM_CHUNK;
+    if (!in_bytes(buf[0], have, 2000000)) { reply_error("stream: timeout waiting for data"); return; }
+    if (!fpga_ready()) {
+        // 残りのデータは読み捨てる (次のコマンドの行と混ざらないように)
+        for (size_t rest = left - have; rest; ) {
+            size_t k = rest < STREAM_CHUNK ? rest : STREAM_CHUNK;
+            if (!in_bytes(buf[1], k, 2000000)) break;
+            rest -= k;
+        }
+        n_spi_refused++;
+        reply_error("not ready: HEARTBEAT is not toggling, nothing was driven");
+        return;
+    }
+    int dma = dma_claim_unused_channel(true);
+    dma_channel_config c = dma_channel_get_default_config(dma);
+    channel_config_set_transfer_data_size(&c, DMA_SIZE_8);
+    channel_config_set_dreq(&c, spi_get_dreq(BRIDGE_SPI, true));
+    channel_config_set_read_increment(&c, true);
+    channel_config_set_write_increment(&c, false);
+    spi_pins_on();
+    uint32_t xfers = 0, waits = 0;
+    const char *err = NULL;
+    absolute_time_t until = make_timeout_time_us(2000000);
+    while (left) {
+        // 空きを待つ (読むたびに 2 秒の期限を延ばすのは、空きが増えたときだけ)
+        int fr = spi_read16(free_reg);
+        if (fr < 0) { err = "stream: bad sync byte"; break; }
+        size_t room = (size_t)fr * 4;
+        if (room == 0) {
+            waits++;
+            if (time_reached(until)) { err = "stream: FIFO stays full"; break; }
+            continue;
+        }
+        until = make_timeout_time_us(2000000);
+        size_t k = have - off;
+        if (k > room) k = room;
+        // ポートのアドレスを送ってから、データを DMA で
+        uint8_t hdr = port & 0x7F, rx0;
+        gpio_put(PIN_CS, 1);
+        spi_write_read_blocking(BRIDGE_SPI, &hdr, &rx0, 1);
+        if (rx0 != SYNC_BYTE) { gpio_put(PIN_CS, 0); err = "stream: bad sync byte"; break; }
+        dma_channel_configure(dma, &c, &spi_get_hw(BRIDGE_SPI)->dr, buf[cur] + off, k, true);
+        // 送っているあいだに次の分を USB から
+        if (off + k == have && left > have && next == 0) {
+            next = left - have < STREAM_CHUNK ? left - have : STREAM_CHUNK;
+            if (!in_bytes(buf[cur ^ 1], next, 2000000)) {
+                dma_channel_wait_for_finish_blocking(dma);
+                spi_drain();
+                gpio_put(PIN_CS, 0);
+                err = "stream: timeout waiting for data";
+                break;
+            }
+        }
+        dma_channel_wait_for_finish_blocking(dma);
+        spi_drain();
+        gpio_put(PIN_CS, 0);
+        xfers++;
+        off += k;
+        left -= k;
+        if (off == have && left) {
+            cur ^= 1;
+            have = next;
+            next = 0;
+            off = 0;
+        }
+    }
+    spi_pins_off();
+    dma_channel_unclaim(dma);
+    if (err) { reply_error(err); return; }
+    n_spi_ok += xfers;
+    printf("{\"ok\":true,\"n\":%ld,\"xfers\":%lu,\"waits\":%lu}\n", n, (unsigned long)xfers, (unsigned long)waits);
+}
+
 static void handle(char *line) {
     char *cmd = strtok(line, " \t");
     char *arg = strtok(NULL, " \t");
@@ -350,6 +474,8 @@ static void handle(char *line) {
         cmd_status();
     } else if (!strcmp(cmd, "spib")) {
         cmd_spib(arg);
+    } else if (!strcmp(cmd, "stream")) {
+        cmd_stream(arg);
     } else if (!strcmp(cmd, "spi")) {
         cmd_spi(arg ? arg : "");
     } else if (!strcmp(cmd, "freq")) {
