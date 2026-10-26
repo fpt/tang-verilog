@@ -53,6 +53,7 @@ rtl/vdp/gpu.sv と同じ規則でコマンドを解釈し、表示される面�
       {"op": "set_tex", "base": 655360, "fmt": "16", "w": 64, "h": 64, "clut": 0}   # 今のテクスチャ (fmt "16" / "8" / "4")。TRI に "uv": [[u, v], ...] (テクセル)
       {"op": "clut", "index": 0, "colors": ["#rrggbb", ...]}   # CLUT (256 色、8 / 4bpp のテクスチャの色)
       {"op": "demo_setup"}, {"op": "demo_frame", "frame": 120, "mark": true}   # M9 のデモ (demo.py) のコマンド
+      {"op": "demo3d_setup", "scene": "tunnel"}, {"op": "demo3d_frame", "scene": "tunnel", "frame": 60}   # G5 の 3D の場面 (demo3d.py)
       {"op": "md_frame", "variant": 0, "mark": true}   # メガドラの形式の決まったフレーム (md.py) を直したもの。印付きの 1 フレーム
   ]}
 タイル レイヤの形式は rtl/vdp/tile_layer.sv、スプライト (OAM) は rtl/vdp/sprite_layer.sv。VRAM・パレット・OAM は、
@@ -246,6 +247,12 @@ def encode(step):
     if op == "demo_frame":
         import demo
         return demo.frame_words(step["frame"], step.get("mark", False))
+    if op == "demo3d_setup":
+        import demo3d
+        return demo3d.setup_words(step["scene"])
+    if op == "demo3d_frame":
+        import demo3d
+        return demo3d.frame_words(step["scene"], step["frame"])
     if op in ("check", "check_marked"):
         return []
     raise ValueError(f"unknown op {op!r}")

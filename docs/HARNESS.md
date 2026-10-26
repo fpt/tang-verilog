@@ -430,6 +430,7 @@ python3 tools/harness/harness.py prog hdmi       # make prog TARGET=hdmi (pinche
 | `scenario <scenarios/*.json> [--no-capture]` | シナリオを GPU に送り、check ごとに `FRAME_CRC` (とキャプチャ) を参照モデル (`gpu_model.py`) と比べる。`check_marked` は印を付けたフレームの `MARK_CRC` を比べる (キャプチャなし)。Verilator 側は `make scenario`。キャプチャは 95% 以上で合格 (正しさは CRC で決める) |
 | `fps <file.json> [--frames N]` | `{"setup", "frame"}` の frame (`SWAP` か `WAIT_VBLANK` で区切る) を N 回くり返し、fps・表示フレーム / 描画フレーム・`UNDERFLOW` を測る。`"frames": [[...], ...]` ならフレームごとに順に使う (`e7_fps` の回る道路) |
 | `audio [--seconds S] [--tone HZ] [--stream]` | 音 (K5a): 正弦波を PCM のリングに流し、`PCM_RD` / `PCM_WR` で先回りを保ちながら、アンダーラン 0 と 48kHz を確かめる。既定はリングに 1 回書いて `PCM_WR` を進めるだけ (音の周期がリングを割り切る 750Hz など)。`--stream` は毎回 `UPLOAD` するが、192KB/s 要り、このハーネス (約 180KB/s) では途切れる |
+| `demo [<scene>] [--frames N] [--start K] [--shot PNG]` | M9 のデモ (`demo.py`) を流す。`<scene>` (`logo` / `tunnel` / `room` / `city`) なら G5 の 3D の場面 (`demo3d.py`、3D のビットストリーム)。`--shot` で最後のフレームのキャプチャを保存 |
 | `mulprobe [--iterations N]` | 3D GPU のビットストリーム (`make TARGET=gpu3d`) の乗算器 (`mul_probe`) を、符号の組み合わせごとに端の値と乱数で確かめる (符号付きの DSP と、符号なし + 補正) |
 | `fbtest [<png>] [--slot N] [--keep] [--no-capture]` | アップロードして表示し、`FRAME_CRC`・`UNDERFLOW`・キャプチャを参照モデル (`fbmodel.py`) と比べる |
 | `prog <target>` | `make prog TARGET=<target>` |
