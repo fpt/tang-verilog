@@ -44,6 +44,7 @@ rtl/vdp/gpu.sv と同じ規則でコマンドを解釈し、表示される面�
                                                  # order: 0 列優先、1 16 タイル幅の表、2 行優先。bank: スプライトごとのバンク (spr_bank bit3 のとき)
       {"op": "tri", "v": [[x, y], [x, y], [x, y]], "color": "#rrggbb"}   # 三角形 (3D GPU、raster.py)。座標はピクセル (小数可、1/16 に丸める)。
                                                  # "rgb": ["#..", "#..", "#.."] で Gouraud、"z": [z0, z1, z2] で Z テスト / 書き込み
+                                                 # "blend": "avg" / "add" / "sub" / "quarter" で半透明 (G4。Z はテストするが書かない)
       {"op": "clear_z", "value": 65535}         # Z バッファ (Z_BASE、320 x 240 x 16bit) を塗る
       {"op": "begin_scene", "color": "#rrggbb", "clear_z": true, "write_z": false}   # TBDR のシーン (G2)。color があれば描く面を
                                                  # その色から、clear_z なら Z を 0xFFFF から (なければ今の面と Z_BASE を読む)。write_z で Z を書き戻す
@@ -251,11 +252,14 @@ def encode(step):
 
 
 def tri_words(step):
-    """TRI のワード列: [0x20 | flags | 単色 565]、頂点ごとに {y, x} (12.4)、Gouraud なら {r, g, b}、Z なら {z}、テクスチャなら {v, u} (10.6)"""
+    """TRI のワード列: [0x20 | flags | 単色 565]、頂点ごとに {y, x} (12.4)、Gouraud なら {r, g, b}、Z なら {z}、テクスチャなら {v, u} (10.6)。
+    "blend" があれば半透明 (flags bit2 と [5:4] の式)"""
     import raster
     gouraud, zs, uv = "rgb" in step, step.get("z"), step.get("uv")
     flags = ((raster.FLAG_GOURAUD if gouraud else 0) | (raster.FLAG_Z if zs is not None else 0)
              | (raster.FLAG_TEX if uv is not None else 0))
+    if "blend" in step:                     # 半透明: "avg" / "add" / "sub" / "quarter" (raster.blend)
+        flags |= raster.FLAG_SEMI | ["avg", "add", "sub", "quarter"].index(step["blend"]) << 4
     words = [OP_TRI << 24 | flags << 16 | (color565(step["color"]) if "color" in step else 0)]
     for k, (x, y) in enumerate(step["v"]):
         xi, yi = int(round(x * 16)), int(round(y * 16))
@@ -891,7 +895,10 @@ class Model:
             if flags & raster.FLAG_Z:
                 if not z < zget(x, y):
                     continue
-                zset(x, y, z)
+                if not flags & raster.FLAG_SEMI:
+                    zset(x, y, z)
+            if flags & raster.FLAG_SEMI:
+                c = raster.blend((flags >> 4) & 3, self.get565(self.draw_base, x, y), c)
             self.put565(self.draw_base, x, y, c)
 
     def tex_read(self, a):
@@ -899,6 +906,12 @@ class Model:
         if w is None:
             raise ValueError(f"texture reads unwritten SDRAM word {a:#x}")
         return w
+
+    def get565(self, base, x, y):
+        a = (base + y) * 256 + x // 2
+        if a not in self.mem:
+            raise ValueError(f"semi-transparent TRI reads unwritten pixel ({x},{y})")
+        return self.mem[a] >> 16 if x % 2 else self.mem[a] & 0xFFFF
 
     def put565(self, base, x, y, c):
         a = (base + y) * 256 + x // 2

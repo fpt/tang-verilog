@@ -25,6 +25,9 @@
     base はテクスチャのワード数 (2 ^ (幅の log2 + 高さの log2 - s)) の倍数にする (足し算でなく OR で作るため)
     色 0 (RGB565 の 0x0000) のテクセルは透明 (色も Z も書かない)。Gouraud なら頂点の色で変調する (PS1 と同じく 128 = 1 倍):
     R = min(31, (texR * r) >> 7)、G = min(63, (texG * g) >> 7)、B = min(31, (texB * b) >> 7)。Gouraud でなければテクセルの色そのまま
+  半透明 (flags bit2、G4): 描く色 F (テクスチャ・変調のあと) を描く面の色 B と RGB565 の成分ごとに混ぜる。式は flags [5:4] (PS1 と同じ 4 つ):
+    0 平均 (B + F) >> 1、1 加算 min(最大, B + F)、2 減算 max(0, B - F)、3 1/4 加算 min(最大, B + (F >> 2))
+    Z (bit3) があれば Z テストはするが、Z は書かない。透明のテクセル (色 0) は半透明でも描かない
 """
 
 F = 12
@@ -128,6 +131,23 @@ def pixels(rec):
             a = [wrap32(v + gx) for v, (_, gx, _) in zip(a, rec["attrs"])]
         er = [v + sy for v, (_, _, sy) in zip(er, rec["edges"])]
         ar = [wrap32(v + gy) for v, (_, _, gy) in zip(ar, rec["attrs"])]
+
+
+def blend(mode, b, f):
+    """半透明: 描く面の色 b と描く色 f (どちらも RGB565) を成分ごとに混ぜる。mode は flags [5:4]"""
+    out = 0
+    for sh, mx in ((11, 31), (5, 63), (0, 31)):
+        bc, fc = (b >> sh) & mx, (f >> sh) & mx
+        if mode == 0:
+            c = (bc + fc) >> 1
+        elif mode == 1:
+            c = min(mx, bc + fc)
+        elif mode == 2:
+            c = max(0, bc - fc)
+        else:
+            c = min(mx, bc + (fc >> 2))
+        out |= c << sh
+    return out
 
 
 def to565(rgb):
