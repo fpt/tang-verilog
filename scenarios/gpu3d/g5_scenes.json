@@ -1,0 +1,67 @@
+{
+ "name": "g5_scenes",
+ "description": "G5: 3D の場面 (demo3d.py): ロゴ (Z、環境マップ、加算)、トンネル (近い面のクリップ、霧、加算の輪)、映り込む玉の部屋 (床の下に写して平均で重ねる、減算の影)、夜の街 (奥から手前、街灯)",
+ "steps": [
+  {
+   "op": "demo3d_setup",
+   "scene": "logo"
+  },
+  {
+   "op": "demo3d_frame",
+   "scene": "logo",
+   "frame": 40
+  },
+  {
+   "op": "check",
+   "capture_min": 0.85
+  },
+  {
+   "op": "demo3d_frame",
+   "scene": "logo",
+   "frame": 150
+  },
+  {
+   "op": "check",
+   "capture_min": 0.85
+  },
+  {
+   "op": "demo3d_setup",
+   "scene": "tunnel"
+  },
+  {
+   "op": "demo3d_frame",
+   "scene": "tunnel",
+   "frame": 300
+  },
+  {
+   "op": "check",
+   "capture_min": 0.85
+  },
+  {
+   "op": "demo3d_setup",
+   "scene": "room"
+  },
+  {
+   "op": "demo3d_frame",
+   "scene": "room",
+   "frame": 120
+  },
+  {
+   "op": "check",
+   "capture_min": 0.85
+  },
+  {
+   "op": "demo3d_setup",
+   "scene": "city"
+  },
+  {
+   "op": "demo3d_frame",
+   "scene": "city",
+   "frame": 200
+  },
+  {
+   "op": "check",
+   "capture_min": 0.85
+  }
+ ]
+}
