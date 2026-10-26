@@ -410,6 +410,7 @@ python3 tools/harness/harness.py prog hdmi       # make prog TARGET=hdmi (pinche
 | `status` | 全ハーネスピンの値、HEARTBEAT / VSYNC / IRQ の周期と最後のエッジからの時間、ready、SPI の周波数と回数 |
 | `spi <hex>` | CS を上げて送受信し、受信を hex で返す (最大 4096 バイト)。ready でなければ何も駆動しない |
 | `spib <n>` | 改行 (`\n` 1 文字) の直後に n バイトの生データを続ける書き込み専用の版 (v2 から)。応答は受信の最初の 1 バイト (同期バイト) だけ。ホストツールは書き込みに自動で使う |
+| `stream <n> <port> <free>` | 改行の直後に n バイト (4 の倍数) の生データ (v3 から)。ブリッジがレジスタ `<free>` (16bit、空きのワード数) を SPI で読み、空いている分ずつ `<port>` (アドレスの進まないポート) に書く。USB の往復は 1 回、SPI は DMA で送るあいだに次の 2KB を受け取る。番地はホストが渡す (ブリッジは意味を知らない)。ホストツールは GPU のコマンドに自動で使う |
 | `freq <hz>` | SPI の周波数 (既定 1MHz) |
 | `reset [ms]` | RESET を指定時間 High にする (FPGA が止まったときの復旧用なので ready は見ない) |
 | `irqwait [ms]` | IRQ の立ち上がりを待つ |
@@ -441,6 +442,9 @@ python3 tools/harness/harness.py prog hdmi       # make prog TARGET=hdmi (pinche
 - ブリッジは自分からは何も駆動しない (コマンドを受けたときだけ)
 - v2 (M5 のあと): USB の入力を 1 文字ずつではなくまとめて読み、書き込みは `spib` (生データ、受信を送り返さない) にした。
   2KiB の書き込みが 62ms → 9.6ms、320x240 の画像のアップロードが 4.8 秒 → 0.9 秒。ホストツールは `ping` の版を見て、v1 なら `spi` を使う
+- v3 (G5 のあと): `stream` を足し、USB CDC の受け取りの 1 回の転送を 512 バイトに、USB のタスクを 100us ごとにした
+  (既定の 64 バイト / 1ms が律速だった)。GPU へのコマンドの流し込みが 206KB/s → 764KB/s (SPI 8MHz でも 10.4MHz でも同じで、USB のフルスピードの CDC が律速)。
+  ブリッジが `GPU_FREE` を SPI で読みながら流すので、ホストは `GPU_FREE` を読みに行かない
 - macOS 26 では `cp` で `RPI-RP2` にコピーすると固まることがあったので、Finder でドラッグするのが確実 (`make harness-deploy` は Linux 向け)
 - ハーネスのピンを使わない設計 (今の HDMI など) では、FPGA の未使用ピンの弱いプルアップが RP2 のプルダウンに勝ち、全部 High に読める。弱いプル同士なので衝突ではない
 
