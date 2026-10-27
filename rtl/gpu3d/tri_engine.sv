@@ -72,16 +72,17 @@ module tri_engine (
 
     // ---- セットアップ ----
     logic             su_start, su_done;
-    logic [2:0][31:0] su_e;
+    logic [4:0]       rec_ra;                        // tri_setup のレコードの RAM の読む番号 (rec_q は次のクロック)
+    logic [31:0]      rec_q;
     logic [2:0][20:0] su_ex, su_ey;
-    logic [5:0][31:0] su_s, su_gx, su_gy;
+
     tri_setup u_setup (
         .clk, .rst, .start(su_start),
         .x0(vx[0]), .y0(vy[0]), .x1(vx[1]), .y1(vy[1]), .x2(vx[2]), .y2(vy[2]),
         .c0(vc[0]), .c1(vc[1]), .c2(vc[2]), .z0(vz[0]), .z1(vz[1]), .z2(vz[2]), .t0(vt[0]), .t1(vt[1]), .t2(vt[2]),
         .cx0, .cx1, .cy0, .cy1,
         .done(su_done), .empty,
-        .bx0, .bx1, .by0, .by1, .e(su_e), .ex(su_ex), .ey(su_ey), .s(su_s), .gx(su_gx), .gy(su_gy)
+        .bx0, .bx1, .by0, .by1, .ex(su_ex), .ey(su_ey), .rec_ra, .rec_q
     );
 
     typedef enum logic [2:0] {E_IDLE, E_SETUP, E_BREC, E_BCNT, E_BCNT2, E_BAPP, E_BCLR} state_t;
@@ -109,46 +110,29 @@ module tri_engine (
         cnt_wd   <= (state == E_BCLR) ? 11'd0 : cnt_q + 11'd1;
         if (cnt_wv) cnt[cnt_wa] <= cnt_wd;
     end
-    // レコードのワード (ridx 番目)。テクスチャの設定は go のときのもの
+    // レコードのワード (ridx 番目)。テクスチャの設定は go のときのもの。3..5、12..29 (辺の値、属性の値と増分) は tri_setup の RAM (rec) から:
+    // 番号は mem_wnext で進む前に次の番号を出しておく (rec_q がいつも rec[ridx] になる)
     logic [31:0] rec_w;
     logic [17:0] tex_cfg_q;
     logic [20:0] tex_base_q;
     always_comb begin
+        rec_w = rec_q;
         unique case (ridx)
             5'd0:  rec_w = {rflags, 8'd0, flat};
             5'd1:  rec_w = {7'd0, bx1, 7'd0, bx0};
             5'd2:  rec_w = {8'd0, by1, 8'd0, by0};
-            5'd3:  rec_w = su_e[0];
-            5'd4:  rec_w = su_e[1];
-            5'd5:  rec_w = su_e[2];
             5'd6:  rec_w = 32'(signed'(su_ex[0]));
             5'd7:  rec_w = 32'(signed'(su_ex[1]));
             5'd8:  rec_w = 32'(signed'(su_ex[2]));
             5'd9:  rec_w = 32'(signed'(su_ey[0]));
             5'd10: rec_w = 32'(signed'(su_ey[1]));
             5'd11: rec_w = 32'(signed'(su_ey[2]));
-            5'd12: rec_w = su_s[0];
-            5'd13: rec_w = su_s[1];
-            5'd14: rec_w = su_s[2];
-            5'd15: rec_w = su_s[3];
-            5'd16: rec_w = su_s[4];
-            5'd17: rec_w = su_s[5];
-            5'd18: rec_w = su_gx[0];
-            5'd19: rec_w = su_gx[1];
-            5'd20: rec_w = su_gx[2];
-            5'd21: rec_w = su_gx[3];
-            5'd22: rec_w = su_gx[4];
-            5'd23: rec_w = su_gx[5];
-            5'd24: rec_w = su_gy[0];
-            5'd25: rec_w = su_gy[1];
-            5'd26: rec_w = su_gy[2];
-            5'd27: rec_w = su_gy[3];
-            5'd28: rec_w = su_gy[4];
-            5'd29: rec_w = su_gy[5];
             5'd30: rec_w = {14'd0, tex_cfg_q};
-            default: rec_w = {11'd0, tex_base_q};
+            5'd31: rec_w = {11'd0, tex_base_q};
+            default: ;
         endcase
     end
+    assign rec_ra    = 5'(ridx + 5'((state == E_BREC && mem_req && mem_wnext) ? 1 : 0));
     assign mem_we    = 1'b1;
     assign mem_wmask = 4'hF;
     assign mem_wdata = (state == E_BREC) ? rec_w : {19'd0, n_tris};

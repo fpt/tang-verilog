@@ -16,10 +16,23 @@ module tb_tri_setup;
     logic [7:0]  cy0 = 0, cy1 = 239;
     logic [8:0]  bx0, bx1;
     logic [7:0]  by0, by1;
-    logic [2:0][31:0] e;
     logic [2:0][20:0] ex, ey;
-    logic [5:0][31:0] s, gx, gy;
+    logic [4:0]  rec_ra = '0;
+    logic [31:0] rec_q;
     tri_setup dut (.*);
+    // 結果はレコードの RAM から読む (3..5 e、12..17 s、18..23 gx、24..29 gy。rec_q は rec_ra の次のクロック)
+    logic [2:0][31:0] e;
+    logic [5:0][31:0] s, gx, gy;
+    task automatic read_rec;
+        for (int a = 0; a < 32; a++) begin
+            @(negedge clk) rec_ra = 5'(a);
+            @(negedge clk);
+            if (a >= 3 && a < 6)        e[a - 3]   = rec_q;
+            else if (a >= 12 && a < 18) s[a - 12]  = rec_q;
+            else if (a >= 18 && a < 24) gx[a - 18] = rec_q;
+            else if (a >= 24 && a < 30) gy[a - 24] = rec_q;
+        end
+    endtask
 
     // ---------------------------------------------------------------- 参照 (raster.py の setup)
     longint rx [0:2], ry [0:2], ra [0:5][0:2];
@@ -109,6 +122,7 @@ module tb_tri_setup;
         while (!done) begin @(negedge clk); cyc++; end
         if (cyc > max_cyc) max_cyc = cyc;
         tris++;
+        if (!empty) read_rec();
         if (empty !== r_empty) begin
             if (errors < 10) $display("  (%0d,%0d)(%0d,%0d)(%0d,%0d): empty %b, expected %b", ax, ay, bx, by, qx, qy, empty, r_empty);
             errors++;

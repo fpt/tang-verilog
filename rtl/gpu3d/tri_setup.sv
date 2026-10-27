@@ -4,9 +4,12 @@
 //   出力 (done のクロックから次の start まで保持):
 //     empty      描くものがない (面積 0、外接矩形とクリップ矩形が重ならない)
 //     bx0..by1   走査する外接矩形 (ピクセル、両端を含む)
-//     e[i]       辺 i の関数の、外接矩形の左上のピクセルの中心での値 (上左の規則の -1 込み)。中は全部 >= 0
 //     ex[i], ey[i]  辺 i の関数の、1 ピクセル右 / 1 行下での増分
-//     s[k], gx[k], gy[k]  属性 k (0 r, 1 g, 2 b, 3 z, 4 u, 5 v) の左上での値と、1 ピクセル右 / 1 行下での増分 (固定小数点 12bit)
+//     レコードの RAM (rec、tri_engine のレコードと同じ番号の 32 ワード。rec_ra を入れると次のクロックに rec_q。start から done までは読めない):
+//       3..5    e[i]   辺 i の関数の、外接矩形の左上のピクセルの中心での値 (上左の規則の -1 込み)。中は全部 >= 0
+//       12..17  s[k]   属性 k (0 r, 1 g, 2 b, 3 z, 4 u, 5 v) の左上での値 (固定小数点 12bit)
+//       18..23  gx[k]  1 ピクセル右での増分、24..29 gy[k] 1 行下での増分
+//       (G5: 結果を FF に置いていたのを BSRAM (SDP、nextpnr がタイミングを全部見る) に。DFF 約 670 と 32 ワードの選択がなくなる)
 //   計算: 乗算は smul36x18 (符号なしの DSP + 符号の補正) を 2 クロックに 1 つ。順番は
 //     面積 (2) → 向きを揃える (負なら v1 と v2 を入れ替える) → 外接矩形 → 辺の値 (6) と属性の分子 Nx, Ny (24)、並行して
 //     面積の逆数の仮数 m (17 回の引き戻し除算) → 増分 gx, gy (12、(N * m) >> n を 32bit で飽和) → 左上の値 s (12)
@@ -25,9 +28,9 @@ module tri_setup (
     output logic        empty,
     output logic [8:0]  bx0, bx1,
     output logic [7:0]  by0, by1,
-    output logic [2:0][31:0] e,
+    input  logic [4:0]  rec_ra,
     output logic [2:0][20:0] ex, ey,
-    output logic [5:0][31:0] s, gx, gy
+    output logic [31:0] rec_q
 );
     // ---- 頂点 (向きを揃えたあと) ----
     // 入力は start から done まで変わらない (tri_engine が保持する) ので写さない。向きを揃える入れ替えは sw で選ぶ
@@ -183,8 +186,9 @@ module tri_setup (
                 // T = gx (sx - x0) + gy (sy - y0)
                 m_in_v = 1'b1;
                 j = int'(k) / 2;
-                if (!k[0]) begin m_a = 36'(signed'(gx[j])); m_b = 18'(17'(sx) - 17'(vx[0])); m_in_tag = {1'b1, 1'b0, 6'(D_T + j)}; end
-                else       begin m_a = 36'(signed'(gy[j])); m_b = 18'(17'(sy) - 17'(vy[0])); m_in_tag = {1'b0, 1'b0, 6'(D_T + j)}; end
+                m_a = 36'(signed'(rec_q));               // gx[j] / gy[j] (前のクロックに rec から読んである)
+                if (!k[0]) begin m_b = 18'(17'(sx) - 17'(vx[0])); m_in_tag = {1'b1, 1'b0, 6'(D_T + j)}; end
+                else       begin m_b = 18'(17'(sy) - 17'(vy[0])); m_in_tag = {1'b0, 1'b0, 6'(D_T + j)}; end
             end
             default: ;
         endcase
@@ -216,6 +220,32 @@ module tri_setup (
     end
     logic [2:0]         pend;                        // 乗算器の中にある数 (0..3)
 
+    // 乗算の結果: val = (最初なら初期値、でなければ acc) ± 積。置き場所に val (増分は (積 >>> n) を飽和、左上の値は
+    // sat32((a0 << 12) + (T >>> 4))) を入れる。加算器は 1 つ
+    logic signed [53:0] r_base, r_val;
+    logic               rw_v;                        // rec に書く
+    logic [4:0]         rw_a;
+    logic [31:0]        rw_d;
+    always_comb begin
+        r_base = r_first ? ((r_dest >= D_E && r_dest < D_NX && bias[2'(ri)]) ? -54'sd1 : 54'sd0) : acc;
+        r_val  = r_neg ? r_base - m_p : r_base + m_p;
+        rw_v   = m_out_v && ((r_dest >= D_E && r_dest < D_NX) || r_dest >= D_GX);
+        if (r_dest < D_NX)      begin rw_a = 5'(3 + int'(ri));  rw_d = 32'(r_val); end
+        else if (r_dest < D_GY) begin rw_a = 5'(18 + int'(ri)); rw_d = shsat(m_p, nb); end
+        else if (r_dest < D_T)  begin rw_a = 5'(24 + int'(ri)); rw_d = shsat(m_p, nb); end
+        else                    begin rw_a = 5'(12 + int'(ri)); rw_d = sat32(signed'(54'({va[ri][0], 12'd0})) + (r_val >>> 4)); end
+    end
+
+    // レコードの RAM。読む番号は、動いているあいだは S_OPS3 の乗算の a (k の gx / gy。k は乗算を出したクロックに進むので、
+    // 次の乗算の値を前のクロックに読める。S_DRAIN のあいだは k = 0)、止まっているときは tri_engine の rec_ra
+    logic [31:0] rec [0:31];
+    logic [4:0]  rec_rd;
+    assign rec_rd = (state == S_IDLE) ? rec_ra : (k[0] ? 5'(24 + int'(k[3:1])) : 5'(18 + int'(k[3:1])));
+    always_ff @(posedge clk) begin
+        if (rw_v) rec[rw_a] <= rw_d;
+        rec_q <= rec[rec_rd];
+    end
+
     always_ff @(posedge clk) begin
         if (rst) begin
             state <= S_IDLE;
@@ -231,17 +261,11 @@ module tri_setup (
             // 乗算の結果: val = (最初なら初期値、でなければ acc) ± 積。置き場所に val (増分は (積 >>> n) を飽和、左上の値は
             // sat32((a0 << 12) + (T >>> 4))) を入れる。加算器は 1 つ
             if (m_out_v) begin
-                logic signed [53:0] base, val;
-                base = r_first ? ((r_dest >= D_E && r_dest < D_NX && bias[2'(ri)]) ? -54'sd1 : 54'sd0) : acc;
-                val  = r_neg ? base - m_p : base + m_p;
-                acc <= val;
-                if (r_dest == D_AREA)   area       <= 32'(val);
-                else if (r_dest < D_NX) e[2'(ri)]  <= 32'(val);
-                else if (r_dest < D_NY) nx[ri]     <= 36'(val);
-                else if (r_dest < D_GX) ny[ri]     <= 36'(val);
-                else if (r_dest < D_GY) gx[ri]     <= shsat(m_p, nb);
-                else if (r_dest < D_T)  gy[ri]     <= shsat(m_p, nb);
-                else                    s[ri]      <= sat32(signed'(54'({va[ri][0], 12'd0})) + (val >>> 4));
+                acc <= r_val;
+                if (r_dest == D_AREA)   area       <= 32'(r_val);
+                else if (r_dest >= D_NX && r_dest < D_NY) nx[ri] <= 36'(r_val);
+                else if (r_dest >= D_NY && r_dest < D_GX) ny[ri] <= 36'(r_val);
+                // e, gx, gy, s は rec へ (下)
             end
 
             // 面積の逆数 (S_BBOX で始める)
@@ -331,6 +355,7 @@ module tri_setup (
                 S_OPS1, S_OPS2, S_OPS3: if (!ph) begin
                     k <= k + 5'd1;
                     if (k == k_last) begin
+                        k <= '0;                         // S_DRAIN のあいだ k = 0 (S_OPS3 の最初の乗算の gx[0] を rec から読んでおく)
                         // (Icarus Verilog は enum の三項演算子の代入を受け付けないので if で書く)
                         if (state == S_OPS1)      after_drain <= S_OPS2;
                         else if (state == S_OPS2) after_drain <= S_OPS3;
