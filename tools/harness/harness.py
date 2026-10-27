@@ -87,7 +87,7 @@ GPU_ST_BUSY, GPU_ST_ERROR, GPU_ST_OVERFLOW = 0x01, 0x02, 0x04
 CAPTURE_OK = 0.95      # scenario のキャプチャの合格線 (正しさは FRAME_CRC で決める)
 SPI_MAX_DATA = 4092    # ブリッジの spi は 1 回 4096 バイトまで (先頭のアドレス 1 バイトを除き、4 の倍数)
 MEM_CMD_BIST, MEM_CMD_READ, MEM_CMD_WRITE = 1, 2, 3
-MEM_ST_INIT, MEM_ST_BUSY, MEM_ST_DONE, MEM_ST_PASS = 0x01, 0x02, 0x04, 0x08
+MEM_ST_INIT, MEM_ST_BUSY, MEM_ST_DONE, MEM_ST_PASS, MEM_ST_NO_BIST = 0x01, 0x02, 0x04, 0x08, 0x10
 REGS.update({f"MEM_{k}": v for k, v in MEM.items()})
 VDP_ID = 0x5A
 SYNC_BYTE = 0xA5            # spi_slave が 1 バイト目に返す値
@@ -269,6 +269,8 @@ def memtest(bridge, size, samples, seed, phases=None):
     st = vdp.read1(MEM["STATUS"])
     if not st & MEM_ST_INIT:
         return {"ok": False, "error": "SDRAM not initialized", "status": st}
+    if st & MEM_ST_NO_BIST:
+        return {"ok": False, "error": "this bitstream has no SDRAM BIST (3D GPU: use the VDP bitstream)", "status": st}
     cfg = vdp.read1(MEM["CFG"])     # 終わったら元に戻す (表示も同じ設定を使うので)
     clk = vdp.read1(MEM["CLK"])
 
@@ -395,16 +397,20 @@ def selftest(bridge, iterations):
         # SDRAM: 今の取り込み位置で、位相を何段ずらしても読めるか (前後の余裕)。毎回記録する
         vdp = Vdp(bridge)
         cfg, phase = vdp.read1(MEM["CFG"]), vdp.read1(MEM["CLK"])
-        r = memtest(bridge, 16, [cfg], 0x3C, list(range(16)))
-        ok_phases = {int(p) for p, hs in r["eye"].items() if cfg in hs}
-        early = late = 0
-        while (phase - early - 1) % 16 in ok_phases and early < 8:
-            early += 1
-        while (phase + late + 1) % 16 in ok_phases and late < 8:
-            late += 1
-        item("SDRAM phase margin >= 2 steps each side", phase in ok_phases and early >= 2 and late >= 2,
-             rd_sample=cfg, phase=phase, margin_early=early, margin_late=late,
-             passing_phases=sorted(ok_phases))
+        if vdp.read1(MEM["STATUS"]) & MEM_ST_NO_BIST:
+            # 3D GPU のビットストリームには BIST がない (sdram_ctrl と設定は VDP と同じなので、余裕は VDP のビットストリームで見る)
+            item("SDRAM phase margin >= 2 steps each side", True, skipped="no BIST in this bitstream", rd_sample=cfg, phase=phase)
+        else:
+            r = memtest(bridge, 16, [cfg], 0x3C, list(range(16)))
+            ok_phases = {int(p) for p, hs in r["eye"].items() if cfg in hs}
+            early = late = 0
+            while (phase - early - 1) % 16 in ok_phases and early < 8:
+                early += 1
+            while (phase + late + 1) % 16 in ok_phases and late < 8:
+                late += 1
+            item("SDRAM phase margin >= 2 steps each side", phase in ok_phases and early >= 2 and late >= 2,
+                 rd_sample=cfg, phase=phase, margin_early=early, margin_late=late,
+                 passing_phases=sorted(ok_phases))
 
         # READY の線 (IRQ ピンを READY にする): FIFO が空なら High、GPU を WAIT_LINE で 2 フレームほど止めて
         # FIFO を半分以上 (深さの 6 割。VDP は 512、3D は 2,048 ワード) 埋めると Low、空になると High に戻る

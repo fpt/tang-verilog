@@ -27,6 +27,8 @@ VIDEO_MODE := 0
 RENDER_DIR := build/render
 TOP_PARAMS := -G GPU3D=1 $(if $(filter 1,$(MUL_PROBE)),-G MUL_PROBE=1)
 OUT_DIR    := build/gpu3d
+# 真のデュアルポートの BSRAM の番地が FF から直接でなければ止める (scripts/bsram_check.py)
+BSRAM_STRICT := 1
 else ifeq ($(strip $(TARGET)),lcd)
 TOP        := top_lcd
 CST        := constraints/tangnano20k_lcd.cst
@@ -196,6 +198,8 @@ $(OUT_DIR)/$(TOP).json: $(SYN_SRC) $(GOWIN_BB)
 	$(FPGA) yosys -m slang -q -l $(OUT_DIR)/$(TOP)_yosys.log \
 		-p "read_slang --top $(TOP) $(TOP_PARAMS) $(SYN_SRC) $(GOWIN_BB); synth_gowin -family gw2a -nolutram -top $(TOP) -json $@"
 	$(FPGA) python3 scripts/fix_netlist.py $@ $(TOP)
+	@# 真のデュアルポートの BSRAM の番地に論理が挟まっていないか (nextpnr はそのタイミングを見ない)。3D は止める、ほかは報告だけ
+	$(FPGA) python3 scripts/bsram_check.py $@ $(if $(BSRAM_STRICT),,|| true)
 
 $(OUT_DIR)/$(TOP)_pnr.json: $(OUT_DIR)/$(TOP).json $(CST)
 	$(FPGA) nextpnr-himbaechel -q -l $(OUT_DIR)/$(TOP)_nextpnr.log \

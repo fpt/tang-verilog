@@ -696,6 +696,8 @@ GPU は 63MHz。書き込みは 1 行の中で 64 ワードずつのバースト
 Mode 7・音はなく、表示は RGB565 のビットマップ (背景色と透過色込み) だけ。2D のコマンドは RGB565 の `CLEAR` `FILL_RECT` `POINT` `DRAW_LINE` `UPLOAD`
 と `REG_WRITE` 0〜2 などが使える (G3 から 8bpp で描くこと、`BLIT`、`BLIT4`、`STRETCH_BLIT` はない。エラーが立つ。画像はテクスチャの四角形で描く)。
 `VERSION` (0x7F) は `0x81` (bit7 が 3D GPU の印)。0x50..0x5F は乗算器の確かめ (`harness.py mulprobe`)。
+コマンド FIFO は **2,048 ワード** (VDP は 512。`GPU_FREE` で見る)。SDRAM の BIST (`MEM_CMD` 1) はなく、`MEM_STATUS` bit4 が 1
+(1 ワードの読み書き `MEM_CMD` 2 / 3、取り込み位置、位相のレジスタはある)。
 
 ### コマンド
 
