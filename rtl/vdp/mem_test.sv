@@ -7,7 +7,7 @@
 //                          (実機でバースト読み出しが正しく読めるのは 5 だけ。1 ワードずつなら 5..7 で読めるが、6, 7 は浮いたバスが
 //                          値を保っているだけで、次のワードがすぐ続くバーストでは崩れる。M4 で判明)
 //   0x12 MEM_STATUS     R  bit0: SDRAM 初期化完了, bit1: 実行中 (アップロードの書き込み待ちを含む), bit2: BIST 完了,
-//                          bit3: BIST 合格
+//                          bit3: BIST 合格, bit4: BIST なし (BIST = 0 で作ったビットストリーム。MEM_CMD 1 は何もしない)
 //   (M4 のアップロード用ポート 0x30 は、M5 で GPU の UPLOAD コマンド (gpu.sv) に置き換えた)
 //   0x13 BIST_SIZE      RW テストするワード数の log2 (1..21、既定 21 = 全 8MiB)
 //   0x14 BIST_SEED      RW パターンの種
@@ -26,7 +26,10 @@
 //   読み出しは表示と同じく 1 行 (256 ワード) ずつのバーストで行う (取り込み位置の判定がバーストと同じになるように)。
 //   pattern(a) = {~a[10:0], a[20:0]} ^ {4{seed}}。アドレスごとに値が違うのでアドレス線の不良 (別の場所に書かれる) も見つかり、
 //   2 回目は全ビットを反転するので、各ビットが 0 と 1 の両方を通る。
-module mem_test (
+module mem_test #(
+    // 0: BIST を外す (1 ワードの読み書き、取り込み位置、位相のレジスタは残す)。3D GPU のビットストリームは LUT の場所が足りないので外す
+    parameter int BIST = 1
+) (
     input  logic        clk,
     input  logic        rst,
     // レジスタバス
@@ -132,7 +135,7 @@ module mem_test (
             unique case (state)
                 S_IDLE: if (we && addr == A_CMD && mem_init_done) begin
                     unique case (wdata)
-                        8'd1: begin
+                        8'd1: if (BIST != 0) begin
                             bist_done <= 1'b0;
                             bist_inv  <= 1'b0;
                             errors    <= '0;
@@ -163,7 +166,7 @@ module mem_test (
                     reg_addr <= reg_addr + 32'd1;
                     state    <= S_IDLE;
                 end
-                S_BIST_WRITE: begin
+                S_BIST_WRITE: if (BIST == 0) state <= S_IDLE; else begin
                     if (!mem_req) begin
                         mem_req   <= 1'b1;
                         mem_we    <= 1'b1;
@@ -180,7 +183,7 @@ module mem_test (
                         end
                     end
                 end
-                S_BIST_READ: begin
+                S_BIST_READ: if (BIST == 0) state <= S_IDLE; else begin
                     if (!mem_req && !bist_rdone) begin
                         mem_req  <= 1'b1;
                         mem_we   <= 1'b0;
@@ -228,7 +231,7 @@ module mem_test (
     always_comb begin
         unique casez (addr)
             A_CFG:     rdata = {5'b0, rd_sample};
-            A_STATUS:  rdata = {4'b0, bist_done && errors == 0, bist_done, state != S_IDLE, mem_init_done};
+            A_STATUS:  rdata = {3'b0, BIST == 0, bist_done && errors == 0, bist_done, state != S_IDLE, mem_init_done};
             A_SIZE:    rdata = {3'b0, bist_size};
             A_SEED:    rdata = bist_seed;
             A_CLK:     rdata = {4'b0, clk_phase};

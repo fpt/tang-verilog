@@ -348,7 +348,7 @@ module top #(
         );
     end
 
-    mem_test u_mem_test (
+    mem_test #(.BIST(GPU3D ? 0 : 1)) u_mem_test (
         .clk(clk_sys), .rst(rst_sys),
         .addr(reg_addr), .wdata(reg_wdata), .we(reg_we && sel_mem), .rdata(mem_rdata),
         .mem_req(t_req), .mem_we(t_we), .mem_addr(t_addr), .mem_wdata(t_wdata), .mem_wmask(t_wmask),
