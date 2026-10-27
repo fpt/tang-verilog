@@ -206,7 +206,7 @@ module tile_engine (
 
     // テクスチャのキャッシュ (直接写像 16 行 x 8 ワード。タグは FF なので、LUT が足りるように 16 行にした)
     logic [31:0] tcache [0:127];
-    logic [13:0] ttags [0:15];
+    (* ram_style = "logic" *) logic [13:0] ttags [0:15];   // FF に (BSRAM にすると番地 FF が RAM に取り込まれ、番地が論理になる)
     logic [15:0] tvalid;
     logic [31:0] tq;
     logic [6:0]  tc_raddr;
