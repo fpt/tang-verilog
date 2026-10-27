@@ -425,7 +425,7 @@ python3 tools/harness/harness.py prog hdmi       # make prog TARGET=hdmi (pinche
 | `reg write <reg> <hex>` | レジスタに書く |
 | `selftest [--iterations N]` | 下記 |
 | `frametest [--ref-dir DIR] [--no-capture] [--out DIR]` | アニメーションを止め、`FRAME_CRC` を参照 (`make render FREEZE=1`) と比べ、HDMI キャプチャも比べる。キャプチャと差分画像を `build/hw/` に保存 |
-| `memtest [--size N] [--samples 2,..,7] [--seed S] [--phases 0-15]` | SDRAM の BIST を読み出しの取り込み位置ごとに実行 (`--size 21` で 8MiB 全域、1 回 0.6 秒)。`--phases` で SDRAM クロックの位相も変え、位相 x 取り込み位置の合否表を出す |
+| `memtest [--size N] [--samples 2,..,7] [--seed S] [--phases 0-15]` | SDRAM の BIST を読み出しの取り込み位置ごとに実行 (`--size 21` で 8MiB 全域、1 回 0.6 秒)。`--phases` で SDRAM クロックの位相も変え、位相 x 取り込み位置の合否表を出す。3D GPU のビットストリームには BIST がない (`MEM_STATUS` bit4。selftest の位相の余裕も飛ばす) |
 | `mem read <addr> [n]` / `mem write <addr> <hex32>...` | SDRAM を 1 ワードずつ読み書き |
 | `fb upload [<png>] [--slot N]` / `fb show` / `fb off` | 320x240 の画像 (省略時はテスト画像) をフレームバッファへ / 表示の切り替え |
 | `scenario <scenarios/*.json> [--no-capture]` | シナリオを GPU に送り、check ごとに `FRAME_CRC` (とキャプチャ) を参照モデル (`gpu_model.py`) と比べる。`check_marked` は印を付けたフレームの `MARK_CRC` を比べる (キャプチャなし)。Verilator 側は `make scenario`。キャプチャは 95% 以上で合格 (正しさは CRC で決める) |
