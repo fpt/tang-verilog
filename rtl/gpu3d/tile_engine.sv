@@ -190,14 +190,17 @@ module tile_engine (
 
     // テクセル: tu = (acc_u >>> 18) & (幅 - 1)、ワードアドレス = base | (tv << (幅の log2 - s)) | (tu >> s)
     // (base はテクスチャのワード数の倍数。足し算にすると桁上げがキャッシュの判定まで続いて 63MHz に届かなかった)
-    logic [7:0]  tu, tv;
+    // ワードアドレスは FF (taddr): 次のクロックに A 段にいるピクセルの u, v (ac の更新と同じ値) から 1 クロック前に作る。
+    // キャッシュの判定、埋める行の番地とタグ、キャッシュの読み出しの番地がどれも同じ FF から出る (G5: 組み合わせのワードアドレスから
+    // 同じクロックに mem_addr・tf_line・tf_tag を取っていたら、配置によって 1 行がほかの行のデータで埋まった。nextpnr の報告では間に合っていた)
+    logic [2:0]  tu;
     logic [20:0] taddr;
     logic [3:0]  tline;
     logic [13:0] ttag;
     logic        t_hit, t_need;
-    assign tu    = ac[4][25:18] & umask;
-    assign tv    = ac[5][25:18] & vmask;
-    assign taddr = tbase | 21'(16'(tv) << tvs) | 21'(tu >> tsh);
+    logic [31:0] acu_n, acv_n;
+    logic [7:0]  tu_n, tv_n;
+    assign tu    = ac[4][20:18] & umask[2:0];           // ワードの中のテクセルの位置 (B 段)
     assign tline = taddr[6:3];
     assign ttag  = taddr[20:7];
 
@@ -212,7 +215,19 @@ module tile_engine (
     logic [13:0] tf_tag;
     assign t_hit    = tvalid[tline] && ttags[tline] == ttag;
     assign t_need   = state == T_WALK && texd && p_in;
-    assign tc_raddr = {tline, taddr[2:0]};
+    assign tc_raddr = taddr[6:0];
+    always_comb begin
+        if (state == T_ROW) begin
+            acu_n = ar[4]; acv_n = ar[5];
+        end else if (state == T_WALK && !(t_need && !t_hit)) begin
+            acu_n = ac[4] + rgx[4]; acv_n = ac[5] + rgx[5];
+        end else begin
+            acu_n = ac[4]; acv_n = ac[5];
+        end
+    end
+    assign tu_n = acu_n[25:18] & umask;
+    assign tv_n = acv_n[25:18] & vmask;
+    always_ff @(posedge clk) taddr <= tbase | 21'(16'(tv_n) << tvs) | 21'(tu_n >> tsh);
 
     // CLUT
     logic [15:0] clut [0:255];
@@ -602,10 +617,11 @@ module tile_engine (
                         b_z    <= pz;
                         b_col  <= pcol;
                         b_rgb  <= {pr8, pg8, pb8};
-                        b_sub  <= tu[2:0];
+                        b_sub  <= tu;
                         walked <= walked + 32'd1;
                         for (int i = 0; i < 3; i++) ec[i] <= ec[i] + 32'(rex[i]);
-                        for (int j = 0; j < 6; j++) ac[j] <= ac[j] + rgx[j];
+                        for (int j = 0; j < 4; j++) ac[j] <= ac[j] + rgx[j];
+                        ac[4] <= acu_n; ac[5] <= acv_n;          // (ワードアドレスと同じ加算器)
                         x <= x + 9'd1;
                         if (x == ox1) state <= T_DRAIN;
                     end
