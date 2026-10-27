@@ -31,7 +31,7 @@ module tri_engine (
     input  logic [20:0] tex_base,
     input  logic        bin_clear,
     input  logic [6:0]  cnt_raddr,                   // tile_engine が読むタイルの数 (busy でないとき)
-    output logic [10:0] cnt_q,                       // 1 クロック遅れ
+    output logic [10:0] cnt_q,                       // cnt_raddr の 2 クロック後
     output logic        bin_error,
     output logic [31:0] bin_pairs,                   // 足した (三角形, タイル) の数 (測る用)
     output logic [31:0] cycles,                      // busy のクロック (測る用)
@@ -84,7 +84,7 @@ module tri_engine (
         .bx0, .bx1, .by0, .by1, .e(su_e), .ex(su_ex), .ey(su_ey), .s(su_s), .gx(su_gx), .gy(su_gy)
     );
 
-    typedef enum logic [2:0] {E_IDLE, E_SETUP, E_BREC, E_BCNT, E_BAPP, E_BCLR} state_t;
+    typedef enum logic [2:0] {E_IDLE, E_SETUP, E_BREC, E_BCNT, E_BCNT2, E_BAPP, E_BCLR} state_t;
     state_t state;
 
     // ---- ビニング ----
@@ -96,10 +96,18 @@ module tri_engine (
     logic [6:0]  cnt_ra, clr_i;
     assign btile  = 7'(bty) * 7'd10 + 7'(btx);
     assign cnt_ra = (state == E_IDLE) ? cnt_raddr : btile;
+    // cnt は真のデュアルポートの BSRAM (DPX9B) に置かれる。nextpnr は B ポートの番地のタイミングを見ないので、
+    // 読み書きの番地とデータはどちらも FF から直接 (読み出しは番地を 1 段置くので、cnt_q は番地の 2 クロック後)
+    logic [6:0]  cnt_ra_q, cnt_wa;
+    logic [10:0] cnt_wd;
+    logic        cnt_wv;
     always_ff @(posedge clk) begin
-        cnt_q <= cnt[cnt_ra];
-        if (state == E_BCLR)                            cnt[clr_i] <= '0;
-        else if (state == E_BAPP && mem_req && mem_ack) cnt[btile] <= cnt_q + 11'd1;
+        cnt_ra_q <= cnt_ra;
+        cnt_q    <= cnt[cnt_ra_q];
+        cnt_wv   <= state == E_BCLR || (state == E_BAPP && mem_req && mem_ack);
+        cnt_wa   <= (state == E_BCLR) ? clr_i : btile;
+        cnt_wd   <= (state == E_BCLR) ? 11'd0 : cnt_q + 11'd1;
+        if (cnt_wv) cnt[cnt_wa] <= cnt_wd;
     end
     // レコードのワード (ridx 番目)。テクスチャの設定は go のときのもの
     logic [31:0] rec_w;
@@ -230,8 +238,9 @@ module tri_engine (
                         end
                     end
                 end
-                // タイルの数を読む (cnt_q は次のクロック)
-                E_BCNT: state <= E_BAPP;
+                // タイルの数を読む (cnt_q は 2 クロック後)
+                E_BCNT:  state <= E_BCNT2;
+                E_BCNT2: state <= E_BAPP;
                 E_BAPP: begin
                     if (!mem_req && cnt_q == 11'(TILE_MAX)) bin_error <= 1'b1;     // タイルの上限: このタイルには足さない
                     if (!mem_req && cnt_q != 11'(TILE_MAX)) begin
