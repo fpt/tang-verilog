@@ -38,7 +38,7 @@ module tile_engine (
     input  logic        clut_we,
     input  logic [7:0]  clut_waddr,
     input  logic [15:0] clut_wdata,
-    // タイルの三角形の数 (tri_engine の cnt、1 クロック遅れ)
+    // タイルの三角形の数 (tri_engine の cnt、cnt_raddr の 2 クロック後)
     output logic [6:0]  cnt_raddr,
     input  logic [10:0] cnt_q,
     // SDRAM
@@ -71,12 +71,12 @@ module tile_engine (
     logic [4:0]  r;                                   // 今の行 (準備と書き出し)
     logic [3:0]  w_cur;                               // 行の中のワード
     // 書き出しの先読み: タイルバッファの読み出しの番号は FF から直接 (DP の BSRAM の B ポートのアドレスは nextpnr が
-    // タイミングを見ないので、論理を挟まない)。読んだワードは 2 ワードの FIFO に入れ、mem_wnext で出す
+    // タイミングを見ないので、論理を挟まない)。番号を 1 段 FF に置くので、読んだワードは 2 クロック後に出る。3 ワードの FIFO に入れ、mem_wnext で出す
     logic [3:0]  ra;                                  // 次に読むワード
     logic [4:0]  o_issued;                            // この行で読んだワード数
-    logic        o_qv;                                // 前のクロックに読んだ (今 cq / zq に出ている)
-    logic [1:0]  o_cnt;
-    logic [31:0] o_f0, o_f1;
+    logic        o_qv1, o_qv;                         // 1 / 2 クロック前に読んだ (o_qv のとき cq / zq に出ている)
+    logic [1:0]  o_cnt;                               // FIFO の数 (0..3)
+    logic [31:0] o_f0, o_f1, o_f2;
     logic        o_pop, o_issue;
     logic [31:0] o_word;
     logic [8:0]  sw_i;                                // T_SWEEP の番号
@@ -88,7 +88,11 @@ module tile_engine (
     logic [15:0] cb_o [0:511];
     logic [15:0] zb_e [0:511];
     logic [15:0] zb_o [0:511];
-    logic [8:0]  rd_idx, cr_idx, wr_idx;               // Z の読み出し、色の読み出し、準備と書き出しの書き込み
+    logic [8:0]  zr_q, cr_q, wr_idx;                   // Z の読み出し、色の読み出し (どちらも FF)、準備と書き出しの書き込み
+    // 書き込みも FF から (1 クロック遅れて書く): 色と Z の、偶数 / 奇数の書く印、番号、データ
+    logic        cw_e, cw_o, zw_e, zw_o;
+    logic [8:0]  cw_a, zw_a;
+    logic [15:0] cw_de, cw_do, zw_de, zw_do;
     logic [15:0] cq_e, cq_o, zq_e, zq_o;
 
     // ---- リスト ----
@@ -316,49 +320,55 @@ module tile_engine (
     logic [4:0] lx, ly;
     assign lx = 5'(x - tx0p);
     assign ly = 5'(y - ty0p);
-    assign rd_idx = c_v ? c_idx : {r, ra};
-    assign cr_idx = e_v ? e_idx : {r, ra};
     assign f_bg   = f_odd ? cq_o : cq_e;
     assign o_word  = (state == T_OUTZ) ? {zq_o, zq_e} : {cq_o, cq_e};
     assign o_pop   = mem_req && mem_wnext && (state == T_OUTC || state == T_OUTZ);
-    // 走査の最後のピクセルが書き終わってから (D 段の書き込みと同じ番地を先に読まないように)。FIFO + 読んでいる分が 2 を超えないように
+    // 走査の最後のピクセルが書き終わってから (書き込みと同じ番地を先に読まないように。書き込みは 1 クロック遅れるが、読み出しの番号も
+    // 1 クロック遅れるので順は変わらない)。FIFO + 読んでいる分が 3 を超えないように
     assign o_issue = (state == T_OUTC || state == T_OUTZ) && !mem_ack && !b_v && !c_v && !d_v && !e_v && !f_v && !g_v && o_issued != 5'd16 &&
-                     3'(o_cnt) + 3'(o_qv) - 3'(o_pop) <= 3'd1;
+                     3'(o_cnt) + 3'(o_qv) + 3'(o_qv1) - 3'(o_pop) <= 3'd2;
     assign wr_idx = {r, w_cur};
 
     always_ff @(posedge clk) begin
-        cq_e <= cb_e[cr_idx];
-        cq_o <= cb_o[cr_idx];
-        zq_e <= zb_e[rd_idx];
-        zq_o <= zb_o[rd_idx];
+        // 読み出しの番号: Z は次に C 段に入るピクセル、色は次に E 段に入るピクセル (半透明で混ぜる相手)、どちらもなければ書き出しの {行, ワード}
+        zr_q <= b_v    ? b_idx : {r, ra};
+        cr_q <= d_pass ? d_idx : {r, ra};
+        cq_e <= cb_e[cr_q];
+        cq_o <= cb_o[cr_q];
+        zq_e <= zb_e[zr_q];
+        zq_o <= zb_o[zr_q];
         lq   <= lbuf[k[5:0]];
         tq   <= tcache[tc_raddr];
         clq  <= clut[c_cla];
         if (clut_we) clut[clut_waddr] <= clut_wdata;
         if (state == T_TFILL && mem_req && mem_rvalid) tcache[{tf_line, tf_w}] <= mem_rdata;
         if (state == T_LFETCH && mem_req && mem_rvalid) lbuf[lw] <= mem_rdata[11:0];
-        // 色
+        // 色 (書く印・番号・データを FF に置いて、次のクロックに書く)
+        cw_e <= 1'b0; cw_o <= 1'b0;
         if (state == T_SWEEP) begin
-            cb_e[sw_i] <= ccol; cb_o[sw_i] <= ccol;
+            cw_e <= 1'b1; cw_o <= 1'b1; cw_a <= sw_i; cw_de <= ccol; cw_do <= ccol;
         end else if (state == T_LOADC && mem_req && mem_rvalid) begin
-            cb_e[wr_idx] <= mem_rdata[15:0]; cb_o[wr_idx] <= mem_rdata[31:16];
+            cw_e <= 1'b1; cw_o <= 1'b1; cw_a <= wr_idx; cw_de <= mem_rdata[15:0]; cw_do <= mem_rdata[31:16];
         end else if (state == T_OUTC && mem_wnext && clear_color) begin
-            cb_e[wr_idx] <= ccol; cb_o[wr_idx] <= ccol;
+            cw_e <= 1'b1; cw_o <= 1'b1; cw_a <= wr_idx; cw_de <= ccol; cw_do <= ccol;
         end else if (g_v) begin
-            if (g_odd) cb_o[g_idx] <= g_out;
-            else       cb_e[g_idx] <= g_out;
+            cw_e <= !g_odd; cw_o <= g_odd; cw_a <= g_idx; cw_de <= g_out; cw_do <= g_out;
         end
+        if (cw_e) cb_e[cw_a] <= cw_de;
+        if (cw_o) cb_o[cw_a] <= cw_do;
         // Z
+        zw_e <= 1'b0; zw_o <= 1'b0;
         if (state == T_SWEEP) begin
-            zb_e[sw_i] <= 16'hFFFF; zb_o[sw_i] <= 16'hFFFF;
+            zw_e <= 1'b1; zw_o <= 1'b1; zw_a <= sw_i; zw_de <= 16'hFFFF; zw_do <= 16'hFFFF;
         end else if (state == T_LOADZ && mem_req && mem_rvalid) begin
-            zb_e[wr_idx] <= mem_rdata[15:0]; zb_o[wr_idx] <= mem_rdata[31:16];
+            zw_e <= 1'b1; zw_o <= 1'b1; zw_a <= wr_idx; zw_de <= mem_rdata[15:0]; zw_do <= mem_rdata[31:16];
         end else if (((state == T_OUTZ) || (state == T_OUTC && !write_z)) && mem_wnext && clear_z) begin
-            zb_e[wr_idx] <= 16'hFFFF; zb_o[wr_idx] <= 16'hFFFF;
+            zw_e <= 1'b1; zw_o <= 1'b1; zw_a <= wr_idx; zw_de <= 16'hFFFF; zw_do <= 16'hFFFF;
         end else if (f_zw) begin
-            if (f_odd) zb_o[f_idx] <= f_z;
-            else       zb_e[f_idx] <= f_z;
+            zw_e <= !f_odd; zw_o <= f_odd; zw_a <= f_idx; zw_de <= f_z; zw_do <= f_z;
         end
+        if (zw_e) zb_e[zw_a] <= zw_de;
+        if (zw_o) zb_o[zw_a] <= zw_do;
     end
 
     assign mem_wmask = 4'hF;
@@ -368,19 +378,21 @@ module tile_engine (
     // 書き出しの FIFO (行ごとに空から。mem_ack のクロックとほかの状態では空にする)
     always_ff @(posedge clk) begin
         if (rst || !(state == T_OUTC || state == T_OUTZ) || mem_ack) begin
-            ra <= '0; o_issued <= '0; o_qv <= 1'b0; o_cnt <= '0;
+            ra <= '0; o_issued <= '0; o_qv1 <= 1'b0; o_qv <= 1'b0; o_cnt <= '0;
         end else begin
-            o_qv <= o_issue;
+            o_qv1 <= o_issue;
+            o_qv  <= o_qv1;
             if (o_issue) begin ra <= ra + 4'd1; o_issued <= o_issued + 5'd1; end
-            if (o_qv && o_pop) begin
-                if (o_cnt == 2'd1) o_f0 <= o_word;
-                else begin o_f0 <= o_f1; o_f1 <= o_word; end
-            end else if (o_pop) begin
-                o_f0 <= o_f1; o_cnt <= o_cnt - 2'd1;
-            end else if (o_qv) begin
-                if (o_cnt == 2'd0) o_f0 <= o_word; else o_f1 <= o_word;
-                o_cnt <= o_cnt + 2'd1;
+            // 出す (先頭を詰める) → 入れる (詰めたあとの末尾に。同じ場所への代入はあとのものが勝つ)
+            if (o_pop) begin o_f0 <= o_f1; o_f1 <= o_f2; end
+            if (o_qv) begin
+                unique case (2'(o_cnt - 2'(o_pop)))
+                    2'd0:    o_f0 <= o_word;
+                    2'd1:    o_f1 <= o_word;
+                    default: o_f2 <= o_word;
+                endcase
             end
+            o_cnt <= 2'(o_cnt + 2'(o_qv) - 2'(o_pop));
         end
     end
 
@@ -472,7 +484,7 @@ module tile_engine (
                         end
                     end
                 end
-                T_CNT: state <= T_CNT2;                     // cnt_q は次のクロック
+                T_CNT: state <= T_CNT2;                     // cnt_q は tile の 2 クロック後 (T_TILE で tile が決まっている)
                 T_CNT2: begin
                     n     <= cnt_q;
                     li    <= '0;
@@ -632,7 +644,7 @@ module tile_engine (
                 // タイルの色 (と Z) を書く。1 行 16 ワード (走査の最後のピクセルが書き終わってから。G 段は 6 クロック後)
                 T_OUTC, T_OUTZ: begin
                     if (!mem_req) begin
-                        if (o_cnt == 2'd2) begin
+                        if (o_cnt == 2'd3) begin
                             mem_req  <= 1'b1;
                             mem_we   <= 1'b1;
                             mem_addr <= {((state == T_OUTZ) ? z_base : draw_base) + 13'({ty[2:0], r}), tx, 4'd0};
