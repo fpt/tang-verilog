@@ -17,7 +17,7 @@
 //     F  Z を書く (半透明は書かない)。半透明なら色を混ぜる (flags [5:4]: 平均、加算、減算、1/4 加算)
 //     G  色をタイルバッファに書く (書くデータは FF から)
 //   半透明 (G4) は投入順に描く。シーンの外の TRI は描く面のタイルを読んでから描くので、即時でも描く面と混ざる
-//   テクスチャのキャッシュ: 直接写像、16 行 x 8 ワード (BSRAM 1 個)。タグは 14bit (ワードアドレスの [20:7])。シーン (タイルのパス) の始めに空にする
+//   テクスチャのキャッシュ: 直接写像、64 行 x 8 ワード (BSRAM 1 個)。タグは 12bit (ワードアドレスの [20:9]) を BSRAM (SDP) に。シーン (タイルのパス) の始めに空にする
 //   規則は tools/harness/raster.py (即時モードと同じピクセル)。タイルのリストに入れなかった三角形 (上限を超えた分) はそのタイルでは描かない
 //   数え (測る用、32bit で回る): 段階ごとのクロック (準備、リストとレコードの読み出し、乗算、走査、書き出し)、走査・描いたピクセル、
 //   テクセルを引いた数 (中のピクセル)、キャッシュの外れ、外れで止まったクロック
@@ -60,7 +60,7 @@ module tile_engine (
 
     typedef enum logic [4:0] {
         T_IDLE, T_SWEEP, T_TILE, T_LOADC, T_LOADZ, T_CNT, T_CNT2, T_LFETCH, T_ENTRY, T_ENTRY2, T_REC, T_MUL, T_MULW,
-        T_ROW, T_WALK, T_TFILL, T_DRAIN, T_DRAIN2, T_NEXTENT, T_OUTC, T_OUTZ, T_NEXTTILE
+        T_ROW, T_WALK, T_TFILL, T_TFILL2, T_DRAIN, T_DRAIN2, T_NEXTENT, T_OUTC, T_OUTZ, T_NEXTTILE
     } state_t;
     state_t state;
 
@@ -117,8 +117,10 @@ module tile_engine (
     logic [1:0]         tfmt;                         // テクスチャ: 0 16bpp、1 8bpp、2 4bpp
     logic [7:0]         tclut;
     logic [7:0]         umask, vmask;                 // 幅 - 1、高さ - 1
-    logic [1:0]         tsh;                          // 1 ワードのテクセル数の log2 (16bpp 1、8bpp 2、4bpp 3)
-    logic [3:0]         tvs;                          // 1 行のワード数の log2 (幅の log2 - tsh)
+    // テクスチャの並び (raster.py の tex_index): 8 ワードのかたまり。16bpp は 4 x 4 テクセル (かたまりの 1 行 2 ワード)、8bpp は 4 x 8、4bpp は 8 x 8
+    logic               tw16;                         // 16bpp (かたまりの 1 行が 2 ワード、高さ 4)
+    logic               tbw8;                         // かたまりの幅が 8 テクセル (4bpp)。でなければ 4
+    logic [3:0]         tvs;                          // かたまりの 1 段のワード数の log2 (幅の log2 - かたまりの幅の log2 + 3)
     logic [20:0]        tbase;
     logic [4:0]         ridx;
 
@@ -188,34 +190,38 @@ module tile_engine (
         pcol = gour ? {pr8[7:3], pg8[7:2], pb8[7:3]} : rflat;
     end
 
-    // テクセル: tu = (acc_u >>> 18) & (幅 - 1)、ワードアドレス = base | (tv << (幅の log2 - s)) | (tu >> s)
-    // (base はテクスチャのワード数の倍数。足し算にすると桁上げがキャッシュの判定まで続いて 63MHz に届かなかった)
+    // テクセル: tu = (acc_u >>> 18) & (幅 - 1)、ワードアドレス = base | (かたまりの段 << tvs) | (かたまりの列 << 3) | かたまりの中のワード
+    // (raster.py の tex_index。base はテクスチャのワード数の倍数。足し算にすると桁上げがキャッシュの判定まで続いて 63MHz に届かなかった)
     // ワードアドレスは FF (taddr): 次のクロックに A 段にいるピクセルの u, v (ac の更新と同じ値) から 1 クロック前に作る。
     // キャッシュの判定、埋める行の番地とタグ、キャッシュの読み出しの番地がどれも同じ FF から出る (G5: 組み合わせのワードアドレスから
     // 同じクロックに mem_addr・tf_line・tf_tag を取っていたら、配置によって 1 行がほかの行のデータで埋まった。nextpnr の報告では間に合っていた)
     logic [2:0]  tu;
-    logic [20:0] taddr;
-    logic [3:0]  tline;
-    logic [13:0] ttag;
+    logic [20:0] taddr, taddr_n;
+    logic [5:0]  tline;
+    logic [11:0] ttag;
     logic        t_hit, t_need;
     logic [31:0] acu_n, acv_n;
     logic [7:0]  tu_n, tv_n;
     assign tu    = ac[4][20:18] & umask[2:0];           // ワードの中のテクセルの位置 (B 段)
-    assign tline = taddr[6:3];
-    assign ttag  = taddr[20:7];
+    assign tline = taddr[8:3];
+    assign ttag  = taddr[20:9];
 
-    // テクスチャのキャッシュ (直接写像 16 行 x 8 ワード。タグは FF なので、LUT が足りるように 16 行にした)
-    logic [31:0] tcache [0:127];
-    (* ram_style = "logic" *) logic [13:0] ttags [0:15];   // FF に (BSRAM にすると番地 FF が RAM に取り込まれ、番地が論理になる)
-    logic [15:0] tvalid;
+    // テクスチャのキャッシュ (直接写像 64 行 x 8 ワード、BSRAM 1 個)。G5 の場面で 16 行の当たりは 70〜74%、64 行で 83〜96% (texcache_sim.py)
+    // タグは BSRAM: A 段のピクセルのタグが同じクロックに出ているように、taddr の D 入力 (taddr_n、次に A 段にいるピクセル) で読む。
+    // 番地が論理になるので SDP にする (nextpnr がタイミングを見る)。19bit にして DP (18bit まで) にならないようにする: {~タグの下位 7bit, タグ} を置き、
+    // 両方を比べる (使わないビットは yosys が削って幅が戻るので、確かめに使う)
+    logic [31:0] tcache [0:511];
+    logic [18:0] ttag_mem [0:63];
+    logic [18:0] tag_q;                               // ttag_mem[A 段のピクセルの行]
+    logic [63:0] tvalid;
     logic [31:0] tq;
-    logic [6:0]  tc_raddr;
+    logic [8:0]  tc_raddr;
     logic [2:0]  tf_w;                                // 埋めているワード
-    logic [3:0]  tf_line;
-    logic [13:0] tf_tag;
-    assign t_hit    = tvalid[tline] && ttags[tline] == ttag;
+    logic [5:0]  tf_line;
+    logic [11:0] tf_tag;
+    assign t_hit    = tvalid[tline] && tag_q[11:0] == ttag && tag_q[18:12] == ~ttag[6:0];
     assign t_need   = state == T_WALK && texd && p_in;
-    assign tc_raddr = taddr[6:0];
+    assign tc_raddr = taddr[8:0];
     always_comb begin
         if (state == T_ROW) begin
             acu_n = ar[4]; acv_n = ar[5];
@@ -227,7 +233,17 @@ module tile_engine (
     end
     assign tu_n = acu_n[25:18] & umask;
     assign tv_n = acv_n[25:18] & vmask;
-    always_ff @(posedge clk) taddr <= tbase | 21'(16'(tv_n) << tvs) | 21'(tu_n >> tsh);
+    logic [5:0] tvb, tub;                             // かたまりの段と列
+    logic [2:0] tlo;                                  // かたまりの中のワード
+    assign tvb     = tw16 ? 6'(tv_n >> 2) : 6'(tv_n >> 3);
+    assign tub     = tbw8 ? 6'(tu_n >> 3) : 6'(tu_n >> 2);
+    assign tlo     = tw16 ? {tv_n[1:0], tu_n[1]} : tv_n[2:0];
+    assign taddr_n = tbase | 21'(16'(tvb) << tvs) | 21'({tub, 3'd0}) | 21'(tlo);
+    always_ff @(posedge clk) begin
+        taddr <= taddr_n;
+        tag_q <= ttag_mem[taddr_n[8:3]];
+        if (state == T_TFILL && mem_ack) ttag_mem[tf_line] <= {~tf_tag[6:0], tf_tag};
+    end
 
     // CLUT
     logic [15:0] clut [0:255];
@@ -426,7 +442,7 @@ module tile_engine (
                 T_CNT, T_CNT2, T_LFETCH, T_ENTRY, T_ENTRY2, T_REC, T_NEXTENT: c_fetch <= c_fetch + 32'd1;
                 T_MUL, T_MULW:                                             c_mul   <= c_mul + 32'd1;
                 T_ROW, T_WALK, T_DRAIN, T_DRAIN2:                          c_walk  <= c_walk + 32'd1;
-                T_TFILL:                                                   c_tex   <= c_tex + 32'd1;
+                T_TFILL, T_TFILL2:                                         c_tex   <= c_tex + 32'd1;
                 T_OUTC, T_OUTZ, T_NEXTTILE:                                c_out   <= c_out + 32'd1;
                 default: ;
             endcase
@@ -557,13 +573,13 @@ module tile_engine (
                             else if (ridx < 5'd24) rgx[3'(ridx - 5'd18)] <= mem_rdata;
                             else if (ridx < 5'd30) rgy[3'(ridx - 5'd24)] <= mem_rdata;
                             else if (ridx == 5'd30) begin
-                                logic [1:0] sh;
-                                sh     = (mem_rdata[17:16] == 2'd0) ? 2'd1 : (mem_rdata[17:16] == 2'd1) ? 2'd2 : 2'd3;
                                 tfmt  <= mem_rdata[17:16]; tclut <= mem_rdata[15:8];
                                 umask <= 8'((9'd1 << mem_rdata[7:4]) - 9'd1);
                                 vmask <= 8'((9'd1 << mem_rdata[3:0]) - 9'd1);
-                                tsh   <= sh;
-                                tvs   <= mem_rdata[7:4] - 4'(sh);
+                                tw16  <= mem_rdata[17:16] == 2'd0;
+                                tbw8  <= mem_rdata[17:16] == 2'd2;
+                                // かたまりの幅の log2 は 16bpp 2、8bpp 2、4bpp 3
+                                tvs   <= mem_rdata[7:4] + 4'd3 - ((mem_rdata[17:16] == 2'd2) ? 4'd3 : 4'd2);
                             end else begin
                                 tbase <= mem_rdata[20:0];
                             end
@@ -630,11 +646,12 @@ module tile_engine (
                     if (mem_rvalid) tf_w <= tf_w + 3'd1;
                     if (mem_ack) begin
                         mem_req          <= 1'b0;
-                        ttags[tf_line]   <= tf_tag;
                         tvalid[tf_line]  <= 1'b1;
-                        state            <= T_WALK;
+                        state            <= T_TFILL2;
                     end
                 end
+                // タグはこのクロックに書けているので、次のクロックの読み出しから新しいタグが出る。1 クロック待ってからこのピクセルをやり直す
+                T_TFILL2: state <= T_WALK;
                 T_DRAIN: begin
                     for (int i = 0; i < 3; i++) er[i] <= er[i] + 32'(rey[i]);
                     for (int j = 0; j < 6; j++) ar[j] <= ar[j] + rgy[j];

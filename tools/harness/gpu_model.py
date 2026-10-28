@@ -283,8 +283,9 @@ def tri_words(step):
 
 
 def tex_words(fmt, w, h, kind="checker", seed=1):
-    """テクスチャの中身 (raster.py の並び)。16bpp は RGB565、8 / 4bpp は CLUT の番号。checker: 市松と縞、0 (透明) のところもある"""
+    """テクスチャの中身 (raster.py の並び。8 ワードのかたまり)。16bpp は RGB565、8 / 4bpp は CLUT の番号。checker: 市松と縞、0 (透明) のところもある"""
     import random
+    import raster
     rng = random.Random(seed)
     sh = {0: 1, 1: 2, 2: 3}[fmt]
     words = [0] * ((w * h) >> sh)
@@ -297,7 +298,7 @@ def tex_words(fmt, w, h, kind="checker", seed=1):
                     val = 0
             else:
                 val = rng.randrange(1 << 16) if fmt == 0 else rng.randrange(256 if fmt == 1 else 16)
-            a = (v << (int(w).bit_length() - 1 - sh)) + (u >> sh)
+            a = raster.tex_index(fmt, int(w).bit_length() - 1, u, v)
             if fmt == 0:
                 words[a] |= val << (16 * (u & 1))
             elif fmt == 1:
