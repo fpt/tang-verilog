@@ -300,172 +300,6 @@
 			)
 			(embedded_fonts no)
 		)
-		(symbol "Jumper:Jumper_2_Bridged"
-			(pin_numbers
-				(hide yes)
-			)
-			(pin_names
-				(offset 0)
-				(hide yes)
-			)
-			(exclude_from_sim no)
-			(in_bom yes)
-			(on_board yes)
-			(in_pos_files yes)
-			(duplicate_pin_numbers_are_jumpers no)
-			(property "Reference" "JP"
-				(at 0 1.905 0)
-				(show_name no)
-				(do_not_autoplace no)
-				(effects
-					(font
-						(size 1.27 1.27)
-					)
-				)
-			)
-			(property "Value" "Jumper_2_Bridged"
-				(at 0 -2.54 0)
-				(show_name no)
-				(do_not_autoplace no)
-				(effects
-					(font
-						(size 1.27 1.27)
-					)
-				)
-			)
-			(property "Footprint" ""
-				(at 0 0 0)
-				(show_name no)
-				(do_not_autoplace no)
-				(hide yes)
-				(effects
-					(font
-						(size 1.27 1.27)
-					)
-				)
-			)
-			(property "Datasheet" ""
-				(at 0 -5.08 0)
-				(show_name no)
-				(do_not_autoplace no)
-				(hide yes)
-				(effects
-					(font
-						(size 1.27 1.27)
-					)
-				)
-			)
-			(property "Description" "Jumper, 2-pole, closed/bridged"
-				(at 0 -7.62 0)
-				(show_name no)
-				(do_not_autoplace no)
-				(hide yes)
-				(effects
-					(font
-						(size 1.27 1.27)
-					)
-				)
-			)
-			(property "ki_keywords" "Jumper SPST"
-				(at 0 0 0)
-				(show_name no)
-				(do_not_autoplace no)
-				(hide yes)
-				(effects
-					(font
-						(size 1.27 1.27)
-					)
-				)
-			)
-			(property "ki_fp_filters" "Jumper* TestPoint*2Pads* TestPoint*Bridge*"
-				(at 0 0 0)
-				(show_name no)
-				(do_not_autoplace no)
-				(hide yes)
-				(effects
-					(font
-						(size 1.27 1.27)
-					)
-				)
-			)
-			(symbol "Jumper_2_Bridged_0_0"
-				(circle
-					(center -2.032 0)
-					(radius 0.508)
-					(stroke
-						(width 0)
-						(type default)
-					)
-					(fill
-						(type none)
-					)
-				)
-				(circle
-					(center 2.032 0)
-					(radius 0.508)
-					(stroke
-						(width 0)
-						(type default)
-					)
-					(fill
-						(type none)
-					)
-				)
-			)
-			(symbol "Jumper_2_Bridged_0_1"
-				(arc
-					(start -1.524 0.254)
-					(mid 0 0.762)
-					(end 1.524 0.254)
-					(stroke
-						(width 0)
-						(type default)
-					)
-					(fill
-						(type none)
-					)
-				)
-			)
-			(symbol "Jumper_2_Bridged_1_1"
-				(pin passive line
-					(at -5.08 0 0)
-					(length 2.54)
-					(name "A"
-						(effects
-							(font
-								(size 1.27 1.27)
-							)
-						)
-					)
-					(number "1"
-						(effects
-							(font
-								(size 1.27 1.27)
-							)
-						)
-					)
-				)
-				(pin passive line
-					(at 5.08 0 180)
-					(length 2.54)
-					(name "B"
-						(effects
-							(font
-								(size 1.27 1.27)
-							)
-						)
-					)
-					(number "2"
-						(effects
-							(font
-								(size 1.27 1.27)
-							)
-						)
-					)
-				)
-			)
-			(embedded_fonts no)
-		)
 		(symbol "MCU_Module:RaspberryPi_Pico"
 			(pin_names
 				(offset 0.762)
@@ -2688,18 +2522,6 @@
 		(uuid "6ff4c1bd-3877-499a-b2e7-8456e24f1518")
 	)
 	(rectangle
-		(start 116.205 94.615)
-		(end 213.995 115.57)
-		(stroke
-			(width 0)
-			(type default)
-		)
-		(fill
-			(type none)
-		)
-		(uuid "7af7ae79-3c48-4475-b14d-b45081429264")
-	)
-	(rectangle
 		(start 116.205 20.32)
 		(end 193.675 89.535)
 		(stroke
@@ -2746,17 +2568,6 @@
 		)
 		(uuid "5bca4d64-c566-46c6-a0aa-e806c701141c")
 	)
-	(text "JP2, JP3: FPGA 15/16 は LCD の XR/YD (LCD_INIT0/1) と共有。それを使うパネルのときだけ開ける (既定は閉)"
-		(exclude_from_sim no)
-		(at 119.7 98.14 0)
-		(effects
-			(font
-				(size 1.27 1.27)
-			)
-			(justify left top)
-		)
-		(uuid "67b15fe2-93b5-436b-943f-638c50b178b7")
-	)
 	(text "R6, R7: Pico が離しているあいだ Low に確定させる (正論理、Low = 何もしていない)"
 		(exclude_from_sim no)
 		(at 21.91 132.43 0)
@@ -2781,8 +2592,12 @@
 		(uuid "b20c97db-25ba-413b-adcd-cbf4ea312f78")
 	)
 	(no_connect
-		(at 80.1339 78.74)
+		(at 80.01 78.74)
 		(uuid "08ca5242-d970-4007-a007-e2df7a78a322")
+	)
+	(no_connect
+		(at 135.89 46.99)
+		(uuid "1fcedd5a-c826-4377-9542-5b23b8824b7e")
 	)
 	(no_connect
 		(at 34.29 58.42)
@@ -2839,6 +2654,10 @@
 	(no_connect
 		(at 135.89 57.15)
 		(uuid "53d54d2f-41f1-45d2-b376-ca6030be09f4")
+	)
+	(no_connect
+		(at 135.89 44.45)
+		(uuid "5f0436c1-44b1-47fb-9976-ab18a3a549da")
 	)
 	(no_connect
 		(at 135.89 54.61)
@@ -2925,6 +2744,10 @@
 		(uuid "d6d52416-a164-459d-88d0-1da864ddbe6f")
 	)
 	(no_connect
+		(at 34.29 73.66)
+		(uuid "e71fd2f1-82d8-43e5-8f26-51721a3cd30c")
+	)
+	(no_connect
 		(at 171.45 31.75)
 		(uuid "e8c74818-225f-4a1d-b0c3-85eaf30a092c")
 	)
@@ -2935,10 +2758,6 @@
 	(no_connect
 		(at 171.45 54.61)
 		(uuid "f7753929-7291-4f3b-aaaa-22e807df189e")
-	)
-	(no_connect
-		(at 171.45 80.01)
-		(uuid "fb4de7d0-09d1-41e4-800a-cfb1ecc2b26e")
 	)
 	(no_connect
 		(at 80.01 88.9)
@@ -3070,26 +2889,6 @@
 	)
 	(wire
 		(pts
-			(xy 157.48 104.14) (xy 144.78 104.14)
-		)
-		(stroke
-			(width 0)
-			(type default)
-		)
-		(uuid "50078013-f657-442a-ba5c-2c4ad3a7e116")
-	)
-	(wire
-		(pts
-			(xy 123.19 44.45) (xy 135.89 44.45)
-		)
-		(stroke
-			(width 0)
-			(type default)
-		)
-		(uuid "50140999-18ea-4097-bc4a-9f6eb68317bd")
-	)
-	(wire
-		(pts
 			(xy 181.61 39.37) (xy 171.45 39.37)
 		)
 		(stroke
@@ -3097,16 +2896,6 @@
 			(type default)
 		)
 		(uuid "591b8fa5-8200-429b-924e-ae65ef3036ce")
-	)
-	(wire
-		(pts
-			(xy 21.59 73.66) (xy 34.29 73.66)
-		)
-		(stroke
-			(width 0)
-			(type default)
-		)
-		(uuid "5b8bb11a-67c7-45ef-bbd4-e98394453ba5")
 	)
 	(wire
 		(pts
@@ -3137,6 +2926,16 @@
 			(type default)
 		)
 		(uuid "65702926-9dec-49ea-b429-5e897b381535")
+	)
+	(wire
+		(pts
+			(xy 171.45 80.01) (xy 181.61 80.01)
+		)
+		(stroke
+			(width 0)
+			(type default)
+		)
+		(uuid "6b09c746-a0b1-4e50-b36c-c62e26b1699a")
 	)
 	(wire
 		(pts
@@ -3190,16 +2989,6 @@
 	)
 	(wire
 		(pts
-			(xy 123.19 111.76) (xy 134.62 111.76)
-		)
-		(stroke
-			(width 0)
-			(type default)
-		)
-		(uuid "794321c4-761e-43d4-a2a7-feee091c531b")
-	)
-	(wire
-		(pts
 			(xy 62.23 27.94) (xy 78.74 27.94)
 		)
 		(stroke
@@ -3210,16 +2999,6 @@
 	)
 	(wire
 		(pts
-			(xy 157.48 111.76) (xy 144.78 111.76)
-		)
-		(stroke
-			(width 0)
-			(type default)
-		)
-		(uuid "84976a39-ab05-423e-844d-f9238affa06f")
-	)
-	(wire
-		(pts
 			(xy 30.48 138.43) (xy 36.83 138.43)
 		)
 		(stroke
@@ -3227,16 +3006,6 @@
 			(type default)
 		)
 		(uuid "87cafac2-49e0-4678-a758-8930b0e9368b")
-	)
-	(wire
-		(pts
-			(xy 121.92 46.99) (xy 135.89 46.99)
-		)
-		(stroke
-			(width 0)
-			(type default)
-		)
-		(uuid "8f2af919-a286-4c42-a137-953220c51898")
 	)
 	(wire
 		(pts
@@ -3380,16 +3149,6 @@
 	)
 	(wire
 		(pts
-			(xy 123.19 104.14) (xy 134.62 104.14)
-		)
-		(stroke
-			(width 0)
-			(type default)
-		)
-		(uuid "dd709b4a-e4fe-4e63-915f-e0b818507c77")
-	)
-	(wire
-		(pts
 			(xy 233.68 52.07) (xy 224.79 52.07)
 		)
 		(stroke
@@ -3508,16 +3267,6 @@
 		)
 		(uuid "20d54f7b-6900-4ecd-81be-e4e7b78769db")
 	)
-	(label "HEARTBEAT"
-		(at 21.59 73.66 0)
-		(effects
-			(font
-				(size 1.27 1.27)
-			)
-			(justify left bottom)
-		)
-		(uuid "231e468b-1d8f-4443-8dc0-ee073c54a362")
-	)
 	(label "HSTX_D3_P"
 		(at 21.59 93.98 0)
 		(effects
@@ -3527,16 +3276,6 @@
 			(justify left bottom)
 		)
 		(uuid "2a39bfe1-966e-4164-9ed4-e8babb05498a")
-	)
-	(label "VSYNC_T"
-		(at 157.48 104.14 180)
-		(effects
-			(font
-				(size 1.27 1.27)
-			)
-			(justify right bottom)
-		)
-		(uuid "2aeac1b1-69e5-4d82-a746-040aca587138")
 	)
 	(label "HSTX_D3"
 		(at 233.68 60.96 180)
@@ -3598,6 +3337,16 @@
 		)
 		(uuid "63655bf8-c4c3-417b-9bcd-09ced1a4d4b9")
 	)
+	(label "VSYNC"
+		(at 181.61 80.01 180)
+		(effects
+			(font
+				(size 1.27 1.27)
+			)
+			(justify right bottom)
+		)
+		(uuid "660d012e-ea89-48e1-afb9-a72f2ed7dd99")
+	)
 	(label "HSTX_D0_P"
 		(at 21.59 86.36 0)
 		(effects
@@ -3618,16 +3367,6 @@
 		)
 		(uuid "698501a6-36d1-4954-bf2e-6a61334a3a66")
 	)
-	(label "HEARTBEAT"
-		(at 123.19 111.76 0)
-		(effects
-			(font
-				(size 1.27 1.27)
-			)
-			(justify left bottom)
-		)
-		(uuid "6a3284a4-63e7-4c84-afca-b9746de53e9e")
-	)
 	(label "HSTX_D0"
 		(at 233.68 34.29 180)
 		(effects
@@ -3637,16 +3376,6 @@
 			(justify right bottom)
 		)
 		(uuid "6fd60fd9-74ed-40c4-8223-2a39c41b24ed")
-	)
-	(label "VSYNC"
-		(at 123.19 104.14 0)
-		(effects
-			(font
-				(size 1.27 1.27)
-			)
-			(justify left bottom)
-		)
-		(uuid "70da5df4-8d28-4dc9-ba34-4c660a827a80")
 	)
 	(label "SCK"
 		(at 21.59 81.28 0)
@@ -3758,16 +3487,6 @@
 		)
 		(uuid "d61354f5-38e3-4d17-846f-4048091cde72")
 	)
-	(label "HEARTBEAT_T"
-		(at 123.19 44.45 0)
-		(effects
-			(font
-				(size 1.27 1.27)
-			)
-			(justify left bottom)
-		)
-		(uuid "d80a9da6-9733-4f74-bf7f-e94c29b7d931")
-	)
 	(label "HSTX_D2_P"
 		(at 21.59 91.44 0)
 		(effects
@@ -3807,16 +3526,6 @@
 			(justify left bottom)
 		)
 		(uuid "e3051392-bea9-4e84-b20d-0d4117f2f793")
-	)
-	(label "HEARTBEAT_T"
-		(at 157.48 111.76 180)
-		(effects
-			(font
-				(size 1.27 1.27)
-			)
-			(justify right bottom)
-		)
-		(uuid "e4c2031d-5a39-46b9-9065-dd2ab2db310f")
 	)
 	(label "HSTX_D1"
 		(at 233.68 43.18 180)
@@ -3858,16 +3567,6 @@
 		)
 		(uuid "f0871c9f-f2ca-455d-936a-bca56a661667")
 	)
-	(label "VSYNC_T"
-		(at 121.92 46.99 0)
-		(effects
-			(font
-				(size 1.27 1.27)
-			)
-			(justify left bottom)
-		)
-		(uuid "f7e2014b-5c6a-4359-9e83-1629b77d55b9")
-	)
 	(label "HSTX_D2"
 		(at 233.68 52.07 180)
 		(effects
@@ -3887,86 +3586,6 @@
 			(justify left bottom)
 		)
 		(uuid "fd183f22-4679-42f2-b630-6114f1dd14c8")
-	)
-	(symbol
-		(lib_id "Jumper:Jumper_2_Bridged")
-		(at 139.7 111.76 0)
-		(unit 1)
-		(body_style 1)
-		(exclude_from_sim no)
-		(in_bom yes)
-		(on_board yes)
-		(in_pos_files yes)
-		(dnp no)
-		(fields_autoplaced yes)
-		(uuid "0217904f-7dc6-459f-baf1-0f30fcd581bb")
-		(property "Reference" "JP2"
-			(at 139.7 106.68 0)
-			(show_name no)
-			(do_not_autoplace no)
-			(effects
-				(font
-					(size 1.27 1.27)
-				)
-			)
-		)
-		(property "Value" "Jumper_2_Bridged"
-			(at 139.7 109.22 0)
-			(show_name no)
-			(do_not_autoplace no)
-			(effects
-				(font
-					(size 1.27 1.27)
-				)
-			)
-		)
-		(property "Footprint" "Connector_PinHeader_2.54mm:PinHeader_1x02_P2.54mm_Vertical"
-			(at 139.7 111.76 0)
-			(hide yes)
-			(show_name no)
-			(do_not_autoplace no)
-			(effects
-				(font
-					(size 1.27 1.27)
-				)
-			)
-		)
-		(property "Datasheet" ""
-			(at 139.7 116.84 0)
-			(hide yes)
-			(show_name no)
-			(do_not_autoplace no)
-			(effects
-				(font
-					(size 1.27 1.27)
-				)
-			)
-		)
-		(property "Description" "Jumper, 2-pole, closed/bridged"
-			(at 139.7 119.38 0)
-			(hide yes)
-			(show_name no)
-			(do_not_autoplace no)
-			(effects
-				(font
-					(size 1.27 1.27)
-				)
-			)
-		)
-		(pin "2"
-			(uuid "9a1dbed9-31ee-4067-ba15-6601cb3bd00e")
-		)
-		(pin "1"
-			(uuid "48643512-7155-4dc5-af8b-e86b0cbe7ab3")
-		)
-		(instances
-			(project "rp-tang-harness-v2"
-				(path "/2cf01f59-cf54-439e-881f-c06c5145d63c"
-					(reference "JP2")
-					(unit 1)
-				)
-			)
-		)
 	)
 	(symbol
 		(lib_id "power:GND")
@@ -4395,86 +4014,6 @@
 			(project "rp-tang-harness-v2"
 				(path "/2cf01f59-cf54-439e-881f-c06c5145d63c"
 					(reference "#PWR04")
-					(unit 1)
-				)
-			)
-		)
-	)
-	(symbol
-		(lib_id "Jumper:Jumper_2_Bridged")
-		(at 139.7 104.14 0)
-		(unit 1)
-		(body_style 1)
-		(exclude_from_sim no)
-		(in_bom yes)
-		(on_board yes)
-		(in_pos_files yes)
-		(dnp no)
-		(fields_autoplaced yes)
-		(uuid "27226556-817f-40e3-a1e4-f05eea83ddce")
-		(property "Reference" "JP1"
-			(at 139.7 99.06 0)
-			(show_name no)
-			(do_not_autoplace no)
-			(effects
-				(font
-					(size 1.27 1.27)
-				)
-			)
-		)
-		(property "Value" "Jumper_2_Bridged"
-			(at 139.7 101.6 0)
-			(show_name no)
-			(do_not_autoplace no)
-			(effects
-				(font
-					(size 1.27 1.27)
-				)
-			)
-		)
-		(property "Footprint" "Connector_PinHeader_2.54mm:PinHeader_1x02_P2.54mm_Vertical"
-			(at 139.7 104.14 0)
-			(hide yes)
-			(show_name no)
-			(do_not_autoplace no)
-			(effects
-				(font
-					(size 1.27 1.27)
-				)
-			)
-		)
-		(property "Datasheet" ""
-			(at 139.7 109.22 0)
-			(hide yes)
-			(show_name no)
-			(do_not_autoplace no)
-			(effects
-				(font
-					(size 1.27 1.27)
-				)
-			)
-		)
-		(property "Description" "Jumper, 2-pole, closed/bridged"
-			(at 139.7 111.76 0)
-			(hide yes)
-			(show_name no)
-			(do_not_autoplace no)
-			(effects
-				(font
-					(size 1.27 1.27)
-				)
-			)
-		)
-		(pin "2"
-			(uuid "feaa86be-8a06-4715-9faa-da4449d1410f")
-		)
-		(pin "1"
-			(uuid "b0ad52ac-6257-421b-8b12-b050f2684595")
-		)
-		(instances
-			(project "rp-tang-harness-v2"
-				(path "/2cf01f59-cf54-439e-881f-c06c5145d63c"
-					(reference "JP1")
 					(unit 1)
 				)
 			)
