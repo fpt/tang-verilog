@@ -6,28 +6,27 @@ M9 までのハーネスで使わなかった線 (ERROR、LED0〜5、OLED) は�
 
 - ホスト: **Raspberry Pi Pico 2** (RP2350A、PSRAM なし。リンクと翻訳層の検証には足りる)。同じ Pico ピン配置の **Pico Plus 2** (RP2350B、PSRAM 8MB、CS = GPIO 47) と
   **Pico LiPo 2** (同) にもそのまま載る。RP2350-PiZero は入手できなくなったので使わない
-- 回路図: [`harness/kicad/v2/pico2-tang-harness.kicad_sch`](../harness/kicad/v2/pico2-tang-harness.kicad_sch)
+- 回路図: [`harness/kicad/v2/rp-tang-harness-v2.kicad_sch`](../harness/kicad/v2/rp-tang-harness-v2.kicad_sch) (基板は同じ場所の `rp-tang-harness-v2.kicad_pcb`)
 - 配線表: [`harness/kicad/v2/pins_v2.json`](../harness/kicad/v2/pins_v2.json) (v1 と同じ形式。信号名も v1 に合わせてあるので `gen_pins_h.py` がそのまま使える)
 
 ## 1. 配線表 (13 本 + GND)
 
 | 信号 | 向き | RP2350 GPIO | Pico 物理ピン | FPGA ピン | FPGA 側の共有 | 備考 |
 |---|---|---|---|---|---|---|
-| HSTX_D0 | P → F | GP12 (HSTX bit0) | 16 | 71 | なし | 直列 33R (R1) |
-| HSTX_D1 | P → F | GP13 (bit1) | 17 | 72 | なし | 直列 33R (R2) |
-| HSTX_D2 | P → F | GP14 (bit2) | 19 | 73 | なし | 直列 33R (R3) |
-| HSTX_D3 | P → F | GP15 (bit3) | 20 | 74 | なし | 直列 33R (R4) |
-| HSTX_CLK | P → F | GP16 (bit4) | 21 | 80 (GCLKT_0) | SD D2、10k プルアップ | 直列 33R (R5) |
+| HSTX_D0 | P → F | GP12 (HSTX bit0) | 16 | 71 | なし | 直列 33R (R4) |
+| HSTX_D1 | P → F | GP13 (bit1) | 17 | 72 | なし | 直列 33R (R5) |
+| HSTX_D2 | P → F | GP14 (bit2) | 19 | 73 | なし | 直列 33R (R6) |
+| HSTX_D3 | P → F | GP15 (bit3) | 20 | 74 | なし | 直列 33R (R7) |
+| HSTX_CLK | P → F | GP16 (bit4) | 21 | 80 (GCLKT_0) | SD D2、10k プルアップ | 直列 33R (R8) |
 | SCK | P → F | GP10 (SPI1 SCK) | 14 | 20 | LED5 | |
 | COPI | P → F | GP11 (SPI1 TX) | 15 | 19 | LED4 | |
 | CIPO | F → P | GP8 (SPI1 RX) | 11 | 75 | BL616 MISO | v1 で実績 |
-| CS | P → F | GP9 | 12 | 86 | BL616 SPI_DIR | v1 で実績。正論理、4.7k プルダウン (R6) |
+| CS | P → F | GP9 | 12 | 86 | BL616 SPI_DIR | v1 で実績。正論理、4.7k プルダウン (R9) |
 | IRQ (/READY) | F → P | GP20 | 26 | 85 | SD D1、10k プルアップ | v1 と同じ意味 (CONTROL bit4 で READY)。未コンフィグ時 High |
-| VSYNC | F → P | GP22 | 29 | 16 | LED1 / LCD YD (LCD_INIT1) | JP2 (既定 閉) |
-| HEARTBEAT | F → P | GP7 | 10 | 15 | LED0 / LCD XR (LCD_INIT0) | JP3 (既定 閉) |
-| RESET | P → F | GP21 | 27 | 79 | WS2812 DIN | 4.7k プルダウン (R7) |
+| VSYNC | F → P | GP22 | 29 | 16 | LED1 / LCD YD (LCD_INIT1) | JP1 (既定 閉) |
+| HEARTBEAT | F → P | GP7 | 10 | 15 | LED0 / LCD XR (LCD_INIT0) | JP2 (既定 閉) |
+| RESET | P → F | GP21 | 27 | 79 | WS2812 DIN | 4.7k プルダウン (R10) |
 | GND | | | 3, 8, 13, 18, 23, 28, 33, 38 | GND | | 隣り合う GND を HSTX の線の間に |
-| 5V (任意) | Tang → Pico | VBUS | 40 | 5V | | JP1 + SS14 (D1)。既定は開 |
 
 **HSTX のビット割り当て**: bit0..3 = D0..D3 (GP12〜15、ピン 16/17/19/20、間の 18 が GND)、bit4 = CLK (GP16、ピン 21)。
 Pico ピン配置では HSTX の 8 本が 16〜25 に連続して並ぶので、5 本がまとまる。GP17〜19 (ピン 22/24/25) は bit5..7 で、レーンを増やすときの予備。配線しない。
@@ -40,16 +39,16 @@ Pico ピン配置では HSTX の 8 本が 16〜25 に連続して並ぶので、
 - **RP2350 側**: HSTX は GPIO 12〜19 固定。SPI1 は GPIO 8〜11 にまとめた。GP4/5 (Qw/ST の I2C になるボードがある) と GP0/1 (UART) は空けてある
 - **正論理のまま** (v1 と同じ)。CS と RESET に外付け 4.7k プルダウン (RP2350-E9: 入力のピンが内蔵プルダウンで約 2V に留まる不具合。外付けは 8.2k 以下が要る)
 - **IRQ と READY は 1 本** (v1 と同じく CONTROL bit4 で切り替え)。HSTX は片方向なので VBLANK のタイミングは VSYNC の線で取る
-- **VSYNC / HEARTBEAT は LCD_INIT0/1 と共有**。ST7701 系のパネル (SPI 初期化にこの線を使う) のときだけ JP2/JP3 を開ける。HEARTBEAT は ready の判定に使っているので、
+- **VSYNC / HEARTBEAT は LCD_INIT0/1 と共有**。ST7701 系のパネル (SPI 初期化にこの線を使う) のときだけ JP1/JP2 を開ける。HEARTBEAT は ready の判定に使っているので、
   開けたときは ready の判定を SPI の ID レジスタのポーリングに置き換える
 
 ## 2. 電気的な注意
 
 - 全部 3.3V。レベル変換なし
-- HSTX の 5 本は RP2350 側に直列 33R (R1〜R5)。最初 33R、波形を見て 0〜47R。15cm 程度のリボンまでなら 37.5MHz DDR で問題ない見込み。
+- HSTX の 5 本は RP2350 側に直列 33R (R4〜R8)。最初 33R、波形を見て 0〜47R。15cm 程度のリボンまでなら 37.5MHz DDR で問題ない見込み。
   各 HSTX 線の隣に GND を 1 本置く (Pico の GND はピン 18 が D1 (17) と D2 (19) の間、23 が CLK (21) の 2 つ隣。間の 22 は予備の GP17)。75MHz DDR に上げるときは基板化する
 - 85 と 80 の 10k プルアップ、19/20 の LED は RP2350 の出力でそのまま駆動できる
-- 電源: 最初は **GND だけ共通にして USB を 2 本**挿す。Tang の 5V → JP1 → SS14 → Pico の VBUS は、USB を 1 本にしたいときに閉じる。3V3 同士はつながない
+- 電源: **GND だけ共通にして USB を 2 本**挿す。5V の線はない (Pico の VBUS と Tang の 5V はどちらもつながない)。3V3 同士もつながない
 - PSRAM: Pico 2 にはない (リンクと翻訳層の検証には不要)。Pico Plus 2 / Pico LiPo 2 では CS = GPIO 47、SDK の `psram` 初期化に 47 を渡す
 
 ## 3. FPGA 側
@@ -84,7 +83,7 @@ IO_LOC "reset_in"  79; IO_PORT "reset_in"  IO_TYPE=LVCMOS33 PULL_MODE=NONE;
 | 戻り線 | IRQ, VSYNC, HEARTBEAT, ERROR, LED0〜5 | IRQ, VSYNC, HEARTBEAT (ERROR と LED は廃止。`wiretest` の表から外す) |
 | LCD との衝突 | 41, 42, 48 (VSYNC/HEARTBEAT/ERROR) | なし |
 | OLED | I2C | 廃止 |
-| 電源 | 別々の USB | 別々の USB (JP1 を閉じれば Tang → Pico) |
+| 電源 | 別々の USB | 別々の USB (5V の線はない) |
 
 ## 5. 完成形に向けて (ホストのモジュールの選択)
 

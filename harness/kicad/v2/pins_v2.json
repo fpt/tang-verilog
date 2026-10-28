@@ -94,7 +94,7 @@
       "fpga_dir": "output",
       "pico_gpio": 22,
       "pico_pin": 29,
-      "jumper": "JP2",
+      "jumper": "JP1",
       "note": "LED1 / LCD YD (LCD_INIT1) と共有"
     },
     {
@@ -103,7 +103,7 @@
       "fpga_dir": "output",
       "pico_gpio": 7,
       "pico_pin": 10,
-      "jumper": "JP3",
+      "jumper": "JP2",
       "note": "LED0 / LCD XR (LCD_INIT0) と共有"
     },
     {
@@ -178,7 +178,7 @@
     ]
   },
   "power": {
-    "tang_5v_to_pico_vbus": "JP1 + SS14 (既定は開、USB 2 本)",
+    "5v": "つながない (USB 2 本)",
     "3v3": "つながない",
     "gnd": "全部"
   }
