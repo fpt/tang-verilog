@@ -2841,10 +2841,6 @@
 		(uuid "53d54d2f-41f1-45d2-b376-ca6030be09f4")
 	)
 	(no_connect
-		(at 171.45 67.31)
-		(uuid "56ce527d-8ac9-478f-b30b-2092b26ea4da")
-	)
-	(no_connect
 		(at 135.89 54.61)
 		(uuid "601b4d50-1425-4a66-9a06-a6018054b13b")
 	)
@@ -2887,10 +2883,6 @@
 	(no_connect
 		(at 171.45 44.45)
 		(uuid "9bb6a3c7-9627-4764-9537-d78a58d45014")
-	)
-	(no_connect
-		(at 34.29 83.82)
-		(uuid "a054bde3-8b2c-4f88-8d67-de43870d50d5")
 	)
 	(no_connect
 		(at 57.15 33.02)
@@ -2995,6 +2987,16 @@
 			(type default)
 		)
 		(uuid "0f2bec69-93a3-495a-becc-552627cf4aa2")
+	)
+	(wire
+		(pts
+			(xy 171.45 67.31) (xy 185.42 67.31)
+		)
+		(stroke
+			(width 0)
+			(type default)
+		)
+		(uuid "1e9e5d77-d56c-470d-996e-c9dccf0c7b1d")
 	)
 	(wire
 		(pts
@@ -3448,6 +3450,16 @@
 	)
 	(wire
 		(pts
+			(xy 21.59 83.82) (xy 34.29 83.82)
+		)
+		(stroke
+			(width 0)
+			(type default)
+		)
+		(uuid "f3cdfd7c-3c1c-4b8d-be4a-59eaff465a92")
+	)
+	(wire
+		(pts
 			(xy 233.68 34.29) (xy 224.79 34.29)
 		)
 		(stroke
@@ -3725,6 +3737,16 @@
 			(justify left bottom)
 		)
 		(uuid "b997e54b-5126-41e4-856f-de519a11f92d")
+	)
+	(label "COPI"
+		(at 21.59 83.82 0)
+		(effects
+			(font
+				(size 1.27 1.27)
+			)
+			(justify left bottom)
+		)
+		(uuid "cc9d2745-30da-4e5b-b584-1fe19701de58")
 	)
 	(label "HSTX_D0"
 		(at 181.61 74.93 180)
@@ -5289,6 +5311,84 @@
 			(project "rp-tang-harness-v2"
 				(path "/2cf01f59-cf54-439e-881f-c06c5145d63c"
 					(reference "#PWR07")
+					(unit 1)
+				)
+			)
+		)
+	)
+	(symbol
+		(lib_id "power:GND")
+		(at 185.42 67.31 0)
+		(unit 1)
+		(body_style 1)
+		(exclude_from_sim no)
+		(in_bom yes)
+		(on_board yes)
+		(in_pos_files yes)
+		(dnp no)
+		(fields_autoplaced yes)
+		(uuid "80fa63c6-0085-4195-868d-1b32a654eeed")
+		(property "Reference" "#PWR08"
+			(at 185.42 73.66 0)
+			(hide yes)
+			(show_name no)
+			(do_not_autoplace no)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+			)
+		)
+		(property "Value" "GND"
+			(at 185.42 72.39 0)
+			(show_name no)
+			(do_not_autoplace no)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+			)
+		)
+		(property "Footprint" ""
+			(at 185.42 67.31 0)
+			(hide yes)
+			(show_name no)
+			(do_not_autoplace no)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+			)
+		)
+		(property "Datasheet" ""
+			(at 185.42 67.31 0)
+			(hide yes)
+			(show_name no)
+			(do_not_autoplace no)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+			)
+		)
+		(property "Description" "Power symbol creates a global label with name \"GND\" , ground"
+			(at 185.42 67.31 0)
+			(hide yes)
+			(show_name no)
+			(do_not_autoplace no)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+			)
+		)
+		(pin "1"
+			(uuid "108277d2-aebd-47e3-bbcb-356c8f1b067c")
+		)
+		(instances
+			(project "rp-tang-harness-v2"
+				(path "/2cf01f59-cf54-439e-881f-c06c5145d63c"
+					(reference "#PWR08")
 					(unit 1)
 				)
 			)
