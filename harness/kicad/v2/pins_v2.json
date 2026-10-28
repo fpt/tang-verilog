@@ -1,5 +1,5 @@
 {
-  "_comment": "ハーネス v2 (Pico 2 / Pico Plus 2 / Pico LiPo 2、Pico ピン配置) の配線表 (docs/HARNESS2.md)。fpga_dir は FPGA から見た向き。信号はすべて正論理。pico_pin は Pico の 40 ピンの物理番号、hstx_bit は HSTX の出力ビット (GP12 = bit0)。v1 と同じ名前の信号は同じ意味 (IRQ は CONTROL bit4 で READY)",
+  "_comment": "ハーネス v2 (Pico 2 / Pico Plus 2 / Pico LiPo 2、Pico ピン配置) の配線表 (docs/HARNESS2.md)。fpga_dir は FPGA から見た向き。信号はすべて正論理。pico_pin は Pico の 40 ピンの物理番号、hstx_bit は HSTX の出力ビット (GP12 = bit0)。v1 と同じ名前の信号は同じ意味 (IRQ は CONTROL bit4 で READY)。HEARTBEAT はなく、ready は VSYNC で判定する",
   "pins": [
     {
       "signal": "HSTX_D0",
@@ -90,21 +90,11 @@
     },
     {
       "signal": "VSYNC",
-      "fpga_pin": 16,
+      "fpga_pin": 52,
       "fpga_dir": "output",
       "pico_gpio": 22,
       "pico_pin": 29,
-      "jumper": "JP1",
-      "note": "LED1 / LCD YD (LCD_INIT1) と共有"
-    },
-    {
-      "signal": "HEARTBEAT",
-      "fpga_pin": 15,
-      "fpga_dir": "output",
-      "pico_gpio": 7,
-      "pico_pin": 10,
-      "jumper": "JP2",
-      "note": "LED0 / LCD XR (LCD_INIT0) と共有"
+      "note": "HDMI DDC_CLK と共有 (2.2k プルアップ 3.3V。EDID は読まない、SDA の 53 は触らない)。ready の判定にも使う (HEARTBEAT は廃止)。FPGA 未コンフィグでは High"
     },
     {
       "signal": "RESET",
@@ -140,6 +130,7 @@
       4,
       5,
       6,
+      7,
       26,
       27,
       28
@@ -162,6 +153,8 @@
       77
     ],
     "fpga_lcd_init": [
+      15,
+      16,
       17,
       18
     ],
@@ -172,7 +165,6 @@
       56
     ],
     "fpga_avoid": [
-      52,
       53,
       76
     ]
