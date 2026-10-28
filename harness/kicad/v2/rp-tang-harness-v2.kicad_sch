@@ -2656,6 +2656,10 @@
 		(uuid "53d54d2f-41f1-45d2-b376-ca6030be09f4")
 	)
 	(no_connect
+		(at 135.89 44.45)
+		(uuid "5f0436c1-44b1-47fb-9976-ab18a3a549da")
+	)
+	(no_connect
 		(at 135.89 54.61)
 		(uuid "601b4d50-1425-4a66-9a06-a6018054b13b")
 	)
@@ -2738,6 +2742,10 @@
 	(no_connect
 		(at 80.01 66.04)
 		(uuid "d6d52416-a164-459d-88d0-1da864ddbe6f")
+	)
+	(no_connect
+		(at 34.29 73.66)
+		(uuid "e71fd2f1-82d8-43e5-8f26-51721a3cd30c")
 	)
 	(no_connect
 		(at 171.45 31.75)
@@ -2881,16 +2889,6 @@
 	)
 	(wire
 		(pts
-			(xy 123.19 44.45) (xy 135.89 44.45)
-		)
-		(stroke
-			(width 0)
-			(type default)
-		)
-		(uuid "50140999-18ea-4097-bc4a-9f6eb68317bd")
-	)
-	(wire
-		(pts
 			(xy 181.61 39.37) (xy 171.45 39.37)
 		)
 		(stroke
@@ -2898,16 +2896,6 @@
 			(type default)
 		)
 		(uuid "591b8fa5-8200-429b-924e-ae65ef3036ce")
-	)
-	(wire
-		(pts
-			(xy 21.59 73.66) (xy 34.29 73.66)
-		)
-		(stroke
-			(width 0)
-			(type default)
-		)
-		(uuid "5b8bb11a-67c7-45ef-bbd4-e98394453ba5")
 	)
 	(wire
 		(pts
@@ -3279,16 +3267,6 @@
 		)
 		(uuid "20d54f7b-6900-4ecd-81be-e4e7b78769db")
 	)
-	(label "HEARTBEAT"
-		(at 21.59 73.66 0)
-		(effects
-			(font
-				(size 1.27 1.27)
-			)
-			(justify left bottom)
-		)
-		(uuid "231e468b-1d8f-4443-8dc0-ee073c54a362")
-	)
 	(label "HSTX_D3_P"
 		(at 21.59 93.98 0)
 		(effects
@@ -3508,16 +3486,6 @@
 			(justify right bottom)
 		)
 		(uuid "d61354f5-38e3-4d17-846f-4048091cde72")
-	)
-	(label "HEARTBEAT_T"
-		(at 123.19 44.45 0)
-		(effects
-			(font
-				(size 1.27 1.27)
-			)
-			(justify left bottom)
-		)
-		(uuid "d80a9da6-9733-4f74-bf7f-e94c29b7d931")
 	)
 	(label "HSTX_D2_P"
 		(at 21.59 91.44 0)
