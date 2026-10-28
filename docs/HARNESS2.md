@@ -35,7 +35,7 @@ Pico ピン配置では HSTX の 8 本が 16〜25 に連続して並ぶので、
 
 - **FPGA 側**: LCD を使うとヘッダに出ているクロック入力は 80 (GCLKT_0) しか残らない。他の部品がつながっていないヘッダピンは 71〜74 の 4 本だけ。
   残りは共有先が無害なもの (19/20 の LED、85 の SD プルアップ、79 の WS2812、52 の DDC_CLK) と v1 で実績のある 75/86。
-  76 は BL616 の JTAG MOSI につながっていて BL616 が駆動するので使わない
+  76 は BL616 の JTAG MOSI につながっていて BL616 が駆動するので使わない。
   棚卸しの詳細は Tang Nano 20K 回路図 Rev 1.3 のヘッダ J5/J6
 - **RP2350 側**: HSTX は GPIO 12〜19 固定。SPI1 は GPIO 8〜11 にまとめた。GP4/5 (Qw/ST の I2C になるボードがある) と GP0/1 (UART) は空けてある
 - **正論理のまま** (v1 と同じ)。CS と RESET に外付け 4.7k プルダウン (RP2350-E9: 入力のピンが内蔵プルダウンで約 2V に留まる不具合。外付けは 8.2k 以下が要る)
@@ -61,6 +61,22 @@ Pico ピン配置では HSTX の 8 本が 16〜25 に連続して並ぶので、
 - 52 の 2.2k プルアップ (3.3V) は FPGA の出力でそのまま駆動できる。VSYNC はほとんどの時間 Low なので約 1.5mA 流れる (気になるなら極性を反転して High を既定にする)
 - 電源: **GND だけ共通にして USB を 2 本**挿す。5V の線はない (Pico の VBUS と Tang の 5V はどちらもつながない)。3V3 同士もつながない
 - PSRAM: Pico 2 にはない (リンクと翻訳層の検証には不要)。Pico Plus 2 / Pico LiPo 2 では CS = GPIO 47、SDK の `psram` 初期化に 47 を渡す
+- DDC_CLK を VSYNC に使うので、ハーネス v2 をつないでいるあいだは EDID を読めない (今の VDP / 3D GPU は読んでいない)
+
+### 2.1 基板の確かめ (`rp-tang-harness-v2.kicad_pcb` のネット)
+
+- 12 本の信号は Pico と Tang の両方で表の物理ピンにつながっている (Tang の記号のピン名: 1 = 73、2 = 74、3 = 75、4 = 85、16 = 20、17 = 19、21 = 52、
+  23 = 71、24 = 72、27 = 79、28 = 86、37 = 80。22 = 53 はつながない)。GND は Pico の 8 本と Tang の 20 / 26 / 39、両面に GND のベタ
+- +3V3 は Pico の 36 (3V3 の出力) と C4 (0.1u) だけ。Tang の 3V3 とはつながっていない
+- HSTX の配線長 (Pico → 33R → Tang): D0 17mm、D1 12mm、D2 61mm、D3 61mm、CLK 66mm。最大の差 54mm で約 0.35ns。37.5MHz DDR の 1 ビット (13ns) にも
+  75MHz DDR (6.7ns) にも小さい。CLK が一番長いので、データはクロックより少し先に着く
+
+### 2.2 v2 で動かすときに変えるもの
+
+- ファームウェア: `pins.h` を `pins_v2.json` から作る (`make harness-fw` の `HARNESS_PINS`)。`fpga_ready()` を VSYNC のエッジで、SPI1 (GPIO 8〜11)、
+  `wiretest` の表から HEARTBEAT / ERROR / LED を外す。HSTX の送り出し (`stream` を HSTX に)
+- FPGA: 制約ファイル (上の `.cst`)、HEARTBEAT の出力をなくし、VSYNC を 52 に。`pincheck` は `pins_v2.json` で見る。`top_harness_probe` の折り返しの線を減らす
+- `harness.py`: selftest の HEARTBEAT 30Hz の項目を VSYNC 60Hz に、RESET の項目は VSYNC の立ち上がりで数える
 
 ## 3. FPGA 側
 
