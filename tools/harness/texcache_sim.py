@@ -1,8 +1,8 @@
 """テクスチャのキャッシュの見積もり (G5)。demo3d.py の場面のテクセルの取り出しを、tile_engine.sv と同じ順
 (タイル順、タイルの中は投入順、外接矩形とタイルの重なりを行ごと、辺の中のピクセルだけ) に並べ、直接写像のキャッシュの当たりの割合を数える
 
-  今のハード: 16 行 x 8 ワード、1 行は横 16 テクセル (16bpp)。Verilator の tex_miss と同じ数になる
-  比べるもの: 行の数 (32 / 64 / 128)、1 行を 4 x 4 テクセルのかたまりにする並び
+  今のハード: 64 行 x 8 ワード、1 行は raster.py の tex_index のかたまり (16bpp は 4 x 4 テクセル)。Verilator の tex_miss と同じ数になる
+  比べるもの: 行の数 (16 / 32 / 64 / 128)、前の並び (1 行が横 16 テクセル、"lin")
 
 usage: python3 tools/harness/texcache_sim.py [scene:frame ...]   (既定は 4 つの場面)
 """
@@ -44,17 +44,18 @@ def lookups(scene, k):
                 _, wl, hl, _, base = tex
                 for x, y, inside, _, _, uv in raster.pixels(r):
                     if inside and x >> 5 == tx and y >> 5 == ty:
-                        out.append((base, wl, (uv[0] >> 18) & ((1 << wl) - 1), (uv[1] >> 18) & ((1 << hl) - 1)))
+                        out.append((base, wl, (uv[0] >> 18) & ((1 << wl) - 1), (uv[1] >> 18) & ((1 << hl) - 1), tex[0]))
     return out
 
 
 def misses(seq, lines, block):
-    """直接写像、1 行 8 ワード (16bpp で 16 テクセル)。block なら 1 行が 4 x 4 テクセル、でなければ横 16 テクセル"""
+    """直接写像、1 行 8 ワード。block なら raster.py の並び (かたまり)、でなければ前の並び (1 行が横 8 ワード)"""
     tags = [None] * lines
     n = 0
-    for base, wl, tu, tv in seq:
-        ln = (tv >> 2) * ((1 << wl) >> 2) + (tu >> 2) if block else (tv << (wl - 4)) | (tu >> 4)
-        a = (base >> 3) + ln
+    for base, wl, tu, tv, fmt in seq:
+        sh = raster.TEX_SHIFT[fmt]
+        w = raster.tex_index(fmt, wl, tu, tv) if block else (tv << (wl - sh)) | (tu >> sh)
+        a = (base | w) >> 3
         if tags[a % lines] != a:
             tags[a % lines] = a
             n += 1
@@ -63,7 +64,7 @@ def misses(seq, lines, block):
 
 if __name__ == "__main__":
     args = sys.argv[1:] or ["tunnel:300", "room:120", "city:200", "logo:150"]
-    print("場面 取り出し " + " ".join(f"{n}{'b' if b else ''}" for n in (16, 32, 64, 128) for b in (0, 1)) + "  (b = 4 x 4 のかたまり、値は当たりの割合 %)")
+    print("場面 取り出し " + " ".join(f"{n}{'' if b else 'lin'}" for n in (16, 32, 64, 128) for b in (0, 1)) + "  (lin = 前の並び、値は当たりの割合 %)")
     for a in args:
         scene, k = a.split(":")
         seq = lookups(scene, int(k))

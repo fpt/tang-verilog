@@ -298,10 +298,12 @@ def tex_pixel(name, u, v):
 
 
 def tex_upload(name):
-    words = []
+    """64 x 64 の 16bpp を raster.py の並び (4 x 4 テクセルのかたまり) で"""
+    import raster
+    words = [0] * 2048
     for v in range(64):
         for u in range(0, 64, 2):
-            words.append(tex_pixel(name, u, v) | tex_pixel(name, u + 1, v) << 16)
+            words[raster.tex_index(0, 6, u, v)] = tex_pixel(name, u, v) | tex_pixel(name, u + 1, v) << 16
     return [g.OP_UPLOAD << 24 | len(words), tex_base(name)] + words
 
 

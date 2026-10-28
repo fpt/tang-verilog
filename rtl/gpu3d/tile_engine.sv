@@ -117,8 +117,10 @@ module tile_engine (
     logic [1:0]         tfmt;                         // テクスチャ: 0 16bpp、1 8bpp、2 4bpp
     logic [7:0]         tclut;
     logic [7:0]         umask, vmask;                 // 幅 - 1、高さ - 1
-    logic [1:0]         tsh;                          // 1 ワードのテクセル数の log2 (16bpp 1、8bpp 2、4bpp 3)
-    logic [3:0]         tvs;                          // 1 行のワード数の log2 (幅の log2 - tsh)
+    // テクスチャの並び (raster.py の tex_index): 8 ワードのかたまり。16bpp は 4 x 4 テクセル (かたまりの 1 行 2 ワード)、8bpp は 4 x 8、4bpp は 8 x 8
+    logic               tw16;                         // 16bpp (かたまりの 1 行が 2 ワード、高さ 4)
+    logic               tbw8;                         // かたまりの幅が 8 テクセル (4bpp)。でなければ 4
+    logic [3:0]         tvs;                          // かたまりの 1 段のワード数の log2 (幅の log2 - かたまりの幅の log2 + 3)
     logic [20:0]        tbase;
     logic [4:0]         ridx;
 
@@ -188,8 +190,8 @@ module tile_engine (
         pcol = gour ? {pr8[7:3], pg8[7:2], pb8[7:3]} : rflat;
     end
 
-    // テクセル: tu = (acc_u >>> 18) & (幅 - 1)、ワードアドレス = base | (tv << (幅の log2 - s)) | (tu >> s)
-    // (base はテクスチャのワード数の倍数。足し算にすると桁上げがキャッシュの判定まで続いて 63MHz に届かなかった)
+    // テクセル: tu = (acc_u >>> 18) & (幅 - 1)、ワードアドレス = base | (かたまりの段 << tvs) | (かたまりの列 << 3) | かたまりの中のワード
+    // (raster.py の tex_index。base はテクスチャのワード数の倍数。足し算にすると桁上げがキャッシュの判定まで続いて 63MHz に届かなかった)
     // ワードアドレスは FF (taddr): 次のクロックに A 段にいるピクセルの u, v (ac の更新と同じ値) から 1 クロック前に作る。
     // キャッシュの判定、埋める行の番地とタグ、キャッシュの読み出しの番地がどれも同じ FF から出る (G5: 組み合わせのワードアドレスから
     // 同じクロックに mem_addr・tf_line・tf_tag を取っていたら、配置によって 1 行がほかの行のデータで埋まった。nextpnr の報告では間に合っていた)
@@ -231,7 +233,12 @@ module tile_engine (
     end
     assign tu_n = acu_n[25:18] & umask;
     assign tv_n = acv_n[25:18] & vmask;
-    assign taddr_n = tbase | 21'(16'(tv_n) << tvs) | 21'(tu_n >> tsh);
+    logic [5:0] tvb, tub;                             // かたまりの段と列
+    logic [2:0] tlo;                                  // かたまりの中のワード
+    assign tvb     = tw16 ? 6'(tv_n >> 2) : 6'(tv_n >> 3);
+    assign tub     = tbw8 ? 6'(tu_n >> 3) : 6'(tu_n >> 2);
+    assign tlo     = tw16 ? {tv_n[1:0], tu_n[1]} : tv_n[2:0];
+    assign taddr_n = tbase | 21'(16'(tvb) << tvs) | 21'({tub, 3'd0}) | 21'(tlo);
     always_ff @(posedge clk) begin
         taddr <= taddr_n;
         tag_q <= ttag_mem[taddr_n[8:3]];
@@ -566,13 +573,13 @@ module tile_engine (
                             else if (ridx < 5'd24) rgx[3'(ridx - 5'd18)] <= mem_rdata;
                             else if (ridx < 5'd30) rgy[3'(ridx - 5'd24)] <= mem_rdata;
                             else if (ridx == 5'd30) begin
-                                logic [1:0] sh;
-                                sh     = (mem_rdata[17:16] == 2'd0) ? 2'd1 : (mem_rdata[17:16] == 2'd1) ? 2'd2 : 2'd3;
                                 tfmt  <= mem_rdata[17:16]; tclut <= mem_rdata[15:8];
                                 umask <= 8'((9'd1 << mem_rdata[7:4]) - 9'd1);
                                 vmask <= 8'((9'd1 << mem_rdata[3:0]) - 9'd1);
-                                tsh   <= sh;
-                                tvs   <= mem_rdata[7:4] - 4'(sh);
+                                tw16  <= mem_rdata[17:16] == 2'd0;
+                                tbw8  <= mem_rdata[17:16] == 2'd2;
+                                // かたまりの幅の log2 は 16bpp 2、8bpp 2、4bpp 3
+                                tvs   <= mem_rdata[7:4] + 4'd3 - ((mem_rdata[17:16] == 2'd2) ? 4'd3 : 4'd2);
                             end else begin
                                 tbase <= mem_rdata[20:0];
                             end

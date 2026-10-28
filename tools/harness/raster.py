@@ -21,8 +21,10 @@
     tu = (acc_u >>> 18) & (幅 - 1)、tv = (acc_v >>> 18) & (高さ - 1) (はみ出した分は折り返す)
     テクスチャ (SET_TEX): 形式 0 = 16bpp (RGB565、1 ワードに 2 つ、下位が偶数の u)、1 = 8bpp (1 ワードに 4 つ、u % 4 番目のバイト)、
     2 = 4bpp (1 ワードに 8 つ、u % 8 番目は [31 - 4k -: 4] = タイルの行と同じ並び)。8bpp / 4bpp は CLUT[(値 + clut) & 255] の色
-    テクセル (tu, tv) のワードアドレスは base | (tv << (幅の log2 - s)) | (tu >> s) (s は 16bpp 1、8bpp 2、4bpp 3)。
-    base はテクスチャのワード数 (2 ^ (幅の log2 + 高さの log2 - s)) の倍数にする (足し算でなく OR で作るため)
+    テクスチャは 8 ワードのかたまり (キャッシュの 1 行) の並び: 16bpp は 4 x 4 テクセル (1 行 2 ワード)、8bpp は 4 x 8、4bpp は 8 x 8 (1 行 1 ワード)。
+    かたまりは左上から行ごと、かたまりの中も行ごと (tex_index)。テクセル (tu, tv) のワードアドレスは base | tex_index(...)。
+    base はテクスチャのワード数 (2 ^ (幅の log2 + 高さの log2 - s)、s は 16bpp 1、8bpp 2、4bpp 3) の倍数にする (足し算でなく OR で作るため)
+    (G5 のあと: 横 16 テクセルの並びから変えた。奥に向かう面や走査線に斜めのテクスチャで、1 ピクセルごとに別の行にならない)
     色 0 (RGB565 の 0x0000) のテクセルは透明 (色も Z も書かない)。Gouraud なら頂点の色で変調する (PS1 と同じく 128 = 1 倍):
     R = min(31, (texR * r) >> 7)、G = min(63, (texG * g) >> 7)、B = min(31, (texB * b) >> 7)。Gouraud でなければテクセルの色そのまま
   半透明 (flags bit2、G4): 描く色 F (テクスチャ・変調のあと) を描く面の色 B と RGB565 の成分ごとに混ぜる。式は flags [5:4] (PS1 と同じ 4 つ):
@@ -158,13 +160,27 @@ def to565(rgb):
 TEX_SHIFT = {0: 1, 1: 2, 2: 3}        # 形式 (16 / 8 / 4bpp) → 1 ワードのテクセル数の log2
 
 
+def tex_layout(fmt):
+    """形式 → (s = 1 ワードのテクセル数の log2, かたまりの幅の log2, 高さの log2, かたまりの 1 行のワード数の log2)"""
+    sh = TEX_SHIFT[fmt]
+    lwpr = 1 if fmt == 0 else 0
+    return sh, sh + lwpr, 3 - lwpr, lwpr
+
+
+def tex_index(fmt, wl, tu, tv):
+    """テクセル (tu, tv) のテクスチャの中のワードの番号 (wl は幅の log2)"""
+    sh, lbw, lbh, lwpr = tex_layout(fmt)
+    return (((tv >> lbh) << (wl - lbw + 3)) | ((tu >> lbw) << 3) | ((tv & ((1 << lbh) - 1)) << lwpr)
+            | ((tu >> sh) & ((1 << lwpr) - 1)))
+
+
 def texel(read, tex, clut, uv):
     """テクセルの色 (RGB565)。read(ワードアドレス) は SDRAM、tex = (形式, 幅の log2, 高さの log2, CLUT のずらし, base)、uv は累算の値"""
     fmt, wl, hl, coff, base = tex
     tu = (uv[0] >> 18) & ((1 << wl) - 1)
     tv = (uv[1] >> 18) & ((1 << hl) - 1)
     sh = TEX_SHIFT[fmt]
-    w = read((base | (tv << (wl - sh)) | (tu >> sh)) & 0x1FFFFF)
+    w = read((base | tex_index(fmt, wl, tu, tv)) & 0x1FFFFF)
     if fmt == 0:
         return (w >> (16 * (tu & 1))) & 0xFFFF
     v = (w >> (8 * (tu & 3))) & 0xFF if fmt == 1 else (w >> (28 - 4 * (tu & 7))) & 0xF
