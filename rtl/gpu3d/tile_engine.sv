@@ -146,6 +146,12 @@ module tile_engine (
     logic [4:0]         mdone;
     logic               mph;                          // 乗算を出すのは 2 クロックに 1 回 (smul36x18)
     logic [31:0]        macc;                         // 乗算の結果を足していく (組ごと)
+    // 足し算は 2 段: 1 段目で足す相手 (レコードの値か macc) と積を FF に、2 段目で足して置く。積は 2 クロックに 1 つしか出ないので、
+    // 次の積の 1 段目には macc が間に合う (G5 のあと: 3 つから選んで 32bit を足すのを 1 クロックでしていたら、配置によって
+    // city の屋上の 1 行が欠けた。nextpnr の報告では間に合っていた)
+    logic               acc_v;
+    logic [3:0]         acc_dd;
+    logic [31:0]        acc_b, acc_p;
     smul36x18 #(.TAG_W(5), .P_W(32)) u_mul (
         .clk, .rst, .in_valid(m_in_v), .a(m_a), .b(m_b), .in_tag(m_in_tag),
         .out_valid(m_out_v), .p(m_p), .out_tag(m_out_tag)
@@ -444,7 +450,7 @@ module tile_engine (
             state   <= T_IDLE;
             mem_req <= 1'b0;
             mem_we  <= 1'b0;
-            b_v <= 1'b0; c_v <= 1'b0; d_v <= 1'b0; e_v <= 1'b0; e_zw <= 1'b0; f_v <= 1'b0; f_zw <= 1'b0; g_v <= 1'b0;
+            acc_v <= 1'b0; b_v <= 1'b0; c_v <= 1'b0; d_v <= 1'b0; e_v <= 1'b0; e_zw <= 1'b0; f_v <= 1'b0; f_zw <= 1'b0; g_v <= 1'b0;
             tvalid  <= '0;
             {c_prep, c_fetch, c_mul, c_walk, c_out, walked, drawn, tex_looks, tex_miss, c_tex} <= '0;
         end else begin
@@ -473,16 +479,22 @@ module tile_engine (
             b_v <= 1'b0;
 
             // 乗算の結果を足す (辺の値と属性。どちらも 32bit で回る)
+            // 置き場所ごとの 2 つの積は続けて出るので、加算器 1 つで: 1 つ目はレコードの e / s (er / ar に読んである) に、2 つ目はその和に足す
+            acc_v <= m_out_v;
             if (m_out_v) begin
-                // 置き場所ごとの 2 つの積は続けて出るので、加算器 1 つで: 1 つ目はレコードの e / s (er / ar に読んである) に、2 つ目はその和に足す
-                logic [3:0]  dd;
+                logic [3:0] dd;
+                dd     = m_out_tag[3:0];
+                acc_dd <= dd;
+                acc_p  <= m_p;
+                acc_b  <= m_out_tag[4] ? ((dd < 4'd3) ? 32'(er[2'(dd)]) : (dd < 4'd9) ? ar[3'(dd - 4'd3)] : 32'(er[2'(dd - 4'd9)])) : macc;
+            end
+            if (acc_v) begin
                 logic [31:0] val;
-                dd  = m_out_tag[3:0];
-                val = (m_out_tag[4] ? ((dd < 4'd3) ? 32'(er[2'(dd)]) : (dd < 4'd9) ? ar[3'(dd - 4'd3)] : 32'(er[2'(dd - 4'd9)])) : macc) + m_p;
+                val = acc_b + acc_p;
                 macc <= val;
-                if (dd < 4'd3)      er[2'(dd)] <= signed'(val);
-                else if (dd < 4'd9) ar[3'(dd - 4'd3)] <= val;
-                else                er_end[2'(dd - 4'd9)] <= signed'(val);
+                if (acc_dd < 4'd3)      er[2'(acc_dd)] <= signed'(val);
+                else if (acc_dd < 4'd9) ar[3'(acc_dd - 4'd3)] <= val;
+                else                    er_end[2'(acc_dd - 4'd9)] <= signed'(val);
                 mdone <= mdone + 5'd1;
             end
 
@@ -614,7 +626,7 @@ module tile_engine (
                         if (mk == 5'd23) state <= T_MULW;
                     end
                 end
-                T_MULW: if (mdone == 5'd24 || (mdone == 5'd23 && m_out_v)) begin
+                T_MULW: if (mdone == 5'd24) begin
                     y     <= oy0;
                     state <= T_ROW;
                 end
