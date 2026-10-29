@@ -77,7 +77,7 @@ RP2_MOUNT         = $(firstword $(wildcard /Volumes/RPI-RP2 /Volumes/RP2350 /med
 PICO_BOARD    ?= pico2
 PICO_PLATFORM ?= rp2350-arm-s   # rp2350-riscv にすると Hazard3 コア用
 
-.PHONY: help images image-fpga image-pico all lint sim scenario $(addprefix sim-,$(TBS)) render synth pnr bitstream pincheck prog flash demo fw harness-fw harness-deploy shell shell-pico zip clean
+.PHONY: timing-repro help images image-fpga image-pico all lint sim scenario $(addprefix sim-,$(TBS)) render synth pnr bitstream pincheck prog flash demo fw harness-fw harness-deploy shell shell-pico zip clean
 
 help:
 	@echo "make images      Docker イメージをビルド (image-fpga / image-pico で個別に)"
@@ -252,6 +252,15 @@ harness-deploy: harness-fw
 	@if [ -z "$(RP2_MOUNT)" ]; then echo "RP2 の BOOTSEL ドライブが見つかりません (BOOT を押しながら USB をつなぐ)"; exit 1; fi
 	cp $(HARNESS_UF2) $(RP2_MOUNT)/
 	@echo "-> $(RP2_MOUNT)"
+
+# nextpnr の Gowin のタイミング解析の確かめ (docs/NEXTPNR_GOWIN_TIMING.md)。配置のあとと配線のあとの Max frequency を並べる
+TIMING_REPRO := tools/repro/nextpnr_gowin_timing
+timing-repro:
+	@for v in "16 0" "16 1" "32 0" "32 1" "32 2"; do \
+		set -- $$v; \
+		docker run --rm -v "$(CURDIR)":/work -w /work/$(TIMING_REPRO) --user $$(id -u):$$(id -g) $(FPGA_IMAGE) bash run.sh $$1 $$2 >/dev/null 2>&1; \
+		printf "W=%-2s WCHAIN=%s  %s\n" $$1 $$2 "$$(grep -o "Max frequency[^(]*" $(TIMING_REPRO)/c_$$1_$$2.log | sed 's/.*: //' | paste -sd' ' - | sed 's/ MHz /  ->  /')"; \
+	done
 
 # ---------------------------------------------------------------- その他
 shell:
