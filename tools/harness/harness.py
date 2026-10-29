@@ -690,6 +690,10 @@ def demo(bridge, frames, start, scene=None, shot=None):
         import demo as demo_mod
     vdp = Vdp(bridge)
     gpu = Gpu(vdp)
+    is_3d = bool(vdp.read1(REGS["VERSION"]) & 0x80)                 # VERSION bit7: 3D GPU のビットストリーム
+    if bool(scene) != is_3d:
+        need = "make prog TARGET=gpu3d" if scene else "make prog TARGET=hdmi"
+        raise HarnessError(f"{'3D scene needs' if scene else 'M9 demo needs'} the {'3D GPU' if scene else 'VDP'} bitstream ({need})")
     control = vdp.read1(REGS["CONTROL"])
     bridge.command("freq 8000000")
     k = start

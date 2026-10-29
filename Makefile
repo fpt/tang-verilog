@@ -91,7 +91,8 @@ help:
 	@echo "make pincheck    ハーネスが駆動するピンを FPGA が駆動しないか検査 (prog / flash の前に自動で実行)"
 	@echo "make prog        SRAM に書き込み (ホストの openFPGALoader が必要)"
 	@echo "make flash       Flash に書き込み (同上)"
-	@echo "make demo        M9 のデモをハーネス経由で流す (FRAMES=0 で Ctrl-C まで。ホストの python3)"
+	@echo "make demo        デモをハーネス経由で流す (既定は Ctrl-C まで、FRAMES=N で N フレーム。ホストの python3)"
+	@echo "                 SCENE=logo|tunnel|room|city で 3D の場面 (先に make prog TARGET=gpu3d)。なければ M9 のデモ (VDP)"
 	@echo "make harness-fw  ハーネスの RP2 ブリッジファームウェア (HARNESS_BOARD=$(HARNESS_BOARD))"
 	@echo "make harness-deploy  BOOTSEL の RP2 に書き込む (ホストで実行)"
 	@echo "make fw          RP2350 ファームウェアをビルド (firmware/build/*.uf2)"
@@ -223,10 +224,11 @@ prog: pincheck
 flash: pincheck
 	openFPGALoader -b $(BOARD) -f $(OUT_DIR)/$(TOP).fs
 
-# M9 のデモ: ハーネス (USB) を使うのでホストで動かす。FPGA に HDMI の設計が入っている前提
-FRAMES ?= 0
+# デモ: ハーネス (USB) を使うのでホストで動かす。SCENE なしは M9 のデモ (VDP のビットストリーム)、SCENE=logo/tunnel/room/city は G5 の 3D の場面 (TARGET=gpu3d)
+# FRAMES は make render の既定 (3) と共用なので、コマンドラインで指定したときだけ使う (既定は 0 = Ctrl-C まで)
+DEMO_FRAMES = $(if $(filter command line,$(origin FRAMES)),$(FRAMES),0)
 demo:
-	python3 tools/harness/harness.py demo --frames $(FRAMES)
+	python3 tools/harness/harness.py demo $(SCENE) --frames $(DEMO_FRAMES)
 
 # ---------------------------------------------------------------- RP2350
 fw:
