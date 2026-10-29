@@ -92,7 +92,7 @@ help:
 	@echo "make prog        SRAM に書き込み (ホストの openFPGALoader が必要)"
 	@echo "make flash       Flash に書き込み (同上)"
 	@echo "make demo        デモをハーネス経由で流す (既定は Ctrl-C まで、FRAMES=N で N フレーム。ホストの python3)"
-	@echo "                 SCENE=logo|tunnel|room|city で 3D の場面 (先に make prog TARGET=gpu3d)。なければ M9 のデモ (VDP)"
+	@echo "                 SCENE=logo|tunnel|room|city で 3D の場面、SCENE=all で 4 つを 10 秒ずつくり返す (先に make prog TARGET=gpu3d)。なければ M9 のデモ (VDP)"
 	@echo "make harness-fw  ハーネスの RP2 ブリッジファームウェア (HARNESS_BOARD=$(HARNESS_BOARD))"
 	@echo "make harness-deploy  BOOTSEL の RP2 に書き込む (ホストで実行)"
 	@echo "make fw          RP2350 ファームウェアをビルド (firmware/build/*.uf2)"

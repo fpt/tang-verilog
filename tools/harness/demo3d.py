@@ -595,9 +595,12 @@ def scene_city(k):
                     q = [(pts[0][0], y0, pts[0][2]), (pts[1][0], y0, pts[1][2]), (pts[1][0], y1, pts[1][2]), (pts[0][0], y1, pts[0][2])]
                     cols = [fog(shade(n, light, (190, 190, 200), amb=0.75, dif=0.35), math.dist(p, eye), 6, dmax) for p in q]
                     fr.poly(q, cols, [(0.0, y0 * 24), (us, y0 * 24), (us, y1 * 24), (0.0, y1 * 24)], tex="window", key=d)
-            roof = [(x0, h, z1), (x1, h, z1), (x1, h, z0), (x0, h, z0)]
+            # 屋上 (上から見て反時計回りが表。前は向きが逆で、いつも裏として捨てられていた)
+            roof = [(x0, h, z0), (x1, h, z0), (x1, h, z1), (x0, h, z1)]
             if eye[1] > h:
-                fr.poly(roof, [fog((60, 60, 75), math.dist(p, eye), 6, dmax) for p in roof], key=d - 0.01)
+                # 単色 (リンクの量を減らす。屋上はどこも同じ明るさなので、霧は真ん中の距離で)
+                rc = fog(shade((0, 1, 0), light, (120, 118, 130), amb=0.55, dif=0.4), math.dist((ctr[0], h, ctr[2]), eye), 6, dmax)
+                fr.poly(roof, [rc] * 4, key=d - 0.01, flat="#%02x%02x%02x" % tuple(max(0, min(255, int(c))) for c in rc))
     # 街灯 (加算の半透明。道路の両側)
     for j in range(j0, j0 + 9):
         for x in (0.2, 5.8):
@@ -611,13 +614,16 @@ def scene_city(k):
 
 
 SCENES = {"logo": scene_logo, "tunnel": scene_tunnel, "room": scene_room, "city": scene_city}
+ORDER = ["logo", "tunnel", "room", "city"]          # SCENE=all でこの順に回す (harness.py demo all)
 SCENE_TEX = {"logo": ["gold"], "tunnel": ["stone"], "room": ["env", "floor", "wall"], "city": ["window", "ground"]}
 CLEAR = {"logo": "#000000", "tunnel": "#000000", "room": "#000000", "city": "#000000"}
 
 
 def setup_words(scene):
+    """場面のテクスチャ。"all" なら全部の場面の分 (テクスチャの置き場所は場面ごとに別)"""
     out = []
-    for name in SCENE_TEX[scene]:
+    names = [n for sc in ORDER for n in SCENE_TEX[sc]] if scene == "all" else SCENE_TEX[scene]
+    for name in names:
         out += tex_upload(name)
     return out
 

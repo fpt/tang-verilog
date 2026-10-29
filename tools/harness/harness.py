@@ -27,6 +27,7 @@ usage: harness.py [--port PORT] <command> [args...]
   demo [<scene>] [--frames N] [--start K] [--shot PNG]
                             M9 のデモ (demo.py) を流す。N フレーム (0 なら Ctrl-C まで)。速さ・表示フレーム / 描画フレーム・UNDERFLOW。
                             <scene> (logo / tunnel / room / city) なら G5 の 3D の場面 (demo3d.py、make TARGET=gpu3d のビットストリーム)。
+                            all なら 4 つを 10 秒ずつくり返す。
                             --shot で最後のフレームの HDMI キャプチャを PNG に
   scenario <file.json> [--no-capture]
                             シナリオを実機で走らせ、check ごとに FRAME_CRC を参照モデル (gpu_model.py) と比べる
@@ -678,9 +679,30 @@ def mulprobe(bridge, iterations):
 
 def demo(bridge, frames, start, scene=None, shot=None):
     """M9 のデモ (demo.py) を流し続ける。フレームは WAIT_VBLANK で区切られるので、間に合っていれば 60 フレーム / 秒。
-    scene があれば G5 の 3D の場面 (demo3d.py)。速さはハーネス v1 の SPI (1 秒に約 45,000 ワード) で決まる"""
+    scene があれば G5 の 3D の場面 (demo3d.py)。"all" なら logo → tunnel → room → city を 10 秒ずつくり返す
+    (場面ごとにフレーム 0 から。切り替えは時計で決めるので、"all" のときだけフレームの中身が k だけでは決まらない)"""
     import gpu_model
-    if scene:
+    if scene == "all":
+        import demo3d
+
+        class demo_mod:
+            cur = {"i": 0, "t": None, "k": 0}
+
+            @staticmethod
+            def setup_words():
+                return demo3d.setup_words("all")
+
+            @staticmethod
+            def frame_words(_k):
+                c = demo_mod.cur
+                now = time.monotonic()
+                if c["t"] is None:
+                    c["t"] = now
+                elif now - c["t"] >= ALL_SCENE_SECONDS:
+                    c["i"], c["t"], c["k"] = (c["i"] + 1) % len(demo3d.ORDER), now, 0
+                c["k"] += 1
+                return demo3d.frame_words(demo3d.ORDER[c["i"]], c["k"] - 1)
+    elif scene:
         import demo3d
 
         class demo_mod:
@@ -746,6 +768,8 @@ def demo(bridge, frames, start, scene=None, shot=None):
         r["shot"] = shot
     return r
 
+
+ALL_SCENE_SECONDS = 10.0                       # demo all: 1 つの場面を見せる秒数
 
 AUDIO = {"PCM_RD": 0x50, "UNDERRUN": 0x52}     # audio_out.sv (読み出しだけ)
 
