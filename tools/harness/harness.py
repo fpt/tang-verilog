@@ -11,7 +11,7 @@ usage: harness.py [--port PORT] <command> [args...]
   reset [ms]       RESET を High にする
   irqwait [ms]     IRQ の立ち上がりを待つ
   raw <line>       ブリッジに 1 行そのまま送る
-  prog <target>    make prog TARGET=<target> (pincheck 込みで FPGA の SRAM に書き込む)
+  prog <design>    make prog / prog-3d / prog-lcd / prog-probe (design: vdp / gpu3d / lcd / probe。pincheck 込みで FPGA の SRAM に書き込む)
   reg read <reg> [n]        レジスタを読む (<reg> は名前か 0x7e のような番地)
   reg write <reg> <hex>     レジスタに書く (複数バイトなら番地が 1 ずつ進む)
   selftest [--iterations N] HARNESS.md の selftest (FPGA に hdmi などの設計が入っている前提)
@@ -26,7 +26,7 @@ usage: harness.py [--port PORT] <command> [args...]
                             "frames": [[...], ...] ならフレームごとに順に使う
   demo [<scene>] [--frames N] [--start K] [--shot PNG]
                             M9 のデモ (demo.py) を流す。N フレーム (0 なら Ctrl-C まで)。速さ・表示フレーム / 描画フレーム・UNDERFLOW。
-                            <scene> (logo / tunnel / room / city) なら G5 の 3D の場面 (demo3d.py、make TARGET=gpu3d のビットストリーム)。
+                            <scene> (logo / tunnel / room / city) なら G5 の 3D の場面 (demo3d.py、3D GPU のビットストリーム)。
                             all なら 4 つを 10 秒ずつくり返す。
                             --shot で最後のフレームの HDMI キャプチャを PNG に
   scenario <file.json> [--no-capture]
@@ -38,8 +38,9 @@ usage: harness.py [--port PORT] <command> [args...]
                             HDMI キャプチャも比べる。--keep でそのまま表示を残す
   mem read <word_addr> [n]  SDRAM を 1 ワードずつ読む
   reconfig                  FPGA を再コンフィグする (RECONFIG に 0xA5)。フラッシュの multiboot で VDP と 3D GPU が入れ替わる
-                            (make flash TARGET=hdmi と make flash TARGET=gpu3d)。切り替わるまでの時間と VERSION を出す
-  mulprobe [--iterations N] 3D GPU のビットストリーム (make TARGET=gpu3d) の乗算器 (mul_probe、DSP) を端の値と乱数で確かめる
+                            (make flash で両方を書いておく)。切り替わるまでの時間と VERSION を出す。
+                            demo と scenarios/gpu3d/ のシナリオ・fps は、要るビットストリームが動いていなければ自分で切り替える
+  mulprobe [--iterations N] 3D GPU のビットストリーム (make bitstream-gpu3d MUL_PROBE=1) の乗算器 (mul_probe、DSP) を端の値と乱数で確かめる
   mem write <word_addr> <hex32>...  SDRAM に書く
 
 出力は 1 つの JSON (標準出力)。"ok" が true でなければ終了コード 1。
@@ -539,6 +540,7 @@ def scenario(bridge, path, do_capture, out_dir):
     import gpu_model
     import imgcmp
     sc = gpu_model.load(path)
+    switched = ensure_bitstream(bridge, True) if needs_3d(path) else None
     kinds = []
     errors = []                                  # check ごとに、エラーが立つはずか (タイルのリストの溢れなど)
     words, checks = gpu_model.expected(sc, kinds, errors)
@@ -602,8 +604,11 @@ def scenario(bridge, path, do_capture, out_dir):
     finally:
         bridge.command("freq 1000000")
         vdp.write(REGS["CONTROL"], [control])
-    return {"ok": all(r["ok"] for r in results) and under == 0, "scenario": sc["name"], "underflow": under,
-            "checks": results}
+    out = {"ok": all(r["ok"] for r in results) and under == 0, "scenario": sc["name"], "underflow": under,
+           "checks": results}
+    if switched:
+        out["switched"] = switched
+    return out
 
 
 def fps(bridge, path, frames):
@@ -612,6 +617,8 @@ def fps(bridge, path, frames):
     "frame" の代わりに "frames": [[...], [...], ...] なら、フレームごとに順に使う (回る道路など、毎フレーム中身が変わるもの)"""
     import gpu_model
     sc = gpu_model.load(path)
+    if needs_3d(path):
+        ensure_bitstream(bridge, True)
     setup = [w for st in sc["setup"] for w in gpu_model.encode(st)]
     seq = [[w for st in fr for w in gpu_model.encode(st)] for fr in (sc["frames"] if "frames" in sc else [sc["frame"]])]
     vdp = Vdp(bridge)
@@ -715,10 +722,7 @@ def demo(bridge, frames, start, scene=None, shot=None):
         import demo as demo_mod
     vdp = Vdp(bridge)
     gpu = Gpu(vdp)
-    is_3d = bool(vdp.read1(REGS["VERSION"]) & 0x80)                 # VERSION bit7: 3D GPU のビットストリーム
-    if bool(scene) != is_3d:
-        need = "make prog TARGET=gpu3d" if scene else "make prog TARGET=hdmi"
-        raise HarnessError(f"{'3D scene needs' if scene else 'M9 demo needs'} the {'3D GPU' if scene else 'VDP'} bitstream ({need})")
+    switched = ensure_bitstream(bridge, bool(scene))              # 3D の場面は 3D GPU、M9 のデモは VDP
     control = vdp.read1(REGS["CONTROL"])
     bridge.command("freq 8000000")
     k = start
@@ -767,6 +771,8 @@ def demo(bridge, frames, start, scene=None, shot=None):
          "underflow": under, "gpu_status": st}
     if scene:
         r["scene"] = scene
+    if switched:
+        r["switched"] = switched
     if shot:
         r["shot"] = shot
     return r
@@ -793,6 +799,24 @@ def reconfig(bridge, timeout=5.0):
     name = lambda v: None if v is None else ("3d" if v & 0x80 else "vdp")
     return {"ok": v1 is not None and v1 != v0, "from": name(v0), "to": name(v1), "version_from": v0, "version_to": v1,
             "seconds": round(dt, 3), **({"last_error": last_err} if v1 is None else {})}
+
+
+def needs_3d(path):
+    """scenarios/gpu3d/ のシナリオは 3D GPU のビットストリームが要る (ほかは今のビットストリームのまま走らせる)"""
+    return "gpu3d" in os.path.normpath(path).split(os.sep)[:-1]
+
+
+def ensure_bitstream(bridge, want_3d):
+    """要るビットストリーム (want_3d: 3D GPU、でなければ VDP) が動いていなければ RECONFIG で切り替える。
+    フラッシュに両方 (make flash) がないと切り替わらない。切り替えたら reconfig の結果、そのままなら None"""
+    vdp = Vdp(bridge)
+    if bool(vdp.read1(REGS["VERSION"]) & 0x80) == want_3d:
+        return None
+    r = reconfig(bridge)
+    if not r["ok"] or (r["to"] == "3d") != want_3d:
+        raise HarnessError(f"needs the {'3D GPU' if want_3d else 'VDP'} bitstream; RECONFIG did not switch to it "
+                           f"({r}). Write both with make flash, or load it with make {'prog-3d' if want_3d else 'prog'}")
+    return r
 
 
 ALL_SCENE_SECONDS = 10.0                       # demo all: 1 つの場面を見せる秒数
@@ -972,8 +996,11 @@ def main():
         if len(a.args) != 1:
             ap.error("prog <target>")
         # make の出力は標準エラーへ (標準出力は JSON だけにする)
-        r = subprocess.run(["make", "prog", f"TARGET={a.args[0]}"], cwd=REPO, stdout=sys.stderr)
-        result = {"ok": r.returncode == 0, "target": a.args[0]}
+        progs = {"vdp": "prog", "gpu3d": "prog-3d", "3d": "prog-3d", "lcd": "prog-lcd", "probe": "prog-probe"}
+        if a.args[0] not in progs:
+            ap.error("prog <vdp|gpu3d|lcd|probe>")
+        r = subprocess.run(["make", progs[a.args[0]]], cwd=REPO, stdout=sys.stderr)
+        result = {"ok": r.returncode == 0, "design": a.args[0]}
     elif a.command in ("reg", "selftest", "memtest", "mem", "frametest", "fb", "fbtest", "scenario", "fps", "demo", "audio",
                        "mulprobe", "reconfig"):
         bridge = Bridge(find_port(a.port))

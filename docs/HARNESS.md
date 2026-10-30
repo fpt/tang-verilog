@@ -401,7 +401,7 @@ make harness-fw                                  # ブリッジ (既定は RP204
 python3 tools/harness/harness.py bootsel         # 2 回目以降は BOOT ボタンなしで BOOTSEL に入れる
 python3 tools/harness/harness.py status          # ピンの値、HEARTBEAT / VSYNC / IRQ の周期、ready
 python3 tools/harness/harness.py spi a55a0102    # SPI の 1 トランザクション
-python3 tools/harness/harness.py prog hdmi       # make prog TARGET=hdmi (pincheck 込み)
+python3 tools/harness/harness.py prog vdp        # make prog (pincheck 込み。gpu3d なら make prog-3d)
 ```
 
 | コマンド | 内容 |
@@ -432,10 +432,10 @@ python3 tools/harness/harness.py prog hdmi       # make prog TARGET=hdmi (pinche
 | `fps <file.json> [--frames N]` | `{"setup", "frame"}` の frame (`SWAP` か `WAIT_VBLANK` で区切る) を N 回くり返し、fps・表示フレーム / 描画フレーム・`UNDERFLOW` を測る。`"frames": [[...], ...]` ならフレームごとに順に使う (`e7_fps` の回る道路) |
 | `audio [--seconds S] [--tone HZ] [--stream]` | 音 (K5a): 正弦波を PCM のリングに流し、`PCM_RD` / `PCM_WR` で先回りを保ちながら、アンダーラン 0 と 48kHz を確かめる。既定はリングに 1 回書いて `PCM_WR` を進めるだけ (音の周期がリングを割り切る 750Hz など)。`--stream` は毎回 `UPLOAD` するが、192KB/s 要り、このハーネス (約 180KB/s) では途切れる |
 | `demo [<scene>] [--frames N] [--start K] [--shot PNG]` | M9 のデモ (`demo.py`) を流す。`<scene>` (`logo` / `tunnel` / `room` / `city`) なら G5 の 3D の場面 (`demo3d.py`、3D のビットストリーム)。`all` なら 4 つを 10 秒ずつくり返す (`make demo SCENE=all`)。`--shot` で最後のフレームのキャプチャを保存 |
-| `reconfig` | `RECONFIG` に `0xA5` を書いて FPGA を再コンフィグし、`VERSION` が変わって応答が戻るまでの時間を出す。フラッシュに VDP と 3D GPU の両方 (`make flash TARGET=hdmi`、`make flash TARGET=gpu3d`) が要る |
-| `mulprobe [--iterations N]` | 3D GPU のビットストリーム (`make TARGET=gpu3d`) の乗算器 (`mul_probe`) を、符号の組み合わせごとに端の値と乱数で確かめる (符号付きの DSP と、符号なし + 補正) |
+| `reconfig` | `RECONFIG` に `0xA5` を書いて FPGA を再コンフィグし、`VERSION` が変わって応答が戻るまでの時間を出す。フラッシュに VDP と 3D GPU の両方 (`make flash`) が要る。`demo` と `scenarios/gpu3d/` のシナリオ・`fps` は、要るビットストリームが動いていなければ自分で切り替える (結果に `switched`) |
+| `mulprobe [--iterations N]` | 3D GPU のビットストリーム (`make bitstream-gpu3d MUL_PROBE=1`) の乗算器 (`mul_probe`) を、符号の組み合わせごとに端の値と乱数で確かめる (符号付きの DSP と、符号なし + 補正) |
 | `fbtest [<png>] [--slot N] [--keep] [--no-capture]` | アップロードして表示し、`FRAME_CRC`・`UNDERFLOW`・キャプチャを参照モデル (`fbmodel.py`) と比べる |
-| `prog <target>` | `make prog TARGET=<target>` |
+| `prog <vdp\|gpu3d\|lcd\|probe>` | `make prog` / `prog-3d` / `prog-lcd` / `prog-probe` |
 
 - 出力は 1 つの JSON。`"ok"` が true でなければ終了コード 1
 - **ready**: HEARTBEAT が直近 100ms 以内に立ち上がっていること。FPGA の書き込み中や、HEARTBEAT を出さない設計 (今の HDMI など) では `spi` を拒否する

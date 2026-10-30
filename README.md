@@ -25,7 +25,7 @@ Tang Nano 20K (Gowin GW2AR-18) と RP2350 で、レトロゲーム機の VDP の
 - 進み具合: コマンド GPU は [docs/GPU_PLAN.md](docs/GPU_PLAN.md) (M0〜M9 済み、M8 はやめた)、エミュレータ向けのタイル/スプライト エンジンは
   [docs/EMU_GPU_PLAN.md](docs/EMU_GPU_PLAN.md) (E1〜E4・E7 (Mode 7 と霧) 済み、次は E5 のホスト翻訳層)、
   [rs-kessel](https://github.com/fpt/rs-kessel) を載せる準備は [docs/KESSEL_ON_VDP.md](docs/KESSEL_ON_VDP.md) (K1〜K4 の VDP 側 = 8bpp の面・BLIT4・スプライトのセル順とバンク・STRETCH_BLIT・ライトマップ済み)
-- 3D GPU (タイルベース、VDP を外した別のビットストリーム `make TARGET=gpu3d`) は [docs/GPU3D_PLAN.md](docs/GPU3D_PLAN.md) (G0 の骨格、G1 の三角形 (単色・Gouraud・Z)、G2 のタイルベースの遅延描画 (TBDR)、G3 のテクスチャ、G4 の半透明、G5 の場面 (ロゴ・トンネル・映り込む玉の部屋・夜の街、`harness.py demo <場面>`) 済み)
+- 3D GPU (タイルベース、VDP を外した別のビットストリーム `make bitstream-gpu3d`。フラッシュに VDP と一緒に置き、`RECONFIG` で入れ替える) は [docs/GPU3D_PLAN.md](docs/GPU3D_PLAN.md) (G0 の骨格、G1 の三角形 (単色・Gouraud・Z)、G2 のタイルベースの遅延描画 (TBDR)、G3 のテクスチャ、G4 の半透明、G5 の場面 (ロゴ・トンネル・映り込む玉の部屋・夜の街、`harness.py demo <場面>`) 済み)
 - 本番ホスト (RP2350) とのリンクは HSTX に決めた (EMU_GPU_PLAN.md の「本番のリンク」)。まだ作っていない
 
 ## ツール
@@ -66,13 +66,15 @@ make help
 | `make sim` | `sim/tb_*.sv` を全部実行 (`SIM=verilator` で Verilator を使う)。VCD は `build/sim/` に出力 |
 | `make sim-tb_tmds_encoder` | テストベンチを 1 つだけ実行 |
 | `make render` | Verilator で映像出力を回し、各フレームを `build/render/frame_*.png` に保存 |
-| `make bitstream` | 合成 → 配置配線 → `build/top.fs` |
-| `make bitstream TARGET=lcd` | 40 ピン RGB LCD (800x480) に HDMI と同じテストパターンを出す → `build/top_lcd.fs` (`make prog TARGET=lcd` で書き込み) |
+| `make bitstream` | 合成 → 配置配線 → VDP (`build/vdp/top.fs`) と 3D GPU (`build/gpu3d/top.fs`)。1 つだけなら `make bitstream-vdp` / `bitstream-gpu3d` |
+| `make flash` | VDP をフラッシュの 0x000000、3D GPU を 0x100000 に (電源を入れると VDP。`harness.py reconfig` か、要るときに `harness.py` が自分で入れ替える) |
+| `make prog` / `make prog-3d` | VDP / 3D GPU を SRAM に (開発中の確かめ) |
+| `make bitstream-lcd` | 40 ピン RGB LCD (800x480) に HDMI と同じテストパターンを出す → `build/lcd/top_lcd.fs` (`make prog-lcd` で書き込み) |
 | `make scenario SCENARIO=scenarios/m5_basic.json` | GPU のシナリオをシステム全体の RTL (Verilator) で走らせ、参照モデルの CRC と比べる。実機は `harness.py scenario` |
 | `make render FREEZE=1` | アニメーションを止めた参照画像と各フレームの CRC (`frames.json`) を `build/render_frozen/` に (実機の `FRAME_CRC` と比べる) |
-| `make render TARGET=lcd` | LCD 版の映像を `build/render_lcd/frame_*.png` に保存 |
+| `make render-lcd` | LCD 版の映像を `build/render_lcd/frame_*.png` に保存 |
 | `make harness-fw` / `python3 tools/harness/harness.py <cmd>` | ハーネスの RP2 ブリッジとホストツール (`status` / `selftest` / `memtest` / `frametest` / `fbtest` / `prog` など)。詳細は [docs/HARNESS.md](docs/HARNESS.md) |
-| `make prog` / `make flash` | Tang Nano 20K の SRAM / Flash に書き込み (先に `make pincheck` でハーネスのピンと衝突しないか検査する) |
+| `make prog` / `make flash` | Tang Nano 20K の SRAM / Flash に書き込み (書く前に、ハーネスのピンと衝突しないかを `pincheck-<設計>` が自動で検査する) |
 | `make fw` | RP2350 ファームウェアをビルド (`firmware/build/vdp_host.uf2`) |
 | `make shell` / `make shell-pico` | 各コンテナのシェルに入る |
 | `make zip` | 別環境へ持っていくためのソース一式を `dist/<ディレクトリ名>.zip` に作成 (ホストの git と zip を使用) |
