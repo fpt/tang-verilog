@@ -30,6 +30,7 @@ module top #(
     output logic       vsync_out,
     output logic       heartbeat,
     output logic       error_out,
+    output logic       reconfig_n,   // RECONFIG_N (ピン 9)。Low で再コンフィグ (--reconfign_as_gpio は付けない)
     // パッケージ内 SDRAM
     output logic        O_sdram_clk,
     output logic        O_sdram_cke,
@@ -193,6 +194,7 @@ module top #(
         .frame_error(spi_frame_error)
     );
 
+    logic reconfig_req;                  // vdp_regs の RECONFIG (下で RECONFIG_N を Low にする)
     vdp_regs #(.VERSION(GPU3D != 0 ? 8'h81 : 8'h01)) u_regs (
         .clk(clk_sys), .rst(rst_sys),
         .addr(reg_addr), .wdata(reg_wdata), .we(reg_we && !sel_mem && !sel_gpu && !sel_audio), .re(reg_re && !sel_mem && !sel_gpu && !sel_audio),
@@ -202,8 +204,18 @@ module top #(
         .held_crc_async(held_crc), .mark_count_async(mark_count),
         .error_event(spi_frame_error),
         .underflow_count,
-        .control, .irq(irq_vblank), .error(error_out)
+        .control, .irq(irq_vblank), .error(error_out), .reconfig_req
     );
+
+    // 再コンフィグ: RECONFIG に 0xA5 を書いたら RECONFIG_N を 256 クロック (約 4us) Low にする (25ns 以上あればよい)。
+    // フラッシュのこのビットストリームの multiboot の番地 (gowin_pack --multiboot_address) から読み直す
+    logic [8:0] reconfig_cnt;
+    always_ff @(posedge clk_sys) begin
+        if (rst_sys)                     reconfig_cnt <= '0;
+        else if (reconfig_req)           reconfig_cnt <= 9'd256;
+        else if (reconfig_cnt != 9'd0)   reconfig_cnt <= reconfig_cnt - 9'd1;
+    end
+    assign reconfig_n = reconfig_cnt == 9'd0;
 
     // --- パッケージ内 SDRAM ---
     // 利用者: a = フレームバッファの表示 (最優先), b = GPU の描画, c = メモリテスト

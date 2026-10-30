@@ -37,6 +37,8 @@ usage: harness.py [--port PORT] <command> [args...]
                             アップロードして表示し、FRAME_CRC と UNDERFLOW を参照モデル (fbmodel.py) と比べ、
                             HDMI キャプチャも比べる。--keep でそのまま表示を残す
   mem read <word_addr> [n]  SDRAM を 1 ワードずつ読む
+  reconfig                  FPGA を再コンフィグする (RECONFIG に 0xA5)。フラッシュの multiboot で VDP と 3D GPU が入れ替わる
+                            (make flash TARGET=hdmi と make flash TARGET=gpu3d)。切り替わるまでの時間と VERSION を出す
   mulprobe [--iterations N] 3D GPU のビットストリーム (make TARGET=gpu3d) の乗算器 (mul_probe、DSP) を端の値と乱数で確かめる
   mem write <word_addr> <hex32>...  SDRAM に書く
 
@@ -78,6 +80,7 @@ REGS = {
     "SCRATCH": 0x7D,
     "ID": 0x7E,
     "VERSION": 0x7F,
+    "RECONFIG": 0x7C,       # 0xA5 で再コンフィグ (multiboot で次のビットストリーム)
 }
 # rtl/vdp/mem_test.sv (SDRAM のテスト)
 MEM = {
@@ -769,6 +772,29 @@ def demo(bridge, frames, start, scene=None, shot=None):
     return r
 
 
+def reconfig(bridge, timeout=5.0):
+    """RECONFIG (0x7C) に 0xA5 を書いて FPGA を再コンフィグし、VERSION が変わって応答が戻るまでの時間を測る。
+    読み直すあいだは SPI が化けるか、ブリッジが ready でない (HEARTBEAT が止まる) ので、例外は「まだ」とみなす"""
+    vdp = Vdp(bridge)
+    v0 = vdp.read1(REGS["VERSION"])
+    vdp.write(REGS["RECONFIG"], [0xA5])
+    t0 = time.monotonic()
+    v1, last_err = None, None
+    while time.monotonic() - t0 < timeout:
+        time.sleep(0.01)
+        try:
+            if vdp.read1(REGS["ID"]) == VDP_ID:
+                v1 = vdp.read1(REGS["VERSION"])
+                if v1 != v0:
+                    break
+        except HarnessError as e:
+            last_err = str(e)
+    dt = time.monotonic() - t0
+    name = lambda v: None if v is None else ("3d" if v & 0x80 else "vdp")
+    return {"ok": v1 is not None and v1 != v0, "from": name(v0), "to": name(v1), "version_from": v0, "version_to": v1,
+            "seconds": round(dt, 3), **({"last_error": last_err} if v1 is None else {})}
+
+
 ALL_SCENE_SECONDS = 10.0                       # demo all: 1 つの場面を見せる秒数
 
 AUDIO = {"PCM_RD": 0x50, "UNDERRUN": 0x52}     # audio_out.sv (読み出しだけ)
@@ -949,7 +975,7 @@ def main():
         r = subprocess.run(["make", "prog", f"TARGET={a.args[0]}"], cwd=REPO, stdout=sys.stderr)
         result = {"ok": r.returncode == 0, "target": a.args[0]}
     elif a.command in ("reg", "selftest", "memtest", "mem", "frametest", "fb", "fbtest", "scenario", "fps", "demo", "audio",
-                       "mulprobe"):
+                       "mulprobe", "reconfig"):
         bridge = Bridge(find_port(a.port))
         try:
             vdp = Vdp(bridge)
@@ -961,6 +987,8 @@ def main():
                 result = fps(bridge, a.args[0], a.frames)
             elif a.command == "demo":
                 result = demo(bridge, a.frames, a.start, a.args[0] if a.args else None, a.shot)
+            elif a.command == "reconfig":
+                result = reconfig(bridge)
             elif a.command == "mulprobe":
                 result = mulprobe(bridge, a.iterations)
             elif a.command == "audio":

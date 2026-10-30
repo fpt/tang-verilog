@@ -2,6 +2,11 @@
 IO_LOC  "clk" 4;
 IO_PORT "clk" IO_TYPE=LVCMOS33 PULL_MODE=UP;
 
+// RECONFIG_N (ピン 9、基板では TP1 だけ)。設計が Low にして自分を再コンフィグする。gowin_pack に --reconfign_as_gpio は付けない
+// (付けると GPIO になって再コンフィグの入力として効かない)
+IO_LOC  "reconfig_n" 9;
+IO_PORT "reconfig_n" IO_TYPE=LVCMOS33 PULL_MODE=UP DRIVE=8;
+
 IO_LOC  "btn_s1" 88;
 IO_PORT "btn_s1" IO_TYPE=LVCMOS33 PULL_MODE=DOWN;
 IO_LOC  "btn_s2" 87;

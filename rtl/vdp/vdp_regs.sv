@@ -13,6 +13,8 @@
 //                       FRAME_CRC と同じく 0x05 を読んだ時点の値 (先に 0x05..0x08 を読み、そのあとで読む)
 //   0x0C MARK_CRC    R  印を付けたフレーム (GPU の WAIT_VBLANK、印付き) の CRC-32 (32bit、0x0C..0x0F)。frame_crc.sv
 //   (表示するフレームバッファの先頭 FB_BASE は M5 で gpu.sv の 0x44 へ移した)
+//   0x7C RECONFIG    W  0xA5 を書くと FPGA を再コンフィグする (トップが RECONFIG_N を Low にする。フラッシュの multiboot で次のビットストリームへ。
+//                       docs/GPU3D_PLAN.md の G6 の前)。ほかの値は何もしない
 //   0x7D SCRATCH     RW 書いた値がそのまま読める (SPI リンクの確認用)
 //   0x7E ID          R  0x5A
 //   0x7F VERSION     R  RTL の版
@@ -39,12 +41,14 @@ module vdp_regs #(
     input  logic [7:0] underflow_count,
     output logic [7:0] control,
     output logic       irq,
-    output logic       error
+    output logic       error,
+    output logic       reconfig_req    // RECONFIG に 0xA5 を書いたとき 1 クロック
 );
     localparam logic [6:0] A_STATUS      = 7'h00;
     localparam logic [6:0] A_CONTROL     = 7'h01;
     localparam logic [6:0] A_FRAME_COUNT = 7'h04;
     localparam logic [6:0] A_FRAME_CRC   = 7'h05;   // 0x05..0x08
+    localparam logic [6:0] A_RECONFIG    = 7'h7C;
     localparam logic [6:0] A_SCRATCH     = 7'h7D;
     localparam logic [6:0] A_ID          = 7'h7E;
     localparam logic [6:0] A_VERSION     = 7'h7F;
@@ -96,6 +100,8 @@ module vdp_regs #(
     assign vblank = vblank_s[1];
 
     logic [7:0] scratch, frame_count;
+
+    assign reconfig_req = we && addr == A_RECONFIG && wdata == 8'hA5;
 
     always_ff @(posedge clk) begin
         if (rst) begin

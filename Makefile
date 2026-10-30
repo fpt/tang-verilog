@@ -15,11 +15,18 @@ PICO       := $(DOCKER_RUN) $(PICO_IMAGE)
 TARGET   ?= hdmi                # hdmi | lcd | harness_probe | gpu3d
 TOP_PARAMS :=
 OUT_DIR    := build
+# 再コンフィグ (multiboot): VDP をフラッシュの 0x000000、3D GPU を 0x100000 に置き、それぞれ相手の番地を「次のビットストリーム」にする。
+# どちらも RECONFIG_N (ピン 9) を設計が Low にして切り替える (vdp_regs の RECONFIG、harness.py reconfig)。
+# gowin_pack の --reconfign_as_gpio は付けない: 付けるとピンが GPIO になって、Low にしても再コンフィグしない (実機で確かめた)。
+# 付けなくても設計の出力はピンを駆動でき、再コンフィグの入力として効く
+PACK_FLAGS   :=
+FLASH_OFFSET := 0
 ifeq ($(strip $(TARGET)),hdmi)
 TOP        := top
 CST        := constraints/tangnano20k.cst
 VIDEO_MODE := 0
 RENDER_DIR := build/render
+PACK_FLAGS := --multiboot_address 0x100000
 else ifeq ($(strip $(TARGET)),gpu3d)
 TOP        := top
 CST        := constraints/tangnano20k.cst
@@ -27,6 +34,8 @@ VIDEO_MODE := 0
 RENDER_DIR := build/render
 TOP_PARAMS := -G GPU3D=1 $(if $(filter 1,$(MUL_PROBE)),-G MUL_PROBE=1)
 OUT_DIR    := build/gpu3d
+PACK_FLAGS   := --multiboot_address 0x000000
+FLASH_OFFSET := 0x100000
 # 真のデュアルポートの BSRAM の番地が FF から直接でなければ止める (scripts/bsram_check.py)
 BSRAM_STRICT := 1
 else ifeq ($(strip $(TARGET)),lcd)
@@ -90,7 +99,7 @@ help:
 	@echo "make bitstream   合成 -> 配置配線 -> $(BUILD)/$(TOP).fs (TARGET=hdmi|lcd|harness_probe)"
 	@echo "make pincheck    ハーネスが駆動するピンを FPGA が駆動しないか検査 (prog / flash の前に自動で実行)"
 	@echo "make prog        SRAM に書き込み (ホストの openFPGALoader が必要)"
-	@echo "make flash       Flash に書き込み (同上)"
+	@echo "make flash       Flash に書き込み (同上。TARGET=hdmi は 0x000000、TARGET=gpu3d は 0x100000。両方書けば harness.py reconfig で切り替わる)"
 	@echo "make demo        デモをハーネス経由で流す (既定は Ctrl-C まで、FRAMES=N で N フレーム。ホストの python3)"
 	@echo "                 SCENE=logo|tunnel|room|city で 3D の場面、SCENE=all で 4 つを 10 秒ずつくり返す (先に make prog TARGET=gpu3d)。なければ M9 のデモ (VDP)"
 	@echo "make harness-fw  ハーネスの RP2 ブリッジファームウェア (HARNESS_BOARD=$(HARNESS_BOARD))"
@@ -208,7 +217,7 @@ $(OUT_DIR)/$(TOP)_pnr.json: $(OUT_DIR)/$(TOP).json $(CST)
 		--vopt family=$(FAMILY) --vopt cst=$(CST) --vopt sspi_as_gpio
 
 $(OUT_DIR)/$(TOP).fs: $(OUT_DIR)/$(TOP)_pnr.json
-	$(FPGA) gowin_pack -d $(FAMILY) --sspi_as_gpio -o $@ $<
+	$(FPGA) gowin_pack -d $(FAMILY) --sspi_as_gpio $(PACK_FLAGS) -o $@ $<
 	@grep -A30 'Device utilisation' $(OUT_DIR)/$(TOP)_nextpnr.log | grep -E 'LUT|DFF|BSRAM|PLL|OSER|IOB' || true
 	@grep -E 'Max frequency' $(OUT_DIR)/$(TOP)_nextpnr.log | tail -n 4 || true
 
@@ -221,8 +230,9 @@ pincheck: $(OUT_DIR)/$(TOP).fs
 prog: pincheck
 	openFPGALoader -b $(BOARD) $(OUT_DIR)/$(TOP).fs
 
+# フラッシュ: VDP (TARGET=hdmi) は 0x000000、3D GPU (TARGET=gpu3d) は 0x100000 (FLASH_OFFSET)。電源を入れると 0x000000 から立ち上がる
 flash: pincheck
-	openFPGALoader -b $(BOARD) -f $(OUT_DIR)/$(TOP).fs
+	openFPGALoader -b $(BOARD) -f --offset $(FLASH_OFFSET) $(OUT_DIR)/$(TOP).fs
 
 # デモ: ハーネス (USB) を使うのでホストで動かす。SCENE なしは M9 のデモ (VDP のビットストリーム)、SCENE=logo/tunnel/room/city は G5 の 3D の場面 (TARGET=gpu3d)
 # FRAMES は make render の既定 (3) と共用なので、コマンドラインで指定したときだけ使う (既定は 0 = Ctrl-C まで)

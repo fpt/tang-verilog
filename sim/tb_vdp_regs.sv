@@ -12,7 +12,9 @@ module tb_vdp_regs;
     logic [15:0] crc_frame_async = '0;
     logic [31:0] held_crc_async = '0;
     logic [7:0]  mark_count_async = '0;
-    logic       irq, error;
+    logic       irq, error, reconfig_req;
+    int         reconfig_pulses = 0;
+    always @(posedge clk) if (reconfig_req) reconfig_pulses++;
 
     vdp_regs #(.VERSION(8'h01)) dut (.*);
 
@@ -128,6 +130,12 @@ module tb_vdp_regs;
 
         // UNDERFLOW はそのまま読める
         rd(7'h09, d); check("UNDERFLOW", d, 8'd7);
+
+        // RECONFIG: 0xA5 だけが 1 クロックの要求になる
+        wr(7'h7C, 8'h12);
+        if (reconfig_pulses != 0) begin $display("  RECONFIG 0x12 made %0d pulses", reconfig_pulses); errors++; end
+        wr(7'h7C, 8'hA5);
+        if (reconfig_pulses != 1) begin $display("  RECONFIG 0xA5 made %0d pulses (expected 1)", reconfig_pulses); errors++; end
 
         // リセットでレジスタが戻る
         @(negedge clk);

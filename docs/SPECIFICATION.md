@@ -104,6 +104,7 @@ Tang Nano 20K の VDP を、ホスト (RP2350 など) のプログラムから�
 | `0x09` | `UNDERFLOW` | R | 合成が表示に間に合わなかったライン数 (飽和) |
 | `0x0A`〜`0x0B` | `CRC_FRAME` | R | `FRAME_CRC` がリセットから何フレーム目の値か |
 | `0x0C`〜`0x0F` | `MARK_CRC` | R | 印を付けたフレーム (`WAIT_VBLANK` の印) の CRC-32 |
+| `0x7C` | `RECONFIG` | W | `0xA5` を書くと FPGA を再コンフィグする (設計が RECONFIG_N を Low にする)。フラッシュの multiboot で VDP (0x000000) と 3D GPU (0x100000) が入れ替わる。約 1.7 秒。ほかの値は何もしない |
 | `0x7D` | `SCRATCH` | RW | 書いた値がそのまま読める (リンクの確認用) |
 | `0x7E` | `ID` | R | `0x5A` |
 | `0x7F` | `VERSION` | R | RTL の版 |
