@@ -693,7 +693,7 @@ GPU は 63MHz。書き込みは 1 行の中で 64 ワードずつのバースト
 
 ## 14. 3D GPU (別のビットストリーム)
 
-`make bitstream TARGET=gpu3d` で作る 3D GPU のビットストリーム ([GPU3D_PLAN.md](GPU3D_PLAN.md)) の分。VDP の面・スプライト・8bpp の表示・ライトマップ・
+`make bitstream-gpu3d` で作る 3D GPU のビットストリーム ([GPU3D_PLAN.md](GPU3D_PLAN.md)) の分。VDP の面・スプライト・8bpp の表示・ライトマップ・
 Mode 7・音はなく、表示は RGB565 のビットマップ (背景色と透過色込み) だけ。2D のコマンドは RGB565 の `CLEAR` `FILL_RECT` `POINT` `DRAW_LINE` `UPLOAD`
 と `REG_WRITE` 0〜2 などが使える (G3 から 8bpp で描くこと、`BLIT`、`BLIT4`、`STRETCH_BLIT` はない。エラーが立つ。画像はテクスチャの四角形で描く)。
 `VERSION` (0x7F) は `0x81` (bit7 が 3D GPU の印)。0x50..0x5F は乗算器の確かめ (`harness.py mulprobe`)。

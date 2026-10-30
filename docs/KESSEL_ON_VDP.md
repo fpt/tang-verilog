@@ -206,7 +206,7 @@ LCD が 800x480 なら、VDP に 400x240 を足して Kessel にも `Wide400` �
   見積もり (300〜500 LUT) より多いのは、32bit の累算器 2 組と引数のレジスタ、行バッファへの組み立て (バイトごとの選択) の分
 - 合成の回避策: yosys が `STRETCH_BLIT` の累算器のレジスタと名前の付いたワイヤのあいだに `$buf` を残し、nextpnr が置けなかった (E4 の `tpass` と同じ現象)。
   `bufnorm -conn` は SDRAM の IO の名前を変えてしまうので使えず、合成のあとに [`scripts/fix_netlist.py`](../scripts/fix_netlist.py) で
-  トップの `$buf` を接続に置き換える (ポートにつながるものはエラーにする)。`make synth` が毎回通す
+  トップの `$buf` を接続に置き換える (ポートにつながるものはエラーにする)。合成 (`make bitstream`) が毎回通す
 
 ## K4 の結果 (VDP 側)
 

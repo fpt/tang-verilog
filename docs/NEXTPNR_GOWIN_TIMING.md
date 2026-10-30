@@ -1,6 +1,6 @@
 # nextpnr の Gowin のタイミング解析の死角
 
-このプロジェクトの 3D GPU (`make TARGET=gpu3d`) で、nextpnr の報告では間に合っているのに実機の絵が化け、化ける場所が配置の種で変わった
+このプロジェクトの 3D GPU (`make bitstream-gpu3d`) で、nextpnr の報告では間に合っているのに実機の絵が化け、化ける場所が配置の種で変わった
 (docs/GPU3D_PLAN.md の G3・G5 のあと)。原因を調べた結果のまとめと、上流 (YosysHQ/nextpnr) に出す報告の下書き。
 
 - 使っている版: `nextpnr-0.11.1-40-geb4f15c3` (`tang-fpga` イメージ、2026-09-29 のコミット eb4f15c3)。master は 2026-10-26 の dd574dd まで見た
@@ -57,7 +57,7 @@ FF から、依存し合う 32bit の足し算 30 段 (間に回転と XOR) の�
 
 ## 3. このプロジェクトでの扱い
 
-- DP の BSRAM の番地は、両方のポートとも FF から直接 (`scripts/bsram_check.py` が合成したネットリストで確かめ、`make bitstream TARGET=gpu3d` で違反なら止まる)
+- DP の BSRAM の番地は、両方のポートとも FF から直接 (`scripts/bsram_check.py` が合成したネットリストで確かめ、`make bitstream-gpu3d` で違反なら止まる)
 - 2 章のため、「SDP なら番地に論理を挟んでもタイミングを見てくれる」とは言い切れない。テクスチャのキャッシュのタグの RAM (SDP) は、
   番地を組み合わせ (次のピクセルのワードアドレス) で読んでいる。2 つの配置で実機は合っているが、ここも FF から直接にできるか検討する
 - **配置のあとの Max frequency も見る**。配線のあとの数字だけで「間に合っている」と言わない。配置のあとの数字が `clk_sys` (63MHz) を下回ったら疑う

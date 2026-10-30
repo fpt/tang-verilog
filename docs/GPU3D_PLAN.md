@@ -469,7 +469,7 @@ G1 の Z (SDRAM) は TBDR では使わないので、基準の測定が済んだ
   ワードアドレスを FF にした (次のピクセルの u, v から 1 クロック前に作る。加算器は累算と同じ)
 - **yosys の落とし穴**: ワードアドレスを FF にしたら、組み合わせで読んでいたタグ (16 x 14bit) を yosys が DP の BSRAM にし、番地の FF を取り込んで
   FF の D 入力 (論理) を番地にした。RTL を見ても分からないので、`scripts/bsram_check.py` で合成したネットリストの DP の番地を全部確かめる
-  (`make bitstream TARGET=gpu3d` で違反なら止まる。今は DP 11 個で違反 0。VDP は報告だけで 479 ビット。混んでいないので今は実機で問題が出ていない)
+  (3D GPU のビルドで違反なら止まる。今は DP 11 個で違反 0。VDP は報告だけで 479 ビット。混んでいないので今は実機で問題が出ていない)
 - **結果**: 既定の種・種 7・種 3 の 3 つの配置で、`g1_tri` `g2_tbdr` `g3_tex` `g4_semi` `g5_scenes` が全部合う (既定と種 7 は 2 回ずつ)。
   3D のビットストリームで 2D のシナリオと selftest も通る。コマンド FIFO を 2,048 ワードにでき、場面は logo 33.3fps、tunnel 42.1fps、room 40.3fps、city 29.9fps
   (FIFO 512 ワードでは 30.5 / 30.0 / 31.3 / 23.7)。`g1_fps` (シーンの外の TRI) は 60.0 → 58.1fps (タイルのパスの固定費が数クロック増えた)
@@ -547,7 +547,7 @@ BSRAM は大きく余る (タイルを 64 x 32 にする余地もある)。DSP �
 
 ## 7. ビルドとリポジトリ
 
-- `rtl/gpu3d/` を新設。`rtl/gowin/top.sv` はパラメータ `GPU3D` で切り替え (`make TARGET=hdmi` / `make TARGET=gpu3d`)、CI で両方のビットストリームを作り、両方の資源を記録する
+- `rtl/gpu3d/` を新設。`rtl/gowin/top.sv` はパラメータ `GPU3D` で切り替え (`make bitstream` が両方を作る。`make bitstream-vdp` / `bitstream-gpu3d`)、CI で両方のビットストリームを作り、両方の資源を記録する
 - `gpu_model.py` は 1 つのまま (モードで解釈するコマンドの集合が変わる)。シナリオは `scenarios/gpu3d/`。2D のシナリオは両モードで走らせる
 - ハーネスのファームウェア・`harness.py`・CI の資源の記録は変更なし
 

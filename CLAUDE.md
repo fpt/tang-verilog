@@ -35,7 +35,7 @@ Tang Nano 20K (FPGA, VDP 本体) + RP2350 (ホスト CPU) でレトロゲーム�
   DSP の乗算は 2 クロックかける (`rtl/gpu3d/smul36x18.sv`)、DPX9B の番地は両方のポートとも FF から直接 (論理を挟まない)、長い組み合わせから
   同じクロックに複数の FF に取る値 (アドレスとタグなど) は 1 段 FF に置いてから使う、長い加算の連鎖は段に分ける。
   **yosys は組み合わせで読む小さい配列の番地の FF を BSRAM に取り込み、FF の D 入力を番地にすることがある** ので RTL を見ても分からない。
-  `scripts/bsram_check.py` がネットリストで確かめる (`make bitstream TARGET=gpu3d` で違反なら止まる)。小さい配列で困るなら `(* ram_style = "logic" *)` で FF に。
+  `scripts/bsram_check.py` がネットリストで確かめる (`make bitstream` / `make bitstream-gpu3d` で、3D GPU は違反なら止まる)。小さい配列で困るなら `(* ram_style = "logic" *)` で FF に。
   配置の種 (`nextpnr --seed`) を変えて実機の結果が変わるならこれを疑う。完了は 2 つ以上の種で実機を 2 回ずつ
 - `rtl/vdp/`・`rtl/gpu3d/` にモジュールを足したら `sim/tb_<名前>.sv` にテストベンチを書く。テストベンチは成功時に `PASS:`、失敗時に `FAIL:` を出力し、VCD は `build/sim/` に出す
 - 映像まわりを変えたら `make render` で PNG を出し、見た目を確認する
