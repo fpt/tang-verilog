@@ -9,50 +9,33 @@ FPGA       := $(DOCKER_RUN) $(FPGA_IMAGE)
 PICO       := $(DOCKER_RUN) $(PICO_IMAGE)
 
 # --- FPGA ---
-# TARGET でビルドするトップを選ぶ (HDMI と 40 ピン LCD はピンを共用しているので別のビットストリームにする)
-# VIDEO_MODE は make render で使う vdp_video の MODE (0: 640x480, 1: 800x480)
-# gpu3d は HDMI と同じトップ (top.sv) の GPU3D = 1 (VDP を外した 3D GPU のビットストリーム、docs/GPU3D_PLAN.md)。成果物は build/gpu3d/
-TARGET   ?= hdmi                # hdmi | lcd | harness_probe | gpu3d
-TOP_PARAMS :=
-OUT_DIR    := build
-# 再コンフィグ (multiboot): VDP をフラッシュの 0x000000、3D GPU を 0x100000 に置き、それぞれ相手の番地を「次のビットストリーム」にする。
-# どちらも RECONFIG_N (ピン 9) を設計が Low にして切り替える (vdp_regs の RECONFIG、harness.py reconfig)。
-# gowin_pack の --reconfign_as_gpio は付けない: 付けるとピンが GPIO になって、Low にしても再コンフィグしない (実機で確かめた)。
-# 付けなくても設計の出力はピンを駆動でき、再コンフィグの入力として効く
-PACK_FLAGS   :=
-FLASH_OFFSET := 0
-ifeq ($(strip $(TARGET)),hdmi)
-TOP        := top
-CST        := constraints/tangnano20k.cst
-VIDEO_MODE := 0
-RENDER_DIR := build/render
-PACK_FLAGS := --multiboot_address 0x100000
-else ifeq ($(strip $(TARGET)),gpu3d)
-TOP        := top
-CST        := constraints/tangnano20k.cst
-VIDEO_MODE := 0
-RENDER_DIR := build/render
-TOP_PARAMS := -G GPU3D=1 $(if $(filter 1,$(MUL_PROBE)),-G MUL_PROBE=1)
-OUT_DIR    := build/gpu3d
-PACK_FLAGS   := --multiboot_address 0x000000
-FLASH_OFFSET := 0x100000
-# 真のデュアルポートの BSRAM の番地が FF から直接でなければ止める (scripts/bsram_check.py)
-BSRAM_STRICT := 1
-else ifeq ($(strip $(TARGET)),lcd)
-TOP        := top_lcd
-CST        := constraints/tangnano20k_lcd.cst
-VIDEO_MODE := 1
-RENDER_DIR := build/render_lcd
-else ifeq ($(strip $(TARGET)),harness_probe)
-TOP        := top_harness_probe
-CST        := constraints/tangnano20k_harness_probe.cst
-VIDEO_MODE := 0
-RENDER_DIR := build/render
-else
-$(error TARGET=$(strip $(TARGET)) は未対応です (hdmi | lcd | harness_probe | gpu3d))
-endif
-ifeq ($(strip $(FREEZE)),1)
-RENDER_DIR := $(RENDER_DIR)_frozen
+# ビットストリームは 4 つ (成果物は build/<名前>/)。フラッシュには vdp と gpu3d の組を置き、RECONFIG で入れ替える:
+#   vdp    VDP (top.sv、HDMI)。フラッシュの 0x000000 (電源を入れるとこれ)。次は 0x100000
+#   gpu3d  3D GPU (top.sv の GPU3D = 1、docs/GPU3D_PLAN.md)。フラッシュの 0x100000。次は 0x000000
+#   lcd    40 ピン RGB LCD (800x480) にテストパターン (top_lcd.sv。HDMI とピンを共用しているので別)
+#   probe  ハーネスの配線テスト (top_harness_probe.sv)
+# 再コンフィグ (multiboot): それぞれ相手の番地を「次のビットストリーム」にし (gowin_pack --multiboot_address)、設計が RECONFIG_N (ピン 9) を
+# Low にして切り替える (vdp_regs の RECONFIG、harness.py reconfig)。gowin_pack の --reconfign_as_gpio は付けない:
+# 付けるとピンが GPIO になって、Low にしても再コンフィグしない (実機で確かめた)。付けなくても設計の出力はピンを駆動でき、再コンフィグの入力として効く
+DESIGNS := vdp gpu3d lcd probe
+vdp_TOP     := top
+vdp_CST     := constraints/tangnano20k.cst
+vdp_PARAMS  :=
+vdp_PACK    := --multiboot_address 0x100000
+vdp_FLASH   := 0x000000
+gpu3d_TOP    := top
+gpu3d_CST    := constraints/tangnano20k.cst
+gpu3d_PARAMS := -G GPU3D=1 $(if $(filter 1,$(MUL_PROBE)),-G MUL_PROBE=1)
+gpu3d_PACK   := --multiboot_address 0x000000
+gpu3d_FLASH  := 0x100000
+gpu3d_STRICT := 1                # 真のデュアルポートの BSRAM の番地が FF から直接でなければ止める (scripts/bsram_check.py)
+lcd_TOP     := top_lcd
+lcd_CST     := constraints/tangnano20k_lcd.cst
+probe_TOP   := top_harness_probe
+probe_CST   := constraints/tangnano20k_harness_probe.cst
+
+ifneq ($(origin TARGET),undefined)
+$(error TARGET はなくなりました: make bitstream (vdp と gpu3d)、make bitstream-<vdp|gpu3d|lcd|probe>、make prog / prog-3d / prog-lcd / prog-probe、make flash)
 endif
 
 DEVICE   := GW2AR-LV18QN88C8/I7
@@ -86,7 +69,9 @@ RP2_MOUNT         = $(firstword $(wildcard /Volumes/RPI-RP2 /Volumes/RP2350 /med
 PICO_BOARD    ?= pico2
 PICO_PLATFORM ?= rp2350-arm-s   # rp2350-riscv にすると Hazard3 コア用
 
-.PHONY: timing-repro help images image-fpga image-pico all lint sim scenario $(addprefix sim-,$(TBS)) render synth pnr bitstream pincheck prog flash demo fw harness-fw harness-deploy shell shell-pico zip clean
+.PHONY: timing-repro help images image-fpga image-pico all lint sim scenario $(addprefix sim-,$(TBS)) render render-lcd \
+	bitstream $(addprefix bitstream-,$(DESIGNS)) $(addprefix pincheck-,$(DESIGNS)) prog prog-3d prog-gpu3d prog-lcd prog-probe flash \
+	demo fw harness-fw harness-deploy shell shell-pico zip clean
 
 help:
 	@echo "make images      Docker イメージをビルド (image-fpga / image-pico で個別に)"
@@ -94,14 +79,15 @@ help:
 	@echo "make sim         テストベンチを全部実行 (SIM=iverilog|verilator, VCD は build/sim/)"
 	@echo "make sim-<tb>    個別テストベンチ実行 (例: make sim-tb_tmds_encoder)"
 	@echo "make scenario    シナリオ (SCENARIO=scenarios/*.json) をシステム全体の RTL で走らせ、参照モデルの CRC と比べる"
-	@echo "make render      Verilator で映像出力を PNG 化 ($(RENDER_DIR)/, FRAMES=$(FRAMES), TARGET=lcd で 800x480)"
+	@echo "                 scenarios/gpu3d/ のシナリオは 3D GPU の構成で走る"
+	@echo "make render      Verilator で映像出力を PNG 化 (build/render/, FRAMES=$(FRAMES))。make render-lcd で 800x480"
 	@echo "                 FREEZE=1 でアニメーションを止めた参照画像と CRC (frames.json) を build/render_frozen/ に"
-	@echo "make bitstream   合成 -> 配置配線 -> $(BUILD)/$(TOP).fs (TARGET=hdmi|lcd|harness_probe)"
-	@echo "make pincheck    ハーネスが駆動するピンを FPGA が駆動しないか検査 (prog / flash の前に自動で実行)"
-	@echo "make prog        SRAM に書き込み (ホストの openFPGALoader が必要)"
-	@echo "make flash       Flash に書き込み (同上。TARGET=hdmi は 0x000000、TARGET=gpu3d は 0x100000。両方書けば harness.py reconfig で切り替わる)"
+	@echo "make bitstream   VDP と 3D GPU のビットストリーム (build/vdp/top.fs、build/gpu3d/top.fs)。1 つだけなら make bitstream-<vdp|gpu3d|lcd|probe>"
+	@echo "make prog        VDP を SRAM に書き込み (make prog-3d / prog-lcd / prog-probe。ホストの openFPGALoader が必要。pincheck 込み)"
+	@echo "make flash       VDP (0x000000) と 3D GPU (0x100000) をフラッシュに。電源を入れると VDP、harness.py reconfig で入れ替わる"
 	@echo "make demo        デモをハーネス経由で流す (既定は Ctrl-C まで、FRAMES=N で N フレーム。ホストの python3)"
-	@echo "                 SCENE=logo|tunnel|room|city で 3D の場面、SCENE=all で 4 つを 10 秒ずつくり返す (先に make prog TARGET=gpu3d)。なければ M9 のデモ (VDP)"
+	@echo "                 SCENE=logo|tunnel|room|city で 3D の場面、SCENE=all で 4 つを 10 秒ずつくり返す。なければ M9 のデモ (VDP)。"
+	@echo "                 動いているビットストリームが違えば RECONFIG で切り替える (make flash で両方を書いておく)"
 	@echo "make harness-fw  ハーネスの RP2 ブリッジファームウェア (HARNESS_BOARD=$(HARNESS_BOARD))"
 	@echo "make harness-deploy  BOOTSEL の RP2 に書き込む (ホストで実行)"
 	@echo "make fw          RP2350 ファームウェアをビルド (firmware/build/*.uf2)"
@@ -132,7 +118,7 @@ image-fpga: certs.pem
 image-pico: certs.pem
 	docker build --secret id=ca_cert,src=certs.pem -t $(PICO_IMAGE) docker/pico
 
-$(BUILD)/sim $(RENDER_DIR):
+$(BUILD)/sim:
 	@mkdir -p $@
 
 # ---------------------------------------------------------------- 検証
@@ -171,7 +157,13 @@ else
 	$(FPGA) vvp -n $(BUILD)/sim/$*.vvp
 endif
 
-render: | $(RENDER_DIR)
+# 映像を PNG に (VIDEO_MODE は vdp_video の MODE: 0 は 640x480、1 は 800x480 の LCD)
+render:     RENDER_DIR := build/render$(if $(filter 1,$(strip $(FREEZE))),_frozen)
+render:     VIDEO_MODE := 0
+render-lcd: RENDER_DIR := build/render_lcd$(if $(filter 1,$(strip $(FREEZE))),_frozen)
+render-lcd: VIDEO_MODE := 1
+render render-lcd:
+	@mkdir -p $(RENDER_DIR)
 	$(FPGA) verilator --cc --exe --build -j 0 -O2 -Wno-fatal \
 		--top-module vdp_video -GMODE=$(VIDEO_MODE) -Mdir $(RENDER_DIR)/obj -o render \
 		$(VDP_SRC) sim/verilator/render_main.cpp
@@ -180,12 +172,12 @@ render: | $(RENDER_DIR)
 	@rm -f $(RENDER_DIR)/*.ppm
 
 # シナリオをシステム全体の RTL (Verilator) で走らせ、参照モデル (tools/harness/gpu_model.py) と比べる
+# scenarios/gpu3d/ のシナリオは 3D GPU の構成 (GPU3D = 1) で走らせる
 SCENARIO ?= scenarios/m5_basic.json
+SCN_3D    = $(findstring scenarios/gpu3d/,$(SCENARIO))
+SCN_SUFFIX = $(if $(SCN_3D),_gpu3d)
+SCN_PARAMS = $(if $(SCN_3D),-GGPU3D=1)
 SCN_DIR   = $(BUILD)/scenario$(SCN_SUFFIX)/$(basename $(notdir $(SCENARIO)))
-ifeq ($(strip $(TARGET)),gpu3d)
-SCN_SUFFIX := _gpu3d
-SCN_PARAMS := -GGPU3D=1
-endif
 
 scenario:
 	@mkdir -p $(SCN_DIR)
@@ -197,44 +189,58 @@ scenario:
 	$(FPGA) python3 tools/harness/gpu_model.py compare $(SCENARIO) $(SCN_DIR)
 
 # ---------------------------------------------------------------- 実装
-synth: $(OUT_DIR)/$(TOP).json
-pnr: $(OUT_DIR)/$(TOP)_pnr.json
-bitstream: $(OUT_DIR)/$(TOP).fs
+bitstream: build/vdp/top.fs build/gpu3d/top.fs
+bitstream-vdp:   build/vdp/top.fs
+bitstream-gpu3d: build/gpu3d/top.fs
+bitstream-lcd:   build/lcd/top_lcd.fs
+bitstream-probe: build/probe/top_harness_probe.fs
 
+# 設計ごとの規則 (合成 → 配置配線 → ビットストリーム → pincheck)。$(1) は設計の名前
 # SystemVerilog は yosys-slang プラグイン (read_slang) で読む。
 # -nolutram: LUT の RAM (RAM16SDP4) は実機で値が化ける (docs/GPU3D_PLAN.md の G1)。小さい配列はフリップフロップか BSRAM に置く
-$(OUT_DIR)/$(TOP).json: $(SYN_SRC) $(GOWIN_BB)
-	@mkdir -p $(OUT_DIR)
-	$(FPGA) yosys -m slang -q -l $(OUT_DIR)/$(TOP)_yosys.log \
-		-p "read_slang --top $(TOP) $(TOP_PARAMS) $(SYN_SRC) $(GOWIN_BB); synth_gowin -family gw2a -nolutram -top $(TOP) -json $@"
-	$(FPGA) python3 scripts/fix_netlist.py $@ $(TOP)
+define design_rules
+build/$(1)/$$($(1)_TOP).json: $$(SYN_SRC) $$(GOWIN_BB)
+	@mkdir -p build/$(1)
+	$$(FPGA) yosys -m slang -q -l build/$(1)/$$($(1)_TOP)_yosys.log \
+		-p "read_slang --top $$($(1)_TOP) $$($(1)_PARAMS) $$(SYN_SRC) $$(GOWIN_BB); synth_gowin -family gw2a -nolutram -top $$($(1)_TOP) -json $$@"
+	$$(FPGA) python3 scripts/fix_netlist.py $$@ $$($(1)_TOP)
 	@# 真のデュアルポートの BSRAM の番地に論理が挟まっていないか (nextpnr はそのタイミングを見ない)。3D は止める、ほかは報告だけ
-	$(FPGA) python3 scripts/bsram_check.py $@ $(if $(BSRAM_STRICT),,|| true)
+	$$(FPGA) python3 scripts/bsram_check.py $$@ $$(if $$($(1)_STRICT),,|| true)
 
-$(OUT_DIR)/$(TOP)_pnr.json: $(OUT_DIR)/$(TOP).json $(CST)
-	$(FPGA) nextpnr-himbaechel -q -l $(OUT_DIR)/$(TOP)_nextpnr.log \
-		--json $< --write $@ --device $(DEVICE) \
-		--vopt family=$(FAMILY) --vopt cst=$(CST) --vopt sspi_as_gpio
+build/$(1)/$$($(1)_TOP)_pnr.json: build/$(1)/$$($(1)_TOP).json $$($(1)_CST)
+	$$(FPGA) nextpnr-himbaechel -q -l build/$(1)/$$($(1)_TOP)_nextpnr.log \
+		--json $$< --write $$@ --device $$(DEVICE) \
+		--vopt family=$$(FAMILY) --vopt cst=$$($(1)_CST) --vopt sspi_as_gpio
 
-$(OUT_DIR)/$(TOP).fs: $(OUT_DIR)/$(TOP)_pnr.json
-	$(FPGA) gowin_pack -d $(FAMILY) --sspi_as_gpio $(PACK_FLAGS) -o $@ $<
-	@grep -A30 'Device utilisation' $(OUT_DIR)/$(TOP)_nextpnr.log | grep -E 'LUT|DFF|BSRAM|PLL|OSER|IOB' || true
-	@grep -E 'Max frequency' $(OUT_DIR)/$(TOP)_nextpnr.log | tail -n 4 || true
+build/$(1)/$$($(1)_TOP).fs: build/$(1)/$$($(1)_TOP)_pnr.json
+	$$(FPGA) gowin_pack -d $$(FAMILY) --sspi_as_gpio $$($(1)_PACK) -o $$@ $$<
+	@grep -A30 'Device utilisation' build/$(1)/$$($(1)_TOP)_nextpnr.log | grep -E 'LUT|DFF|BSRAM|PLL|OSER|IOB' || true
+	@grep -E 'Max frequency' build/$(1)/$$($(1)_TOP)_nextpnr.log | tail -n 4 || true
 
 # ハーネスが駆動するピン (harness/pins.json) を FPGA も駆動しようとしていないか検査する。
 # ハーネスがつながっている前提なので、prog / flash は必ずこれを通してから書き込む
-pincheck: $(OUT_DIR)/$(TOP).fs
-	$(FPGA) python3 scripts/pincheck.py $(HARNESS_PINS) $(CST) $(OUT_DIR)/$(TOP).json $<
+pincheck-$(1): build/$(1)/$$($(1)_TOP).fs
+	$$(FPGA) python3 scripts/pincheck.py $$(HARNESS_PINS) $$($(1)_CST) build/$(1)/$$($(1)_TOP).json $$<
+endef
+$(foreach d,$(DESIGNS),$(eval $(call design_rules,$(d))))
 
 # Docker Desktop (macOS) のコンテナからは USB が見えないので書き込みだけはホストで行う
-prog: pincheck
-	openFPGALoader -b $(BOARD) $(OUT_DIR)/$(TOP).fs
+prog: pincheck-vdp
+	openFPGALoader -b $(BOARD) build/vdp/top.fs
+prog-3d prog-gpu3d: pincheck-gpu3d
+	openFPGALoader -b $(BOARD) build/gpu3d/top.fs
+prog-lcd: pincheck-lcd
+	openFPGALoader -b $(BOARD) build/lcd/top_lcd.fs
+prog-probe: pincheck-probe
+	openFPGALoader -b $(BOARD) build/probe/top_harness_probe.fs
 
-# フラッシュ: VDP (TARGET=hdmi) は 0x000000、3D GPU (TARGET=gpu3d) は 0x100000 (FLASH_OFFSET)。電源を入れると 0x000000 から立ち上がる
-flash: pincheck
-	openFPGALoader -b $(BOARD) -f --offset $(FLASH_OFFSET) $(OUT_DIR)/$(TOP).fs
+# フラッシュ: VDP を 0x000000、3D GPU を 0x100000 に (電源を入れると VDP。RECONFIG で入れ替わる)
+flash: pincheck-vdp pincheck-gpu3d
+	openFPGALoader -b $(BOARD) -f --offset $(vdp_FLASH) build/vdp/top.fs
+	openFPGALoader -b $(BOARD) -f --offset $(gpu3d_FLASH) build/gpu3d/top.fs
 
-# デモ: ハーネス (USB) を使うのでホストで動かす。SCENE なしは M9 のデモ (VDP のビットストリーム)、SCENE=logo/tunnel/room/city は G5 の 3D の場面 (TARGET=gpu3d)
+# デモ: ハーネス (USB) を使うのでホストで動かす。SCENE なしは M9 のデモ (VDP)、SCENE=logo/tunnel/room/city/all は G5 の 3D の場面 (3D GPU)。
+# 動いているビットストリームが違えば harness.py が RECONFIG で切り替える
 # FRAMES は make render の既定 (3) と共用なので、コマンドラインで指定したときだけ使う (既定は 0 = Ctrl-C まで)
 DEMO_FRAMES = $(if $(filter command line,$(origin FRAMES)),$(FRAMES),0)
 demo:
