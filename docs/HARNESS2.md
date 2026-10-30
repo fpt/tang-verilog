@@ -78,6 +78,16 @@ Pico ピン配置では HSTX の 8 本が 16〜25 に連続して並ぶので、
 - FPGA: 制約ファイル (上の `.cst`)、HEARTBEAT の出力をなくし、VSYNC を 52 に。`pincheck` は `pins_v2.json` で見る。`top_harness_probe` の折り返しの線を減らす
 - `harness.py`: selftest の HEARTBEAT 30Hz の項目を VSYNC 60Hz に、RESET の項目は VSYNC の立ち上がりで数える
 
+### 2.3 再コンフィグ (VDP と 3D GPU の切り替え) に線は要らない
+
+RECONFIG_N (ピン 9) は Tang Nano 20K のヘッダに出ていない (基板の TP1 だけ) が、**設計が自分のピン 9 を Low にすれば再コンフィグする**ので、
+ハーネスから線を引かなくてよい。ホストは SPI で `RECONFIG` (0x7C) に `0xA5` を書くだけ (`harness.py reconfig`)。
+
+- フラッシュに VDP を 0x000000、3D GPU を 0x100000 に置き、それぞれ相手の番地を「次のビットストリーム」にする (`gowin_pack --multiboot_address`、Makefile)
+- `gowin_pack --reconfign_as_gpio` は**付けない**。付けるとピンが GPIO になり、Low にしても再コンフィグしない (実機で確かめた)。付けなくても設計の出力はピンを駆動できる
+- 切り替えは約 1.7 秒 (VDP → 3D、3D → VDP とも)。`gowin_pack -c` (圧縮) は GW2A では効かない (同じファイル)。速くするならビットストリームのヘッダの読み込みの速さ
+- 電源を入れると 0x000000 (VDP) から立ち上がる。切り替えたら SDRAM の中身 (テクスチャなど) はホストが送り直す
+
 ## 3. FPGA 側
 
 - 80 (GCLKT_0) を `IBUF` → グローバルクロック、71〜74 を `IDDR` で受けて 8bit/クロック。非同期 FIFO (BSRAM) で `clk_sys` へ
